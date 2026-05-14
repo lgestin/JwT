@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 
 import torch
@@ -15,6 +16,7 @@ class TransformerConfig(Serializable):
     mlp_ratio: float = 4.0
     max_seq_len: int = 8192
     rope_theta: float = 10000.0
+    time_freq_embed_dim: int = 256
 
 
 def precompute_freqs_cis(
@@ -47,17 +49,69 @@ def apply_rope(
     return q_out.flatten(-2).type_as(q), k_out.flatten(-2).type_as(k)
 
 
+def timestep_embedding(
+    t: torch.Tensor, dim: int, max_period: float = 10000.0
+) -> torch.Tensor:
+    """Sinusoidal embedding for scalar timesteps. t (..., ) -> (..., dim)."""
+    half = dim // 2
+    freqs = torch.exp(
+        -math.log(max_period)
+        * torch.arange(half, dtype=torch.float32, device=t.device)
+        / half
+    )
+    args = t.float().unsqueeze(-1) * freqs
+    emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+    if dim % 2:
+        emb = F.pad(emb, (0, 1))
+    return emb
+
+
+class TimestepEmbedder(nn.Module):
+    def __init__(self, dim: int, freq_embed_dim: int = 256):
+        super().__init__()
+        self.freq_embed_dim = freq_embed_dim
+        self.mlp = nn.Sequential(
+            nn.Linear(freq_embed_dim, dim),
+            nn.SiLU(),
+            nn.Linear(dim, dim),
+        )
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        emb = timestep_embedding(t, self.freq_embed_dim)
+        return self.mlp(emb)
+
+
+class AdaLN(nn.Module):
+    """DiT-style modulation: silu -> linear producing (shift, scale, gate) x 2."""
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.linear = nn.Linear(dim, 6 * dim, bias=True)
+        nn.init.zeros_(self.linear.weight)
+        nn.init.zeros_(self.linear.bias)
+
+    def forward(self, t_emb: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        return self.linear(F.silu(t_emb)).chunk(6, dim=-1)
+
+
+def modulate(
+    x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor
+) -> torch.Tensor:
+    return x * (1 + scale) + shift
+
+
 class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-6):
+    def __init__(self, dim: int, eps: float = 1e-6, affine: bool = True):
         super().__init__()
         self.eps = eps
-        self.scale = nn.Parameter(torch.ones(dim))
+        self.scale = nn.Parameter(torch.ones(dim)) if affine else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         dtype = x.dtype
         x = x.float()
         rrms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        return (x * rrms).to(dtype) * self.scale
+        x = (x * rrms).to(dtype)
+        return x * self.scale if self.scale is not None else x
 
 
 class QKNorm(nn.Module):
@@ -111,19 +165,24 @@ class FeedForward(nn.Module):
 class TransformerBlock(nn.Module):
     def __init__(self, dim: int, num_heads: int, mlp_ratio: float = 4.0):
         super().__init__()
-        self.norm1 = RMSNorm(dim)
+        self.norm1 = RMSNorm(dim, affine=False)
         self.attn = SelfAttention(dim, num_heads)
-        self.norm2 = RMSNorm(dim)
+        self.norm2 = RMSNorm(dim, affine=False)
         self.ff = FeedForward(dim, mlp_ratio)
+        self.adaLN = AdaLN(dim)
 
     def forward(
         self,
         x: torch.Tensor,
         freqs_cis: torch.Tensor,
+        t_emb: torch.Tensor,
         mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        x = x + self.attn(self.norm1(x), freqs_cis, mask)
-        x = x + self.ff(self.norm2(x))
+        shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = self.adaLN(t_emb)
+        x = x + gate_a * self.attn(
+            modulate(self.norm1(x), shift_a, scale_a), freqs_cis, mask
+        )
+        x = x + gate_m * self.ff(modulate(self.norm2(x), shift_m, scale_m))
         return x
 
 
@@ -132,6 +191,7 @@ class Transformer(nn.Module):
         super().__init__()
         assert config.dim % config.num_heads == 0, "dim must be divisible by num_heads"
         self.config = config
+        self.time_embedder = TimestepEmbedder(config.dim, config.time_freq_embed_dim)
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(config.dim, config.num_heads, config.mlp_ratio)
@@ -145,9 +205,14 @@ class Transformer(nn.Module):
         self.register_buffer("freqs_cis", freqs_cis, persistent=False)
 
     def forward(
-        self, x: torch.Tensor, mask: torch.Tensor | None = None
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """x: (B, L, D), t: (B, L) per-position timestep, mask: optional attn mask."""
         freqs_cis = self.freqs_cis[:, :, : x.shape[1]]
+        t_emb = self.time_embedder(t)
         for block in self.blocks:
-            x = block(x, freqs_cis, mask)
+            x = block(x, freqs_cis, t_emb, mask)
         return self.norm(x)

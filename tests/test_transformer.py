@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 
 from tts.model.transformer import (
     Transformer,
@@ -11,14 +12,16 @@ from tts.model.transformer import (
 def test_transformer_shape() -> None:
     model = Transformer(TransformerConfig(dim=64, num_heads=4, num_layers=2))
     x = torch.randn(2, 16, 64)
-    y = model(x)
+    t = torch.rand(2, 16)
+    y = model(x, t)
     assert y.shape == (2, 16, 64)
 
 
 def test_transformer_backward() -> None:
     model = Transformer(TransformerConfig(dim=32, num_heads=4, num_layers=2))
     x = torch.randn(1, 8, 32, requires_grad=True)
-    model(x).sum().backward()
+    t = torch.rand(1, 8)
+    model(x, t).sum().backward()
     assert x.grad is not None
 
 
@@ -26,7 +29,8 @@ def test_transformer_block_shape() -> None:
     block = TransformerBlock(dim=32, num_heads=4)
     freqs_cis = precompute_freqs_cis(seq_len=8, head_dim=8)
     x = torch.randn(2, 8, 32)
-    y = block(x, freqs_cis)
+    t_emb = torch.randn(2, 8, 32)
+    y = block(x, freqs_cis, t_emb)
     assert y.shape == x.shape
 
 
@@ -39,9 +43,38 @@ def test_config_roundtrip() -> None:
 def test_causal_mask_changes_output() -> None:
     torch.manual_seed(0)
     model = Transformer(TransformerConfig(dim=32, num_heads=4, num_layers=2))
+    # AdaLN is zero-init, which gates the attention residual to 0 and makes the
+    # mask irrelevant. Break the init so attention contributes to the output.
+    for block in model.blocks:
+        nn.init.normal_(block.adaLN.linear.weight, std=0.02)
     x = torch.randn(1, 8, 32)
+    t = torch.rand(1, 8)
     mask = torch.triu(torch.ones(8, 8, dtype=torch.bool), diagonal=1).logical_not()
-    y_masked = model(x, mask=mask)
-    y_unmasked = model(x)
+    y_masked = model(x, t, mask=mask)
+    y_unmasked = model(x, t)
     assert y_masked.shape == y_unmasked.shape
     assert not torch.allclose(y_masked, y_unmasked)
+
+
+def test_zero_init_adaLN_is_identity_path() -> None:
+    """At init the AdaLN linear is zero, so gates are 0 and residual blocks are no-ops."""
+    torch.manual_seed(0)
+    model = Transformer(TransformerConfig(dim=32, num_heads=4, num_layers=2))
+    x = torch.randn(1, 8, 32)
+    t = torch.rand(1, 8)
+    y = model(x, t)
+    assert torch.allclose(y, model.norm(x), atol=1e-5)
+
+
+def test_timesteps_change_output() -> None:
+    torch.manual_seed(0)
+    model = Transformer(TransformerConfig(dim=32, num_heads=4, num_layers=2))
+    # Break the zero-init so modulation has an effect.
+    for block in model.blocks:
+        nn.init.normal_(block.adaLN.linear.weight, std=0.02)
+    x = torch.randn(1, 8, 32)
+    t1 = torch.zeros(1, 8)
+    t2 = torch.ones(1, 8)
+    y1 = model(x, t1)
+    y2 = model(x, t2)
+    assert not torch.allclose(y1, y2)
