@@ -5,8 +5,8 @@ from pathlib import Path
 import soundfile as sf
 import torch
 
-from tts.data.stft import STFT
-from tts.data.utils import load_waveform, resample
+from tts.data.audio.stft import STFT
+from tts.data.audio.utils import load_waveform, resample
 
 
 @dataclass
