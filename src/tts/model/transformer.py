@@ -1,7 +1,20 @@
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from simple_parsing import Serializable
+
+
+@dataclass
+class TransformerConfig(Serializable):
+    dim: int
+    num_heads: int
+    num_layers: int
+    mlp_ratio: float = 4.0
+    max_seq_len: int = 8192
+    rope_theta: float = 10000.0
 
 
 def precompute_freqs_cis(
@@ -24,10 +37,12 @@ def apply_rope(
     k_ = k.float().reshape(*k.shape[:-1], -1, 2)
     cos, sin = freqs_cis[..., 0], freqs_cis[..., 1]
     q_out = torch.stack(
-        [cos * q_[..., 0] - sin * q_[..., 1], sin * q_[..., 0] + cos * q_[..., 1]], dim=-1
+        [cos * q_[..., 0] - sin * q_[..., 1], sin * q_[..., 0] + cos * q_[..., 1]],
+        dim=-1,
     )
     k_out = torch.stack(
-        [cos * k_[..., 0] - sin * k_[..., 1], sin * k_[..., 0] + cos * k_[..., 1]], dim=-1
+        [cos * k_[..., 0] - sin * k_[..., 1], sin * k_[..., 0] + cos * k_[..., 1]],
+        dim=-1,
     )
     return q_out.flatten(-2).type_as(q), k_out.flatten(-2).type_as(k)
 
@@ -113,25 +128,25 @@ class TransformerBlock(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        num_heads: int,
-        num_layers: int,
-        mlp_ratio: float = 4.0,
-        max_seq_len: int = 8192,
-        theta: float = 10000.0,
-    ):
+    def __init__(self, config: TransformerConfig):
         super().__init__()
-        assert dim % num_heads == 0, "dim must be divisible by num_heads"
+        assert config.dim % config.num_heads == 0, "dim must be divisible by num_heads"
+        self.config = config
         self.blocks = nn.ModuleList(
-            [TransformerBlock(dim, num_heads, mlp_ratio) for _ in range(num_layers)]
+            [
+                TransformerBlock(config.dim, config.num_heads, config.mlp_ratio)
+                for _ in range(config.num_layers)
+            ]
         )
-        self.norm = RMSNorm(dim)
-        freqs_cis = precompute_freqs_cis(max_seq_len, dim // num_heads, theta)
+        self.norm = RMSNorm(config.dim)
+        freqs_cis = precompute_freqs_cis(
+            config.max_seq_len, config.dim // config.num_heads, config.rope_theta
+        )
         self.register_buffer("freqs_cis", freqs_cis, persistent=False)
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
         freqs_cis = self.freqs_cis[:, :, : x.shape[1]]
         for block in self.blocks:
             x = block(x, freqs_cis, mask)

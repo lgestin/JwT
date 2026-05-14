@@ -19,6 +19,7 @@ classifiers = [
 dynamic = ["version"]
 dependencies = [
     "einops>=0.8",
+    "simple-parsing>=0.1.8",
     "torch>=2.12.0",
     "torchaudio>=2.11.0",
 ]
