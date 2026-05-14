@@ -35,6 +35,7 @@ dev = [
     "ruff>=0.8",
     "ty",
     "ipython",
+    "marimo>=0.9",
 ]
 bigvgan = [
     "bigvgan>=2.4.1",

@@ -14,7 +14,7 @@ class Codecs(StrEnum):
     def codec(self):
         match self:
             case Codecs.BIGVGAN:
-                return BigVGAN
+                return BigVGAN()
 
 
 class Codec(Protocol):
@@ -32,12 +32,15 @@ class BigVGAN(Codec, nn.Module):
     def __init__(self, version: BigVGANVersions = BigVGANVersions.V2_24KHz_100MEL_256X):
         nn.Module.__init__(self)
         # local: avoid heavy bigvgan import at module load
-        from bigvgan.bigvgan import BigVGAN as _BigVGAN, load_hparams_from_json
+        from bigvgan.bigvgan import BigVGAN as _BigVGAN
+        from bigvgan.bigvgan import load_hparams_from_json
         from huggingface_hub import hf_hub_download
 
         model_id = str(version)
         config_file = hf_hub_download(repo_id=model_id, filename="config.json")
-        weights_file = hf_hub_download(repo_id=model_id, filename="bigvgan_generator.pt")
+        weights_file = hf_hub_download(
+            repo_id=model_id, filename="bigvgan_generator.pt"
+        )
 
         h = load_hparams_from_json(config_file)
         self.decoder = _BigVGAN(h, use_cuda_kernel=False)
