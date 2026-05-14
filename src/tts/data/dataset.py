@@ -3,7 +3,7 @@ from dataclasses import dataclass, fields
 import torch
 from torch.utils.data import Dataset
 
-from tts.data.audio import Audio
+from tts.data.audio import Audio, AudioFile
 from tts.data.source import TTSSource
 from tts.data.text import Text
 
@@ -20,8 +20,10 @@ class Batch:
     idxs: list[int]
     audios: list[Audio]
     texts: list[Text]
-    waveforms: torch.FloatTensor
+    mels: torch.FloatTensor
+    mels_mask: torch.BoolTensor
     tokens: torch.LongTensor
+    tokens_mask: torch.BoolTensor
 
     def to(self, device: str | torch.device, non_blocking: bool = False):
         for field in fields(self):
@@ -59,6 +61,6 @@ class AudioDataset(Dataset):
 
     def __getitem__(self, index: int) -> Sample:
         audio, text = self.tts_source[index]
-        audio = audio.resample(self.sample_rate).normalize(-24.0)
-
+        if isinstance(audio, AudioFile):
+            audio = audio.resample(self.sample_rate).normalize(-24.0).audio
         return Sample(idx=index, audio=audio, text=text)

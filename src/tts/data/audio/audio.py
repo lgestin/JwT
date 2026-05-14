@@ -17,7 +17,16 @@ class AudioInfo:
     loudness: float
 
 
+@dataclass
 class Audio:
+    waveform: torch.FloatTensor
+    sample_rate: int
+    stft: torch.FloatTensor | None = None
+    mels: torch.FloatTensor | None = None
+    loudness: float | None = None
+
+
+class AudioFile:
     stfter: STFT = STFT(n_fft=1024, hop_length=256)
 
     def __init__(
@@ -78,7 +87,7 @@ class Audio:
     def stft(self):
         stft = self._stft
         if stft is None:
-            stft = Audio.stfter.stft(self.waveform)
+            stft = AudioFile.stfter.stft(self.waveform)
             self._stft = stft
         return stft
 
@@ -164,7 +173,7 @@ class Audio:
             waveform = waveform[..., start:end]
         sample_rate = self._sample_rate
 
-        excerpt = Audio(
+        excerpt = AudioFile(
             filepath=self.filepath,
             waveform=waveform,
             sample_rate=sample_rate,
@@ -215,3 +224,12 @@ class Audio:
     @property
     def device(self):
         return self.waveform.device
+
+    @property
+    def audio(self) -> Audio:
+        return Audio(
+            waveform=self.waveform,
+            sample_rate=self.sample_rate,
+            stft=self._stft,
+            loudness=self.loudness,
+        )

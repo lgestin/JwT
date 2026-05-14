@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tts.data.audio import Audio
+from tts.data.audio import AudioFile
 from tts.data.audio.stft import STFT, MelSpectrogram
 
 n_ffts = [2**i for i in range(5, 11)]
@@ -11,7 +11,7 @@ hop_length_ratios = [0.1, 0.25, 0.5]
 @pytest.mark.parametrize("n_fft", n_ffts)
 @pytest.mark.parametrize("hop_length_ratio", hop_length_ratios)
 def test_stft_roundtrip_with_files(
-    audio_from_file: Audio, n_fft: int, hop_length_ratio: float
+    audio_from_file: AudioFile, n_fft: int, hop_length_ratio: float
 ) -> None:
     hop_length = int(n_fft * hop_length_ratio)
     stft = STFT(n_fft=n_fft, hop_length=hop_length)
@@ -32,7 +32,7 @@ def test_stft_roundtrip_with_files(
 @pytest.mark.parametrize("n_fft", n_ffts)
 @pytest.mark.parametrize("hop_length_ratio", hop_length_ratios)
 def test_stft_roundtrip_with_random(
-    random_audio: Audio, n_fft: int, hop_length_ratio: float
+    random_audio: AudioFile, n_fft: int, hop_length_ratio: float
 ) -> None:
     hop_length = int(n_fft * hop_length_ratio)
     stft = STFT(n_fft=n_fft, hop_length=hop_length)
@@ -53,7 +53,7 @@ def test_stft_roundtrip_with_random(
     )
 
 
-def test_stft_magnitudes_shape(random_audio: Audio) -> None:
+def test_stft_magnitudes_shape(random_audio: AudioFile) -> None:
     n_fft, hop_length = 256, 64
     stft = STFT(n_fft=n_fft, hop_length=hop_length)
     mags = stft.magnitudes(random_audio.waveform)
@@ -61,7 +61,7 @@ def test_stft_magnitudes_shape(random_audio: Audio) -> None:
     assert (mags >= 0).all()
 
 
-def test_melspectrogram_shape(random_audio: Audio) -> None:
+def test_melspectrogram_shape(random_audio: AudioFile) -> None:
     n_fft, hop_length, n_mels = 512, 128, 80
     mel = MelSpectrogram(
         n_fft=n_fft,
@@ -74,7 +74,7 @@ def test_melspectrogram_shape(random_audio: Audio) -> None:
     assert (out >= 0).all()
 
 
-def test_stft_hann_window(random_audio: Audio) -> None:
+def test_stft_hann_window(random_audio: AudioFile) -> None:
     n_fft, hop_length = 1024, 256
     stft_hann = STFT(n_fft=n_fft, hop_length=hop_length, window="hann")
     stft_hamming = STFT(n_fft=n_fft, hop_length=hop_length)  # default
@@ -85,7 +85,7 @@ def test_stft_hann_window(random_audio: Audio) -> None:
     assert not torch.allclose(out_hann, out_hamming)
 
 
-def test_stft_default_window_is_hamming(random_audio: Audio) -> None:
+def test_stft_default_window_is_hamming(random_audio: AudioFile) -> None:
     n_fft, hop_length = 1024, 256
     stft_default = STFT(n_fft=n_fft, hop_length=hop_length)
     stft_explicit = STFT(n_fft=n_fft, hop_length=hop_length, window="hamming")
@@ -94,7 +94,7 @@ def test_stft_default_window_is_hamming(random_audio: Audio) -> None:
     torch.testing.assert_close(out_default, out_explicit)
 
 
-def test_stft_center_true_roundtrip(random_audio: Audio) -> None:
+def test_stft_center_true_roundtrip(random_audio: AudioFile) -> None:
     n_fft, hop_length = 1024, 256
     stft = STFT(n_fft=n_fft, hop_length=hop_length, window="hann", center=True)
     x_stft = stft.stft(random_audio.waveform)
@@ -110,7 +110,7 @@ def test_stft_center_true_roundtrip(random_audio: Audio) -> None:
     )
 
 
-def test_stft_center_default_is_false(random_audio: Audio) -> None:
+def test_stft_center_default_is_false(random_audio: AudioFile) -> None:
     n_fft, hop_length = 1024, 256
     stft_default = STFT(n_fft=n_fft, hop_length=hop_length)
     stft_explicit = STFT(n_fft=n_fft, hop_length=hop_length, center=False)
@@ -119,7 +119,7 @@ def test_stft_center_default_is_false(random_audio: Audio) -> None:
     torch.testing.assert_close(out_default, out_explicit)
 
 
-def test_melspectrogram_log_eps(random_audio: Audio) -> None:
+def test_melspectrogram_log_eps(random_audio: AudioFile) -> None:
     n_fft, hop_length, n_mels = 1024, 256, 80
     mel_linear = MelSpectrogram(
         n_fft=n_fft,
@@ -140,7 +140,7 @@ def test_melspectrogram_log_eps(random_audio: Audio) -> None:
     torch.testing.assert_close(out_log, expected)
 
 
-def test_melspectrogram_default_is_linear(random_audio: Audio) -> None:
+def test_melspectrogram_default_is_linear(random_audio: AudioFile) -> None:
     n_fft, hop_length, n_mels = 512, 128, 80
     mel = MelSpectrogram(
         n_fft=n_fft,
@@ -152,7 +152,7 @@ def test_melspectrogram_default_is_linear(random_audio: Audio) -> None:
     assert (out >= 0).all()  # linear, never negative
 
 
-def test_melspectrogram_follows_input_device(random_audio: Audio) -> None:
+def test_melspectrogram_follows_input_device(random_audio: AudioFile) -> None:
     if not torch.cuda.is_available():
         pytest.skip("CUDA not available")
     n_fft, hop_length, n_mels = 1024, 256, 80

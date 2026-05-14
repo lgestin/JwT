@@ -150,7 +150,7 @@ def _(audio, mo, text, tokenizer):
         - sample_rate: {audio.sample_rate}
         - duration_s: {audio.duration_s:.3f}
         - loudness: {audio.loudness:.2f} dB
-        - mel: shape={tuple(audio.mel.shape)}, dtype=`{audio.mel.dtype}`
+        - mels: shape={tuple(audio.mels.shape)}, dtype=`{audio.mels.dtype}`
 
         ### `Text`
         - text: {text.text!r}
@@ -181,7 +181,7 @@ def _(audio, mo):
 
 @app.cell
 def _(audio, mo):
-    stored_mel = audio.mel
+    stored_mel = audio.mels
     mo.md(
         f"""
         ### Stored mel (log-scaled at encode time)
