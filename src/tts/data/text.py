@@ -1,27 +1,29 @@
 from dataclasses import dataclass
 from functools import cache, cached_property
 
+from misaki import en, espeak
+from misaki.token import MToken
+
 
 @dataclass
 class Text:
     text: str
 
     @cached_property
-    def phonemes_tokens(self) -> tuple[str, list[int]]:
+    def phonemes_tokens(self) -> tuple[str, list[MToken]]:
         return get_phonemizer().phonemize(self.text)
 
     @property
-    def phonemes(self):
+    def phonemes(self) -> str:
         return self.phonemes_tokens[0]
 
     @property
-    def tokens(self):
+    def word_tokens(self) -> list[MToken]:
         return self.phonemes_tokens[1]
 
 
 class Phonemizer:
     def __init__(self):
-        from misaki import en, espeak
 
         fallback = espeak.EspeakFallback(british=False)
         self.g2p = en.G2P(trf=False, british=False, fallback=fallback)
