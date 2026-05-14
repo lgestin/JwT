@@ -96,8 +96,11 @@ class MelSpectrogram(STFT):
         window: Literal["hann", "hamming"] = "hamming",
         center: bool = False,
         log_eps: float | None = None,
+        mel_scale: Literal["htk", "slaney"] = "htk",
     ):
-        super().__init__(n_fft=n_fft, hop_length=hop_length, window=window, center=center)
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, window=window, center=center
+        )
         self.log_eps = log_eps
         melscale_fbanks = torchaudio.functional.melscale_fbanks(
             n_freqs=n_fft // 2 + 1,
@@ -105,7 +108,7 @@ class MelSpectrogram(STFT):
             f_max=min(f_max, sample_rate // 2),
             n_mels=n_mels,
             norm="slaney",
-            mel_scale="htk",
+            mel_scale=mel_scale,
             sample_rate=sample_rate,
         )
         self.register_buffer("melscale_fbanks", melscale_fbanks, persistent=False)
