@@ -28,4 +28,4 @@ class Text:
     def tokens(self) -> list[int]:
         if self.tokenizer is None:
             raise ValueError("self.tokenizer should not be None")
-        return self.tokenizer.encode(self.text)
+        return self.tokenizer.encode(self.phonemes)
