@@ -80,7 +80,7 @@ class STFT(nn.Module):
 
     def magnitudes(self, x: torch.Tensor) -> torch.Tensor:
         stft = self.stft(x)
-        magnitudes = torch.sqrt(stft.real.pow(2) + stft.imag.pow(2) + 1e-8)
+        magnitudes = torch.sqrt(stft.real.pow(2) + stft.imag.pow(2) + 1e-9)
         return magnitudes
 
 
