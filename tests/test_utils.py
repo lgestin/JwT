@@ -2,9 +2,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
 
-from tts.data.utils import load_waveform, resample, truncated_normal
+from tts.data.audio.utils import load_waveform, resample
 
 TEST_FILE_PATH = Path(__file__).parent / "assets" / "physicsworks.wav"
 
@@ -54,11 +53,3 @@ def test_resample_identity_returns_input() -> None:
     waveform = np.zeros((1, 1024), dtype=np.int16)
     out = resample(waveform, orig_sr=16000, targ_sr=16000)
     assert out is waveform
-
-
-def test_truncated_normal_bounds() -> None:
-    generator = torch.Generator().manual_seed(0)
-    out = truncated_normal((10000,), min_val=-1.0, max_val=2.0, generator=generator)
-    assert out.shape == (10000,)
-    assert out.min().item() >= -1.0
-    assert out.max().item() <= 2.0
