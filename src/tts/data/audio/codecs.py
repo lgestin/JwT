@@ -50,18 +50,21 @@ class BigVGAN(Codec, nn.Module):
         self.decoder.remove_weight_norm()
         self.decoder.eval()
 
-        f_max = h.fmax if h.fmax is not None else h.sampling_rate // 2
         self.mel_spectrogram = MelSpectrogram(
             n_fft=h.n_fft,
             hop_length=h.hop_size,
             n_mels=h.num_mels,
             sample_rate=h.sampling_rate,
             f_min=h.fmin,
-            f_max=f_max,
+            f_max=torch.inf,
             window="hann",
-            center=True,
+            center=False,
             log_eps=1e-5,
+            mel_scale="slaney",
         )
+        self.sample_rate = int(h.sampling_rate)
+        self.n_mels = int(h.num_mels)
+        self.hop_length = int(h.hop_size)
 
     @torch.no_grad()
     def encode(self, waveform: torch.Tensor) -> torch.Tensor:
