@@ -4,6 +4,7 @@ from pathlib import Path
 
 import soundfile as sf
 import torch
+
 from tts.data.stft import STFT
 from tts.data.utils import load_waveform, resample
 
@@ -21,12 +22,12 @@ class Audio:
 
     def __init__(
         self,
-        filepath: str = None,
-        waveform: torch.FloatTensor = None,
-        sample_rate: int = None,
+        filepath: str | None = None,
+        waveform: torch.FloatTensor | None = None,
+        sample_rate: int | None = None,
         start_s: float = 0,
-        end_s: float = None,
-        loudness: float = None,
+        end_s: float | None = None,
+        loudness: float | None = None,
     ):
         assert isinstance(filepath, (type(None), str, Path))
         assert waveform is None or torch.is_tensor(waveform)
