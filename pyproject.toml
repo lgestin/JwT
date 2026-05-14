@@ -21,6 +21,7 @@ dependencies = [
     "av>=17.0.1",
     "einops>=0.8",
     "misaki[en]>=0.9.4",
+    "rich>=15.0.0",
     "simple-parsing>=0.1.8",
     "soundfile>=0.13.1",
     "torch>=2.12.0",
