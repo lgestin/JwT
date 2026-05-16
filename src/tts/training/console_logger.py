@@ -2,18 +2,48 @@ from pathlib import Path
 
 import torch
 import torchaudio
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 
 
 class ConsoleLogger:
-    """Minimal Logger: prints to stdout, writes audio as wav files."""
+    """Logger with a rich progress bar; writes audio as wav files."""
 
-    def __init__(self, audio_dir: Path | str | None = None):
+    def __init__(
+        self,
+        total: int | None = None,
+        audio_dir: Path | str | None = None,
+    ):
         self.audio_dir = Path(audio_dir) if audio_dir is not None else None
         if self.audio_dir is not None:
             self.audio_dir.mkdir(parents=True, exist_ok=True)
 
+        self.console = Console()
+        self.progress = Progress(
+            TextColumn("[bold]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TextColumn("•"),
+            TimeElapsedColumn(),
+            TextColumn("<"),
+            TimeRemainingColumn(),
+            console=self.console,
+            transient=False,
+        )
+        self.progress.start()
+        self.task = self.progress.add_task("training", total=total)
+
     def log_scalar(self, tag: str, value: float, step: int) -> None:
-        print(f"[step {step:>7}] {tag}: {float(value):.6f}")
+        self.console.print(
+            f"[step {step:>7}] {tag}: {float(value):.6f}", markup=False, highlight=False
+        )
 
     def log_audio(
         self, tag: str, waveform: torch.Tensor, step: int, sample_rate: int
@@ -33,13 +63,15 @@ class ConsoleLogger:
         self, metrics: dict[str, float], step: int, prefix: str = "train"
     ) -> None:
         items = " | ".join(f"{k}={float(v):.4f}" for k, v in metrics.items())
-        print(f"[step {step:>7}] [{prefix}] {items}")
+        self.console.print(
+            f"[step {step:>7}] [{prefix}] {items}", markup=False, highlight=False
+        )
 
     def set_description(self, description: str) -> None:
-        print(f"[ {description} ]")
+        self.progress.update(self.task, description=description)
 
     def update_progress(self, n: int = 1) -> None:
-        pass
+        self.progress.update(self.task, advance=n)
 
     def close(self) -> None:
-        pass
+        self.progress.stop()

@@ -120,7 +120,9 @@ def main() -> None:
 
     optimizer = AdamW(model.parameters(), lr=args.lr)
 
-    sub_loggers: list[Logger] = [ConsoleLogger(audio_dir=output_dir / "audio")]
+    sub_loggers: list[Logger] = [
+        ConsoleLogger(total=args.max_steps, audio_dir=output_dir / "audio")
+    ]
     if args.use_tensorboard:
         from tts.training.tensorboard_logger import TensorBoardLogger
 
