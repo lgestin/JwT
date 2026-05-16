@@ -116,4 +116,11 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             v_pred_packed, 1, unpack_idx.unsqueeze(-1).expand(B, T_mel, mel_dim)
         )  # (B, T_mel, mel_dim)
 
-        return v_pred, target, mels.mask
+        # Supervise only the active rolling window: ramp (t < 1) + first t=0 position.
+        loss_mask = (
+            mels.mask
+            & (mel_idx > mel_front.unsqueeze(1))
+            & (mel_idx <= mel_front.unsqueeze(1) + n)
+        )
+
+        return v_pred, target, loss_mask
