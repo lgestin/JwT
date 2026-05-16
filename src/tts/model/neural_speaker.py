@@ -157,3 +157,49 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             & (mel_idx <= mel_front.unsqueeze(1) + n)
         )
         return v_pred, target, loss_mask
+
+    @torch.no_grad()
+    def speak(
+        self,
+        text: MaskedTensor,
+        mel_lens: torch.LongTensor,
+        *,
+        x_0: torch.Tensor | None = None,
+    ) -> MaskedTensor:
+        """Generate mels for each sample by rolling-Euler integration of the flow.
+
+        text:     MaskedTensor — values (B, 1, T_text), mask (B, T_text)
+        mel_lens: (B,) long, desired mel length per sample
+        x_0:      optional (B, mel_dim, T_max) noise override for reproducibility
+
+        Returns a MaskedTensor with values (B, mel_dim, T_max) and mask (B, T_max)
+        where T_max = mel_lens.max(). Padding positions are False in the mask.
+        """
+        B = text.values.shape[0]
+        T_max = int(mel_lens.max().item())
+        device = text.values.device
+        n = self.cfg.n_denoising_steps
+        dt = 1.0 / (n - 1)
+
+        if x_0 is None:
+            x_0 = torch.randn(B, self.cfg.mel_dim, T_max, device=device)
+        mels_values = x_0.clone()
+
+        mel_idx = torch.arange(T_max, device=device).expand(B, T_max)
+        mels_mask = mel_idx < mel_lens.unsqueeze(1)
+
+        for k in range(T_max + n - 2):
+            front = k - (n - 1)
+            t = torch.clamp(
+                1.0 - (mel_idx - front).float() / (n - 1),
+                0.0,
+                1.0,
+            )  # (B, T_max)
+
+            mels_mt = MaskedTensor(values=mels_values, mask=mels_mask)
+            v_pred = self.forward(text, mels_mt, t)  # (B, T_max, mel_dim)
+
+            update = (v_pred * dt) * (t < 1.0).unsqueeze(-1)
+            mels_values = mels_values + update.transpose(1, 2)
+
+        return MaskedTensor(values=mels_values, mask=mels_mask)
