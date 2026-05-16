@@ -54,6 +54,8 @@ class Args:
     use_codec: bool = True
     # Logging
     use_tensorboard: bool = True
+    # Perf
+    compile: bool = True
 
 
 def _make_loader(
@@ -117,6 +119,8 @@ def main() -> None:
             n_denoising_steps=args.n_denoising_steps,
         )
     ).to(device)
+    if args.compile:
+        model.forward = torch.compile(model.forward, dynamic=True)
 
     optimizer = AdamW(model.parameters(), lr=args.lr)
 
