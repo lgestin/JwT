@@ -37,7 +37,7 @@ def text(model: RollingFlowSpeaker) -> MaskedTensor:
 
 @pytest.fixture
 def mels(model: RollingFlowSpeaker, audio_from_file) -> MaskedTensor:
-    """Mels from a real audio asset, truncated to T_MEL_MAX for test speed."""
+    """Mels from the most-energetic T_MEL_MAX-frame window of a real audio asset."""
     waveform = audio_from_file.waveform  # (channels, T_audio)
     mono = waveform.mean(dim=0, keepdim=True)  # (1, T_audio)
     batch_wave = mono.repeat(B, 1)  # (B, T_audio)
@@ -47,9 +47,12 @@ def mels(model: RollingFlowSpeaker, audio_from_file) -> MaskedTensor:
         n_mels=model.cfg.mel_dim,
         sample_rate=audio_from_file.sample_rate,
     )
-    values = mel_spec(batch_wave)[..., :T_MEL_MAX]  # (B, mel_dim, T_mel)
-    T_mel = values.shape[-1]
-    return MaskedTensor(values=values, mask=torch.ones(B, T_mel, dtype=torch.bool))
+    full = mel_spec(batch_wave)  # (B, mel_dim, T_mel_full)
+    # Slice the highest-energy window so the test data isn't a leading-silence flat patch.
+    energy = full[0].mean(dim=0)  # (T_mel_full,)
+    start = int(energy.unfold(0, T_MEL_MAX, 1).mean(dim=-1).argmax().item())
+    values = full[..., start : start + T_MEL_MAX]
+    return MaskedTensor(values=values, mask=torch.ones(B, T_MEL_MAX, dtype=torch.bool))
 
 
 def test_speak_shape_and_mask(model: RollingFlowSpeaker, text: MaskedTensor) -> None:
