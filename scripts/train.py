@@ -55,10 +55,8 @@ class Args:
     use_codec: bool = True
     # Logging
     use_tensorboard: bool = True
-    # Perf — disabled by default: torch 2.12 inductor hits CantSplit in the
-    # AdaLN backward path with dynamic shapes at full model size. Opt in with
-    # --compile when upstream is fixed or you want to probe a smaller config.
-    compile: bool = False
+    # Perf
+    compile: bool = True
 
 
 def _make_loader(
@@ -123,6 +121,12 @@ def main() -> None:
         )
     ).to(device)
     if args.compile:
+        # Disable inductor's split_reductions pass — its mix_order_reduction
+        # codegen can't factor expressions like s13*(s23 + s79) and crashes
+        # with CantSplit on AdaLN's backward at dynamic shapes.
+        import torch._inductor.config as inductor_config
+
+        inductor_config.split_reductions = False
         model.forward = torch.compile(model.forward, dynamic=True)
 
     optimizer = AdamW(model.parameters(), lr=args.lr)
