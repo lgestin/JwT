@@ -7,10 +7,25 @@ from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
     Progress,
+    ProgressColumn,
+    Task,
     TextColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
+from rich.text import Text
+
+
+class _IterSpeedColumn(ProgressColumn):
+    """Render the current iteration speed: 'X.XX it/s' or 'X.XX s/it'."""
+
+    def render(self, task: Task) -> Text:
+        speed = task.speed
+        if speed is None:
+            return Text("?.?? it/s", style="progress.data.speed")
+        if speed >= 1.0:
+            return Text(f"{speed:.2f} it/s", style="progress.data.speed")
+        return Text(f"{1.0 / speed:.2f} s/it", style="progress.data.speed")
 
 
 class ConsoleLogger:
@@ -30,6 +45,8 @@ class ConsoleLogger:
             TextColumn("[bold]{task.description}"),
             BarColumn(),
             MofNCompleteColumn(),
+            TextColumn("•"),
+            _IterSpeedColumn(),
             TextColumn("•"),
             TimeElapsedColumn(),
             TextColumn("<"),
