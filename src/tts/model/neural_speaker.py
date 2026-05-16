@@ -38,6 +38,10 @@ class MaskedTensor:
         return self.mask.sum(-1)
 
 
+_LJSPEECH_LOG_MEL_MEAN = -5.896610
+_LJSPEECH_LOG_MEL_STD = 2.226763
+
+
 class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
     def __init__(self, cfg: RollingFlowConfig):
         nn.Module.__init__(self)
@@ -49,6 +53,14 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         self.text_modality = nn.Parameter(torch.randn(dim) * 0.02)
         self.mel_modality = nn.Parameter(torch.randn(dim) * 0.02)
         self.transformer = Transformer(cfg.transformer_config)
+        # Global log-mel stats (LJSpeech 24 kHz, BigVGAN log-mels). The model
+        # operates in normalized space; speak() denormalizes before returning.
+        self.register_buffer(
+            "mel_mean", torch.tensor(_LJSPEECH_LOG_MEL_MEAN, dtype=torch.float32)
+        )
+        self.register_buffer(
+            "mel_std", torch.tensor(_LJSPEECH_LOG_MEL_STD, dtype=torch.float32)
+        )
 
     def forward(
         self,
@@ -133,7 +145,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         if mel_front is None:
             u = torch.rand(B, device=device)
             mel_front = (u * mel_lens.float()).long()
-        x_1 = mels.values.transpose(1, 2)  # (B, T_mel, mel_dim)
+        # Normalize log-mels to roughly N(0, 1) so noise and signal share scale.
+        x_1 = (mels.values.transpose(1, 2) - self.mel_mean) / self.mel_std
         if x_0 is None:
             x_0 = torch.randn_like(x_1)
 
@@ -202,4 +215,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             update = (v_pred * dt) * (t < 1.0).unsqueeze(-1)
             mels_values = mels_values + update.transpose(1, 2)
 
+        # The flow runs in normalized space; denormalize to log-mel scale for
+        # downstream consumers (codec.decode, audio logging, etc.).
+        mels_values = mels_values * self.mel_std + self.mel_mean
         return MaskedTensor(values=mels_values, mask=mels_mask)
