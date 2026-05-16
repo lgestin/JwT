@@ -107,7 +107,13 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         )
         t_packed = torch.gather(t_concat, 1, pack_idx)
 
-        attn_mask = (in_text | in_mels).unsqueeze(1).unsqueeze(2)  # (B, 1, 1, T)
+        # Attention keys: visible up to and including the first real t=0 (the
+        # "next frontier"). Pure-noise positions beyond it carry no signal
+        # and would only distract attention.
+        is_zero_real = (t_packed == 0.0) & in_mels
+        keep_first_zero = is_zero_real.cumsum(-1) <= 1
+        attn_keys = (in_text | in_mels) & keep_first_zero  # (B, T)
+        attn_mask = attn_keys.unsqueeze(1).unsqueeze(2)  # (B, 1, 1, T)
         out_packed = self.transformer(x_packed, t_packed, attn_mask)
         v_pred_packed = self.mel_out(out_packed)  # (B, T, mel_dim)
 
@@ -163,11 +169,14 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         noisy_mels = MaskedTensor(values=x_t.transpose(1, 2), mask=mels.mask)
         v_pred = self.forward(text, noisy_mels, t)
 
-        # Supervise only the active rolling window: ramp (t < 1) + first t=0 position.
+        # Supervise the active rolling window: ramp (0 < t < 1) + first t=0.
+        # Positions at relative-n from the front (the second t=0) are never
+        # touched by the inference Euler loop, so supervising them trains a
+        # behavior the model would never use.
         loss_mask = (
             mels.mask
             & (mel_idx > mel_front.unsqueeze(1))
-            & (mel_idx <= mel_front.unsqueeze(1) + n)
+            & (mel_idx < mel_front.unsqueeze(1) + n)
         )
         return v_pred, target, loss_mask
 
@@ -212,7 +221,12 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             mels_mt = MaskedTensor(values=mels_values, mask=mels_mask)
             v_pred = self.forward(text, mels_mt, t)  # (B, T_max, mel_dim)
 
-            update = (v_pred * dt) * (t < 1.0).unsqueeze(-1)
+            # Only update positions inside the rolling window: their t is < 1
+            # AND they have actually entered the integration window (mel_idx <= k).
+            # Without the second clause the formula's clamp-to-0 lets far-future
+            # positions accumulate spurious updates every step.
+            in_window = (t < 1.0) & (mel_idx <= k)
+            update = (v_pred * dt) * in_window.unsqueeze(-1)
             mels_values = mels_values + update.transpose(1, 2)
 
         # The flow runs in normalized space; denormalize to log-mel scale for

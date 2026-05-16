@@ -94,13 +94,14 @@ def test_training_step_shapes(
     model: RollingFlowSpeaker, text: MaskedTensor, mels: MaskedTensor
 ) -> None:
     T_mel = mels.values.shape[-1]
-    # Pin mel_front so the (front, front+n] window stays inside mel_lens.
+    # Pin mel_front so the (front, front+n-1] window stays inside mel_lens.
     mel_front = torch.tensor([2, 3], dtype=torch.long)
     v_pred, target, loss_mask = model.training_step(text, mels, mel_front=mel_front)
     assert v_pred.shape == (B, T_mel, N_MELS)
     assert target.shape == (B, T_mel, N_MELS)
     assert loss_mask.shape == (B, T_mel)
-    assert (loss_mask.sum(-1) == model.cfg.n_denoising_steps).all()
+    # Window is now n-1 positions (ramp + first t=0, dropping the second t=0).
+    assert (loss_mask.sum(-1) == model.cfg.n_denoising_steps - 1).all()
 
 
 def test_training_step_is_deterministic(
