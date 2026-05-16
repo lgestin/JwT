@@ -54,8 +54,10 @@ class Args:
     use_codec: bool = True
     # Logging
     use_tensorboard: bool = True
-    # Perf
-    compile: bool = True
+    # Perf — disabled by default: torch 2.12 inductor hits CantSplit in the
+    # AdaLN backward path with dynamic shapes at full model size. Opt in with
+    # --compile when upstream is fixed or you want to probe a smaller config.
+    compile: bool = False
 
 
 def _make_loader(
