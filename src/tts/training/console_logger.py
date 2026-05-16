@@ -62,10 +62,17 @@ class ConsoleLogger:
     def log_metrics(
         self, metrics: dict[str, float], step: int, prefix: str = "train"
     ) -> None:
-        items = " | ".join(f"{k}={float(v):.4f}" for k, v in metrics.items())
-        self.console.print(
-            f"[step {step:>7}] [{prefix}] {items}", markup=False, highlight=False
-        )
+        items = " ".join(f"{k}={float(v):.3f}" for k, v in metrics.items())
+        if prefix == "train":
+            # High-frequency train metrics ride on the progress bar description
+            # so they update in place instead of scrolling the console.
+            self.progress.update(self.task, description=f"train {items}")
+        else:
+            self.console.print(
+                f"[step {step:>7}] [{prefix}] {items}",
+                markup=False,
+                highlight=False,
+            )
 
     def set_description(self, description: str) -> None:
         self.progress.update(self.task, description=description)
