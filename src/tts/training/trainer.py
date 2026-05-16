@@ -154,8 +154,11 @@ class TTSRollingFlowMatchingTrainer(Trainer):
 
     def training_step(self, batch: Batch) -> dict[str, torch.Tensor]:
         batch = batch.to(self.device)
+        mels_values = batch.mels
+        if mels_values.ndim == 4 and mels_values.shape[1] == 1:
+            mels_values = mels_values.squeeze(1)
         text = MaskedTensor(values=batch.tokens.unsqueeze(1), mask=batch.tokens_mask)
-        mels = MaskedTensor(values=batch.mels, mask=batch.mels_mask)
+        mels = MaskedTensor(values=mels_values, mask=batch.mels_mask)
 
         with torch.autocast(
             device_type=self.device.type,
@@ -224,7 +227,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         n = min(len(batch.audios), self.config.n_smp)
 
         text = MaskedTensor(values=batch.tokens.unsqueeze(1), mask=batch.tokens_mask)
-        mel_lens = batch.mels_mask.sum(-1)
+        mel_lens = batch.mels_mask.sum(-1).clamp(min=1)
 
         with torch.autocast(
             device_type=self.device.type,

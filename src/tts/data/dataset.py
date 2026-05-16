@@ -34,8 +34,10 @@ class Batch:
         return self
 
     def pin_memory(self):
-        self.waveforms: torch.Tensor = self.waveforms.pin_memory()
-        self.tokens: torch.Tensor = self.tokens.pin_memory()
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if torch.is_tensor(value):
+                setattr(self, field.name, value.pin_memory())
         return self
 
 
