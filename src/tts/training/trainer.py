@@ -45,6 +45,7 @@ class TrainerConfig:
     max_steps: int
     noamp: bool
     n_smp: int = 8
+    grad_accum_steps: int = 1
 
 
 class Trainer:
@@ -117,42 +118,62 @@ class TTSRollingFlowMatchingTrainer(Trainer):
 
     def train(self):
         self._log_initial_samples()
+        self.optimizer.zero_grad()
+        grad_accum_steps = self.config.grad_accum_steps
+
+        micro = 0
+        accum: dict[str, float] = {}
 
         while self.step < self.max_steps:
             for batch in self.train_dloader:
-                if self.step % self.smp_steps == 0:
-                    self._log_samples()
-
-                if self.step % self.valid_steps == 0:
-                    self.validation()
-
-                if (
-                    self.checkpoint_manager is not None
-                    and self.step % self.checkpoint_steps == 0
-                    and self.step > 0
-                ):
-                    self.checkpoint_manager.save(
-                        step=self.step,
-                        model=self.model,
-                        optimizer=self.optimizer,
-                        scaler=self.scaler,
-                        best_loss=self.best_loss,
-                    )
+                if micro == 0:
+                    if self.step % self.smp_steps == 0:
+                        self._log_samples()
+                    if self.step % self.valid_steps == 0:
+                        self.validation()
+                    if (
+                        self.checkpoint_manager is not None
+                        and self.step % self.checkpoint_steps == 0
+                        and self.step > 0
+                    ):
+                        self.checkpoint_manager.save(
+                            step=self.step,
+                            model=self.model,
+                            optimizer=self.optimizer,
+                            scaler=self.scaler,
+                            best_loss=self.best_loss,
+                        )
 
                 if hasattr(self.optimizer, "train"):
                     self.optimizer.train()
                 self.model.train()
 
                 metrics = self.training_step(batch)
-                self.logger.log_metrics(metrics, self.step, prefix="train")
-                self.logger.update_progress(1)
-                self.state.step += 1
+                for k, v in metrics.items():
+                    accum[k] = accum.get(k, 0.0) + float(v)
+                micro += 1
 
-                if self.step >= self.max_steps:
-                    self.logger.close()
-                    return
+                if micro >= grad_accum_steps:
+                    opt_metrics = self._optimizer_step()
+                    avg = {k: v / micro for k, v in accum.items()}
+                    avg.update({k: float(v) for k, v in opt_metrics.items()})
+                    self.logger.log_metrics(avg, self.step, prefix="train")
+                    self.logger.update_progress(1)
+                    self.state.step += 1
+                    micro = 0
+                    accum = {}
+
+                    if self.step >= self.max_steps:
+                        self.logger.close()
+                        return
 
     def training_step(self, batch: Batch) -> dict[str, torch.Tensor]:
+        """Single micro-step: forward + (under training) scaled backward.
+
+        Loss is divided by grad_accum_steps before backward so accumulated
+        gradients average across the window. The returned metric is the
+        unscaled loss.
+        """
         batch = batch.to(self.device)
         mels_values = batch.mels
         if mels_values.ndim == 4 and mels_values.shape[1] == 1:
@@ -172,25 +193,30 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         metrics: dict[str, torch.Tensor] = {"loss": loss.detach()}
 
         if self.model.training:
-            self.optimizer.zero_grad()
+            scaled = loss / self.config.grad_accum_steps
             if self.scaler is not None:
-                self.scaler.scale(loss).backward()
-                self.scaler.unscale_(self.optimizer)
+                self.scaler.scale(scaled).backward()
             else:
-                loss.backward()
+                scaled.backward()
 
-            if self.config.clip_grad_norm is not None:
-                metrics["grad_norm"] = torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    max_norm=self.config.clip_grad_norm,
-                )
+        return metrics
 
-            if self.scaler is not None:
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                self.optimizer.step()
-
+    def _optimizer_step(self) -> dict[str, torch.Tensor]:
+        """Clip + step + zero_grad. Called once per accumulation window."""
+        metrics: dict[str, torch.Tensor] = {}
+        if self.scaler is not None:
+            self.scaler.unscale_(self.optimizer)
+        if self.config.clip_grad_norm is not None:
+            metrics["grad_norm"] = torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                max_norm=self.config.clip_grad_norm,
+            )
+        if self.scaler is not None:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            self.optimizer.step()
+        self.optimizer.zero_grad()
         return metrics
 
     @torch.inference_mode()

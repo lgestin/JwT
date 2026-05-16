@@ -37,13 +37,14 @@ class Args:
     output_dir: str = "outputs/run0"
     device: str = "cuda"
     batch_size: int = 8
-    num_workers: int = 4
+    num_workers: int = 6
     max_steps: int = 100_000
     valid_steps: int = 1_000
     smp_steps: int = 5_000
     checkpoint_steps: int = 10_000
     clip_grad_norm: float = 1.0
-    lr: float = 1e-4
+    grad_accum_steps: int = 1
+    lr: float = 3e-4
     # Model
     dim: int = 512
     num_heads: int = 8
@@ -89,7 +90,7 @@ def main() -> None:
 
     full = AudioDataset(tts_source=source, sample_rate=args.sample_rate)
     N = len(full)
-    assert N > args.n_valid + args.n_smp, "dataset too small for the requested splits"
+    assert args.n_valid + args.n_smp < N, "dataset too small for the requested splits"
     smp_ds = Subset(full, list(range(args.n_smp)))
     valid_ds = Subset(full, list(range(N - args.n_valid, N)))
     train_ds = Subset(full, list(range(args.n_smp, N - args.n_valid)))
@@ -133,7 +134,9 @@ def main() -> None:
         from tts.training.tensorboard_logger import TensorBoardLogger
 
         sub_loggers.append(TensorBoardLogger(log_dir=output_dir / "tb"))
-    logger: Logger = sub_loggers[0] if len(sub_loggers) == 1 else MultiLogger(*sub_loggers)
+    logger: Logger = (
+        sub_loggers[0] if len(sub_loggers) == 1 else MultiLogger(*sub_loggers)
+    )
 
     checkpoint_manager = CheckpointManager(exp_path=output_dir / "checkpoints")
 
@@ -148,6 +151,7 @@ def main() -> None:
             max_steps=args.max_steps,
             noamp=device.type != "cuda",
             n_smp=args.n_smp,
+            grad_accum_steps=args.grad_accum_steps,
         ),
         codec=codec,
         model=model,
