@@ -190,9 +190,16 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
     ) -> MaskedTensor:
         """Generate mels for each sample by rolling-Euler integration of the flow.
 
+        The mel buffer grows one frame at a time as the conceptual front
+        advances — future positions don't exist in the buffer until they're
+        introduced as fresh t=0 noise. This mirrors the streaming nature of
+        inference and removes the need for a "mel_idx <= k" Euler mask
+        (positions past k simply aren't in the buffer).
+
         text:     MaskedTensor — values (B, 1, T_text), mask (B, T_text)
         mel_lens: (B,) long, desired mel length per sample
         x_0:      optional (B, mel_dim, T_max) noise override for reproducibility
+                  (sliced one frame per step as the buffer grows)
 
         Returns a MaskedTensor with values (B, mel_dim, T_max) and mask (B, T_max)
         where T_max = mel_lens.max(). Padding positions are False in the mask.
@@ -202,30 +209,30 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         device = text.values.device
         n = self.cfg.n_denoising_steps
         dt = 1.0 / (n - 1)
+        mel_dim = self.cfg.mel_dim
 
         if x_0 is None:
-            x_0 = torch.randn(B, self.cfg.mel_dim, T_max, device=device)
-        mels_values = x_0.clone()
+            x_0 = torch.randn(B, mel_dim, T_max, device=device)
 
-        mel_idx = torch.arange(T_max, device=device).expand(B, T_max)
-        mels_mask = mel_idx < mel_lens.unsqueeze(1)
+        mels_values = torch.empty(B, mel_dim, 0, device=device, dtype=x_0.dtype)
+        mels_mask = torch.empty(B, 0, dtype=torch.bool, device=device)
 
         for k in range(T_max + n - 2):
-            front = k - (n - 1)
-            t = torch.clamp(
-                1.0 - (mel_idx - front).float() / (n - 1),
-                0.0,
-                1.0,
-            )  # (B, T_max)
+            # Grow the buffer by one new noise frame — the new t=0 frontier.
+            if k < T_max:
+                mels_values = torch.cat([mels_values, x_0[..., k : k + 1]], dim=-1)
+
+            L = mels_values.shape[-1]
+            mel_idx = torch.arange(L, device=device).expand(B, L)
+            mels_mask = mel_idx < mel_lens.unsqueeze(1)
+
+            # t per position = (steps since it was added) / (n - 1), clamped.
+            t = torch.clamp((k - mel_idx).float() / (n - 1), 0.0, 1.0)
 
             mels_mt = MaskedTensor(values=mels_values, mask=mels_mask)
-            v_pred = self.forward(text, mels_mt, t)  # (B, T_max, mel_dim)
+            v_pred = self.forward(text, mels_mt, t)  # (B, L, mel_dim)
 
-            # Only update positions inside the rolling window: their t is < 1
-            # AND they have actually entered the integration window (mel_idx <= k).
-            # Without the second clause the formula's clamp-to-0 lets far-future
-            # positions accumulate spurious updates every step.
-            in_window = (t < 1.0) & (mel_idx <= k)
+            in_window = (t < 1.0) & mels_mask
             update = (v_pred * dt) * in_window.unsqueeze(-1)
             mels_values = mels_values + update.transpose(1, 2)
 
