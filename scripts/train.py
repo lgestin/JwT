@@ -16,6 +16,7 @@ from tts.model.neural_speaker import RollingFlowConfig, RollingFlowSpeaker
 from tts.model.transformer import TransformerConfig
 from tts.training.checkpoint_manager import CheckpointManager
 from tts.training.console_logger import ConsoleLogger
+from tts.training.loggers import Logger, MultiLogger
 from tts.training.trainer import (
     AMPDtype,
     TrainerConfig,
@@ -51,6 +52,8 @@ class Args:
     n_denoising_steps: int = 32
     # Codec
     use_codec: bool = True
+    # Logging
+    use_tensorboard: bool = True
 
 
 def _make_loader(
@@ -116,7 +119,14 @@ def main() -> None:
     ).to(device)
 
     optimizer = AdamW(model.parameters(), lr=args.lr)
-    logger = ConsoleLogger(audio_dir=output_dir / "audio")
+
+    sub_loggers: list[Logger] = [ConsoleLogger(audio_dir=output_dir / "audio")]
+    if args.use_tensorboard:
+        from tts.training.tensorboard_logger import TensorBoardLogger
+
+        sub_loggers.append(TensorBoardLogger(log_dir=output_dir / "tb"))
+    logger: Logger = sub_loggers[0] if len(sub_loggers) == 1 else MultiLogger(*sub_loggers)
+
     checkpoint_manager = CheckpointManager(exp_path=output_dir / "checkpoints")
 
     trainer = TTSRollingFlowMatchingTrainer(
