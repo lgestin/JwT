@@ -263,9 +263,9 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
 
             L = mels_values.shape[-1]
             mel_idx = torch.arange(L, device=device).expand(B, L)
-            # Buffer-extent mask (NOT decided lengths) — keeps attention
-            # consistent for all samples while the loop runs.
-            buffer_mask = mel_idx < L
+            # Once a sample's stop is decided, drop positions past it so
+            # in_mels matches the training distribution (true length).
+            buffer_mask = mel_idx < decided_len.clamp(max=L).unsqueeze(1)
 
             # t per position = (steps since it was added) / (n - 1), clamped.
             t = torch.clamp((k - mel_idx).float() / (n - 1), 0.0, 1.0)
