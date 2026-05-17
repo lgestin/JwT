@@ -186,20 +186,31 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             dtype=self.amp_dtype,
             enabled=not self.noamp,
         ):
-            v_pred, target, loss_mask, t = self.model.training_step(text, mels)
-            per_pos = (v_pred - target).pow(2).mean(-1)  # (B, T_mel)
-            loss = (per_pos * loss_mask).sum() / loss_mask.sum().clamp(min=1)
-            # L1 reconstruction in log-mel units: x_1_pred - x_1 = (1 - t) * (v_pred - target),
+            v_pred, v_target, v_mask, r_pred, r_target, r_mask, t = (
+                self.model.training_step(text, mels)
+            )
+            v_per_pos = (v_pred - v_target).pow(2).mean(-1)  # (B, T_mel)
+            v_loss = (v_per_pos * v_mask).sum() / v_mask.sum().clamp(min=1)
+
+            r_per_pos = (r_pred - r_target).pow(2)  # (B, T_mel)
+            r_loss = (r_per_pos * r_mask).sum() / r_mask.sum().clamp(min=1)
+
+            weight = self.model.cfg.remaining_loss_weight
+            loss = v_loss + weight * r_loss
+
+            # L1 reconstruction in log-mel units: x_1_pred - x_1 = (1 - t) * (v_pred - v_target),
             # then undo the normalization by mel_std.
             recon_l1_per_pos = (
-                ((1.0 - t).unsqueeze(-1) * (v_pred - target)).abs().mean(-1)
+                ((1.0 - t).unsqueeze(-1) * (v_pred - v_target)).abs().mean(-1)
             )
             mel_l1 = (
-                (recon_l1_per_pos * loss_mask).sum() / loss_mask.sum().clamp(min=1)
+                (recon_l1_per_pos * v_mask).sum() / v_mask.sum().clamp(min=1)
             ) * self.model.mel_std
 
         metrics: dict[str, torch.Tensor] = {
             "loss": loss.detach(),
+            "v_loss": v_loss.detach(),
+            "r_loss": r_loss.detach(),
             "mel_l1": mel_l1.detach(),
         }
 
@@ -264,21 +275,24 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         n = min(len(batch.audios), self.config.n_smp)
 
         text = MaskedTensor(values=batch.tokens.unsqueeze(1), mask=batch.tokens_mask)
-        mel_lens = batch.mels_mask.sum(-1).clamp(min=1)
 
         with torch.autocast(
             device_type=self.device.type,
             dtype=self.amp_dtype,
             enabled=not self.noamp,
         ):
-            mels_pred = self.model.speak(text, mel_lens)
-            wavs = self.codec.decode(mels_pred.values[:n])
+            mels_pred = self.model.speak(text)
 
-        for i, wav in enumerate(wavs):
+        for i in range(n):
+            L = int(mels_pred.mask[i].sum().item())
+            if L == 0:
+                continue
+            mel_i = mels_pred.values[i : i + 1, :, :L]  # (1, mel_dim, L)
+            wav = self.codec.decode(mel_i)[0]
             self.logger.log_audio(
                 f"sampled/{i}", wav, self.step, self.codec.sample_rate
             )
-            log_mel(self.logger, f"sampled/{i}/mel", mels_pred.values[i], self.step)
+            log_mel(self.logger, f"sampled/{i}/mel", mel_i[0], self.step)
 
     def _log_initial_samples(self):
         smp_batch = next(iter(self.smp_dloader))
