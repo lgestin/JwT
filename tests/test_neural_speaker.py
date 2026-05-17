@@ -9,7 +9,7 @@ from tts.model.neural_speaker import (
     RollingFlowConfig,
     RollingFlowSpeaker,
 )
-from tts.model.transformer import TransformerConfig
+from tts.model.transformer import AdaLN, TransformerConfig
 
 B = 2
 T_TEXT = 4
@@ -134,6 +134,47 @@ def test_text_length_encoder_shape(
     pred = model.length_encoder(text)
     assert pred.shape == (B,)
     assert torch.isfinite(pred).all()
+
+
+def test_forward_invariant_to_text_padding(model: RollingFlowSpeaker) -> None:
+    """Right-padding the text mask must not change v_pred for the real tokens.
+
+    Regression: the attention mask was built in original (un-packed) coords
+    and applied to the packed sequence, so any batch with mixed text lengths
+    silently misaligned the mask — dropping real mel positions and admitting
+    duplicates of the last mel in their place.
+    """
+    # Zero-init AdaLN makes every block an identity, which would mask the bug.
+    # Perturb so the attention path actually contributes to the output.
+    torch.manual_seed(0)
+    for m in model.modules():
+        if isinstance(m, AdaLN):
+            torch.nn.init.normal_(m.linear.weight, std=0.02)
+            torch.nn.init.normal_(m.linear.bias, std=0.02)
+
+    T_mel = 5
+    text_ids = torch.randint(0, model.cfg.vocabulary_size, (B, 2))
+    mel_vals = torch.randn(B, model.cfg.mel_dim, T_mel)
+    t = torch.full((B, T_mel), 0.5)
+    mels = MaskedTensor(values=mel_vals, mask=torch.ones(B, T_mel, dtype=torch.bool))
+
+    text_unpadded = MaskedTensor(
+        values=text_ids.unsqueeze(1),
+        mask=torch.ones(B, 2, dtype=torch.bool),
+    )
+    text_padded = MaskedTensor(
+        values=torch.cat([text_ids, torch.zeros(B, 4, dtype=torch.long)], dim=1).unsqueeze(1),
+        mask=torch.tensor([[True, True, False, False, False, False]] * B),
+    )
+
+    with torch.no_grad():
+        v_unpadded = model.forward(text_unpadded, mels, t)
+        v_padded = model.forward(text_padded, mels, t)
+
+    assert torch.allclose(v_unpadded, v_padded, atol=1e-5), (
+        f"text padding changed v_pred (max diff "
+        f"{(v_unpadded - v_padded).abs().max().item():.4e}) — attn mask misaligned"
+    )
 
 
 def test_training_step_shapes(

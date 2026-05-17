@@ -207,6 +207,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         device = mels.values.device
 
         text_lens = text.mask.sum(-1)
+        mel_lens = mels.mask.sum(-1)
+        total_lens = text_lens + mel_lens
 
         # Project both modalities into the transformer's hidden dim and tag them.
         text_lat = self.text_in(text_ids) + self.text_modality
@@ -232,12 +234,17 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         )
         t_packed = torch.gather(t_concat, 1, pack_idx)
 
+        # Keep masks in packed coords. in_text/in_mels above are in original
+        # coords and silently misalign the attention mask when text is padded.
+        in_real_packed = arange < total_lens.unsqueeze(1)
+        in_mels_packed = (arange >= text_lens.unsqueeze(1)) & in_real_packed
+
         # Attention keys: visible up to and including the first real t=0 (the
         # "next frontier"). Pure-noise positions beyond it carry no signal
         # and would only distract attention.
-        is_zero_real = (t_packed == 0.0) & in_mels
+        is_zero_real = (t_packed == 0.0) & in_mels_packed
         keep_first_zero = is_zero_real.cumsum(-1) <= 1
-        attn_keys = (in_text | in_mels) & keep_first_zero  # (B, T)
+        attn_keys = in_real_packed & keep_first_zero  # (B, T)
         attn_mask = attn_keys.unsqueeze(1).unsqueeze(2)  # (B, 1, 1, T)
         out_packed = self.transformer(x_packed, t_packed, attn_mask)
         v_pred_packed = self.mel_out(out_packed)  # (B, T, mel_dim)
