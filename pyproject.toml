@@ -41,6 +41,10 @@ dev = [
 bigvgan = [
     "bigvgan>=2.4.1",
 ]
+demo = [
+    "gradio>=5.0",
+    "matplotlib>=3.8",
+]
 
 [tool.hatch.version]
 path = "src/tts/__init__.py"
