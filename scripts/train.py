@@ -32,7 +32,7 @@ class Args:
     arrow_path: str = "data/ljspeech_24khz.arrow"
     sample_rate: int = 24000
     n_valid: int = 64
-    n_smp: int = 4
+    n_smp: int = 16
     # Run
     output_dir: str = "outputs/run0"
     device: str = "cuda"

@@ -186,11 +186,22 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             dtype=self.amp_dtype,
             enabled=not self.noamp,
         ):
-            v_pred, target, loss_mask = self.model.training_step(text, mels)
+            v_pred, target, loss_mask, t = self.model.training_step(text, mels)
             per_pos = (v_pred - target).pow(2).mean(-1)  # (B, T_mel)
             loss = (per_pos * loss_mask).sum() / loss_mask.sum().clamp(min=1)
+            # L1 reconstruction in log-mel units: x_1_pred - x_1 = (1 - t) * (v_pred - target),
+            # then undo the normalization by mel_std.
+            recon_l1_per_pos = (
+                ((1.0 - t).unsqueeze(-1) * (v_pred - target)).abs().mean(-1)
+            )
+            mel_l1 = (
+                (recon_l1_per_pos * loss_mask).sum() / loss_mask.sum().clamp(min=1)
+            ) * self.model.mel_std
 
-        metrics: dict[str, torch.Tensor] = {"loss": loss.detach()}
+        metrics: dict[str, torch.Tensor] = {
+            "loss": loss.detach(),
+            "mel_l1": mel_l1.detach(),
+        }
 
         if self.model.training:
             scaled = loss / self.config.grad_accum_steps

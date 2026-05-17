@@ -133,7 +133,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         mel_front: torch.LongTensor | None = None,
         x_0: torch.Tensor | None = None,
         n: int | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.BoolTensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.BoolTensor, torch.Tensor]:
         """Sample a rolling front + noise, run forward, and return loss inputs.
 
         Optional args let callers pin the random choices for reproducibility:
@@ -141,7 +141,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         - x_0:       (B, T_mel, mel_dim), the noise tensor mixed with x_1
         - n:         override for cfg.n_denoising_steps
 
-        Returns (v_pred, target, loss_mask) all aligned in (B, T_mel, *) layout.
+        Returns (v_pred, target, loss_mask, t) all aligned in (B, T_mel, *) layout.
         """
         B, mel_dim, T_mel = mels.values.shape
         device = mels.values.device
@@ -178,7 +178,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             & (mel_idx > mel_front.unsqueeze(1))
             & (mel_idx < mel_front.unsqueeze(1) + n)
         )
-        return v_pred, target, loss_mask
+        return v_pred, target, loss_mask, t
 
     @torch.no_grad()
     def speak(
