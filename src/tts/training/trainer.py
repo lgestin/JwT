@@ -10,7 +10,7 @@ from tts.data.audio.codecs import Codec
 from tts.data.dataset import Batch
 from tts.model.neural_speaker import MaskedTensor, RollingFlowSpeaker
 from tts.training.checkpoint_manager import CheckpointManager
-from tts.training.loggers import Logger
+from tts.training.loggers import Logger, log_mel
 
 
 @dataclass
@@ -267,6 +267,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             self.logger.log_audio(
                 f"sampled/{i}", wav, self.step, self.codec.sample_rate
             )
+            log_mel(self.logger, f"sampled/{i}/mel", mels_pred.values[i], self.step)
 
     def _log_initial_samples(self):
         smp_batch = next(iter(self.smp_dloader))
@@ -284,10 +285,14 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                     dtype=self.amp_dtype,
                     enabled=not self.noamp,
                 ):
+                    clean_mel = self.codec.encode(waveform[None])[0]
                     reconstructed = self.codec.reconstruct(waveform[None])[0]
+                    recon_mel = self.codec.encode(reconstructed[None])[0]
                 self.logger.log_audio(
                     f"{i}/reconstructed",
                     reconstructed,
                     0,
                     self.codec.sample_rate,
                 )
+                log_mel(self.logger, f"{i}/clean/mel", clean_mel, 0)
+                log_mel(self.logger, f"{i}/reconstructed/mel", recon_mel, 0)

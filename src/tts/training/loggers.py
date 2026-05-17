@@ -32,6 +32,22 @@ class Logger(Protocol):
         pass
 
 
+def log_mel(logger: Logger, tag: str, mel: torch.Tensor, step: int) -> None:
+    """Render a log-mel spectrogram as a grayscale image and log it via `log_image`.
+
+    Accepts (n_mels, T) or (B, n_mels, T) — only the first batch element is used.
+    """
+    m = mel.detach().cpu().float()
+    if m.ndim == 3:
+        m = m[0]
+    mn = m.min()
+    mx = m.max()
+    m = (m - mn) / (mx - mn).clamp(min=1e-9)
+    # Low frequencies at the bottom for display.
+    m = torch.flip(m, dims=[0])
+    logger.log_image(tag, m.unsqueeze(0), step)
+
+
 class MultiLogger:
     """Fan out every call to a list of loggers."""
 
