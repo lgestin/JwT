@@ -36,19 +36,19 @@ class Args:
     # Run
     output_dir: str = "outputs/run0"
     device: str = "cuda"
-    batch_size: int = 8
+    batch_size: int = 64
     num_workers: int = 6
-    max_steps: int = 100_000
+    max_steps: int = 30_000
     valid_steps: int = 1_000
-    smp_steps: int = 5_000
-    checkpoint_steps: int = 10_000
+    smp_steps: int = 2_500
+    checkpoint_steps: int = 5_000
     clip_grad_norm: float = 1.0
     grad_accum_steps: int = 1
-    lr: float = 3e-4
+    lr: float = 1e-3
     # Model
-    dim: int = 512
-    num_heads: int = 8
-    num_layers: int = 12
+    dim: int = 256
+    num_heads: int = 4
+    num_layers: int = 6
     mel_dim: int = 100
     n_denoising_steps: int = 32
     # Codec
