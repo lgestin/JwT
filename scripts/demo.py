@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
+import numpy as np
 import torch
 from simple_parsing import ArgumentParser
 
@@ -60,14 +61,27 @@ def _load_model(
     return model, ckpt
 
 
-def _plot_mel(mel: torch.Tensor, hop_length: int, sample_rate: int) -> plt.Figure:
-    """Render a log-mel spectrogram as a labeled matplotlib figure."""
+def _plot_mel(
+    mel: torch.Tensor,
+    remaining: torch.Tensor,
+    hop_length: int,
+    sample_rate: int,
+) -> plt.Figure:
+    """Render a log-mel spectrogram + predicted frames-remaining trajectory."""
     m = mel.detach().cpu().float().numpy()
+    r = remaining.detach().cpu().float().numpy()
     T = m.shape[-1]
     duration_s = T * hop_length / sample_rate
 
-    fig, ax = plt.subplots(figsize=(10, 3.2), dpi=110)
-    im = ax.imshow(
+    fig, (ax_mel, ax_rem) = plt.subplots(
+        2,
+        1,
+        figsize=(10, 4.6),
+        dpi=110,
+        gridspec_kw={"height_ratios": [3, 1]},
+        sharex=True,
+    )
+    im = ax_mel.imshow(
         m,
         aspect="auto",
         origin="lower",
@@ -75,10 +89,24 @@ def _plot_mel(mel: torch.Tensor, hop_length: int, sample_rate: int) -> plt.Figur
         cmap="magma",
         extent=(0.0, duration_s, 0, m.shape[0]),
     )
-    ax.set_xlabel("time (s)")
-    ax.set_ylabel("mel bin")
-    ax.set_title("log-mel spectrogram")
-    fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
+    ax_mel.set_ylabel("mel bin")
+    ax_mel.set_title("log-mel spectrogram")
+    fig.colorbar(im, ax=ax_mel, fraction=0.025, pad=0.02)
+
+    times = np.linspace(0.0, duration_s, T, endpoint=False)
+    ideal = np.arange(T - 1, -1, -1, dtype=float)
+    ax_rem.plot(times, r, color="tab:blue", linewidth=1.2, label="predicted")
+    ax_rem.plot(
+        times, ideal, color="tab:gray", linestyle="--", linewidth=0.9, label="L-i-1"
+    )
+    ax_rem.set_xlabel("time (s)")
+    ax_rem.set_ylabel("frames remaining")
+    ax_rem.set_xlim(0.0, duration_s)
+    ax_rem.set_ylim(bottom=0.0)
+    ax_rem.legend(loc="upper right", fontsize=8)
+    ax_rem.grid(alpha=0.3)
+    # Match the mel axis width so the colorbar offset doesn't misalign the x-axes.
+    fig.colorbar(im, ax=ax_rem, fraction=0.025, pad=0.02).ax.set_visible(False)
     fig.tight_layout()
     return fig
 
@@ -94,7 +122,7 @@ def _build_synth_fn(
     hop = codec.hop_length
 
     @torch.inference_mode()
-    def synthesize(text: str, frames_per_token: int, seed: int):
+    def synthesize(text: str, seed: int):
         if not text or not text.strip():
             raise ValueError("Please enter some text.")
 
@@ -108,28 +136,36 @@ def _build_synth_fn(
             values=tokens.unsqueeze(1),
             mask=torch.ones_like(tokens, dtype=torch.bool),
         )
-        mel_lens = torch.tensor(
-            [max(1, len(token_ids) * int(frames_per_token))],
-            dtype=torch.long,
-            device=device,
-        )
 
-        # Pin noise to the seed for reproducibility.
+        # Pin noise to the seed for reproducibility. speak() consumes one
+        # frame of x_0 per step as the buffer grows, so size it to max_mel_len.
         gen = torch.Generator(device=device).manual_seed(int(seed))
         x_0 = torch.randn(
             1,
             model.cfg.mel_dim,
-            int(mel_lens.item()),
+            model.cfg.max_mel_len,
             device=device,
             generator=gen,
         )
 
-        mels_pred = model.speak(text_mt, mel_lens, x_0=x_0)
-        mel = mels_pred.values[0]  # (mel_dim, T_mel)
+        mels_pred = model.speak(text_mt, x_0=x_0)
+        mel_len = int(mels_pred.mask[0].sum().item())
+        mel = mels_pred.values[0, :, :mel_len]  # (mel_dim, mel_len)
         wav = codec.decode(mel.unsqueeze(0))[0].squeeze(0)  # (T_audio,)
 
+        # Per-position frames-remaining prediction: read the head at t=1 on the
+        # generated mels. The head is trained to be accurate at clean positions.
+        mel_norm = (mel - model.mel_mean) / model.mel_std
+        mels_for_pred = MaskedTensor(
+            values=mel_norm.unsqueeze(0),
+            mask=torch.ones(1, mel_len, dtype=torch.bool, device=device),
+        )
+        t_clean = torch.ones(1, mel_len, device=device)
+        _, r_pred = model(text_mt, mels_for_pred, t_clean)
+        remaining_pred = torch.expm1(r_pred[0]).clamp(min=0.0)  # (mel_len,)
+
         wav_np = wav.detach().cpu().float().numpy()
-        fig = _plot_mel(mel, hop_length=hop, sample_rate=sr)
+        fig = _plot_mel(mel, remaining_pred, hop_length=hop, sample_rate=sr)
         return (sr, wav_np), fig, phonemes
 
     return synthesize
@@ -172,13 +208,6 @@ def main() -> None:
                     lines=3,
                     value="The quick brown fox jumps over the lazy dog.",
                 )
-                frames_per_token = gr.Slider(
-                    label="Mel frames per phoneme (controls duration)",
-                    minimum=4,
-                    maximum=24,
-                    step=1,
-                    value=12,
-                )
                 seed = gr.Number(label="Seed", value=0, precision=0)
                 go = gr.Button("Synthesize", variant="primary")
                 phonemes_out = gr.Textbox(label="Phonemes", interactive=False)
@@ -188,7 +217,7 @@ def main() -> None:
 
         go.click(
             synthesize,
-            inputs=[text_in, frames_per_token, seed],
+            inputs=[text_in, seed],
             outputs=[audio_out, mel_out, phonemes_out],
         )
 
