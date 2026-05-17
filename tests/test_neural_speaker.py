@@ -103,10 +103,10 @@ def test_speak_actually_updates_positions(
         assert not torch.allclose(out.values[i, :, :L], x_0_denorm)
 
 
-def test_speak_per_sample_lengths_can_differ(
+def test_speak_per_sample_lengths_match_predictor(
     model: RollingFlowSpeaker, text: MaskedTensor
 ) -> None:
-    """API path for per-sample autonomous stopping must work (untrained head)."""
+    """speak() output length must equal L_hat from the length encoder."""
     out = model.speak(text)
     lens = out.mask.sum(-1)
     assert (lens >= 1).all()
@@ -115,6 +115,25 @@ def test_speak_per_sample_lengths_can_differ(
     mel_idx = torch.arange(out.values.shape[-1]).expand(B, -1)
     expected_mask = mel_idx < lens.unsqueeze(1)
     assert torch.equal(out.mask, expected_mask)
+    # Lengths match the predictor's reconstruction of L_hat.
+    with torch.no_grad():
+        text_lens = text.mask.sum(-1)
+        length_pred = model.length_encoder(text)
+        expected_L = (
+            (text_lens.float() * torch.exp(length_pred))
+            .round()
+            .long()
+            .clamp(min=1, max=model.cfg.max_mel_len)
+        )
+    assert torch.equal(lens, expected_L)
+
+
+def test_text_length_encoder_shape(
+    model: RollingFlowSpeaker, text: MaskedTensor
+) -> None:
+    pred = model.length_encoder(text)
+    assert pred.shape == (B,)
+    assert torch.isfinite(pred).all()
 
 
 def test_training_step_shapes(
@@ -123,7 +142,7 @@ def test_training_step_shapes(
     T_mel = mels.values.shape[-1]
     # Pin mel_front so the (front, front+n-1] window stays inside mel_lens.
     mel_front = torch.tensor([2, 3], dtype=torch.long)
-    v_pred, v_target, v_mask, r_pred, r_target, r_mask, t = model.training_step(
+    v_pred, v_target, v_mask, length_pred, length_target, t = model.training_step(
         text, mels, mel_front=mel_front
     )
     assert v_pred.shape == (B, T_mel, N_MELS)
@@ -131,10 +150,10 @@ def test_training_step_shapes(
     assert v_mask.shape == (B, T_mel)
     # Window is now n-1 positions (ramp + first t=0, dropping the second t=0).
     assert (v_mask.sum(-1) == model.cfg.n_denoising_steps - 1).all()
-    assert r_pred.shape == (B, T_mel)
-    assert r_target.shape == (B, T_mel)
-    assert r_mask.shape == (B, T_mel)
-    assert torch.isfinite(r_pred).all()
+    assert length_pred.shape == (B,)
+    assert length_target.shape == (B,)
+    assert torch.isfinite(length_pred).all()
+    assert torch.isfinite(length_target).all()
     assert t.shape == (B, T_mel)
 
 
@@ -150,10 +169,10 @@ def test_training_step_is_deterministic(
         assert torch.equal(ta, tb)
 
 
-def test_remaining_target_correctness(model: RollingFlowSpeaker) -> None:
-    """r_target[b, i] = log1p(max(L_b - i - 1, 0)) on real frames; r_mask = real & t=1."""
+def test_length_target_correctness(model: RollingFlowSpeaker) -> None:
+    """length_target = log(n_mel_frames / n_text_tokens) per sample."""
     T_mel = 8
-    # Two samples with different real lengths: 5 and 8.
+    # Two samples with different real mel lengths: 5 and 8 (text len = T_TEXT = 4 both).
     mask = torch.tensor(
         [
             [True, True, True, True, True, False, False, False],
@@ -167,24 +186,6 @@ def test_remaining_target_correctness(model: RollingFlowSpeaker) -> None:
         mask=torch.ones(B, T_TEXT, dtype=torch.bool),
     )
     mel_front = torch.tensor([1, 2], dtype=torch.long)
-    _, _, _, _, r_target, r_mask, _ = model.training_step(
-        text, mels, mel_front=mel_front
-    )
-
-    # r_mask supervises only positions with t==1 (clean tail up to mel_front).
-    expected_r_mask = torch.tensor(
-        [
-            [True, True, False, False, False, False, False, False],
-            [True, True, True, False, False, False, False, False],
-        ]
-    )
-    assert torch.equal(r_mask, expected_r_mask)
-    # Real-frame targets match log1p(L - i - 1).
-    lens = [5, 8]
-    for b in range(B):
-        for i in range(lens[b]):
-            expected = math.log1p(max(lens[b] - i - 1, 0))
-            assert r_target[b, i].item() == pytest.approx(expected)
-    # Padding positions: target is log1p(<= 0) clamped to log1p(0) = 0.
-    assert r_target[0, 5].item() == pytest.approx(0.0)
-    assert r_target[0, 7].item() == pytest.approx(0.0)
+    *_, length_target, _ = model.training_step(text, mels, mel_front=mel_front)
+    assert length_target[0].item() == pytest.approx(math.log(5 / T_TEXT))
+    assert length_target[1].item() == pytest.approx(math.log(8 / T_TEXT))

@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
-import numpy as np
 import torch
 from simple_parsing import ArgumentParser
 
@@ -63,25 +62,16 @@ def _load_model(
 
 def _plot_mel(
     mel: torch.Tensor,
-    remaining: torch.Tensor,
     hop_length: int,
     sample_rate: int,
 ) -> plt.Figure:
-    """Render a log-mel spectrogram + predicted frames-remaining trajectory."""
+    """Render a log-mel spectrogram."""
     m = mel.detach().cpu().float().numpy()
-    r = remaining.detach().cpu().float().numpy()
     T = m.shape[-1]
     duration_s = T * hop_length / sample_rate
 
-    fig, (ax_mel, ax_rem) = plt.subplots(
-        2,
-        1,
-        figsize=(10, 4.6),
-        dpi=110,
-        gridspec_kw={"height_ratios": [3, 1]},
-        sharex=True,
-    )
-    im = ax_mel.imshow(
+    fig, ax = plt.subplots(figsize=(10, 3.4), dpi=110)
+    im = ax.imshow(
         m,
         aspect="auto",
         origin="lower",
@@ -89,24 +79,10 @@ def _plot_mel(
         cmap="magma",
         extent=(0.0, duration_s, 0, m.shape[0]),
     )
-    ax_mel.set_ylabel("mel bin")
-    ax_mel.set_title("log-mel spectrogram")
-    fig.colorbar(im, ax=ax_mel, fraction=0.025, pad=0.02)
-
-    times = np.linspace(0.0, duration_s, T, endpoint=False)
-    ideal = np.arange(T - 1, -1, -1, dtype=float)
-    ax_rem.plot(times, r, color="tab:blue", linewidth=1.2, label="predicted")
-    ax_rem.plot(
-        times, ideal, color="tab:gray", linestyle="--", linewidth=0.9, label="L-i-1"
-    )
-    ax_rem.set_xlabel("time (s)")
-    ax_rem.set_ylabel("frames remaining")
-    ax_rem.set_xlim(0.0, duration_s)
-    ax_rem.set_ylim(bottom=0.0)
-    ax_rem.legend(loc="upper right", fontsize=8)
-    ax_rem.grid(alpha=0.3)
-    # Match the mel axis width so the colorbar offset doesn't misalign the x-axes.
-    fig.colorbar(im, ax=ax_rem, fraction=0.025, pad=0.02).ax.set_visible(False)
+    ax.set_xlabel("time (s)")
+    ax.set_ylabel("mel bin")
+    ax.set_title(f"log-mel spectrogram — {T} frames ({duration_s:.2f}s)")
+    fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
     fig.tight_layout()
     return fig
 
@@ -153,19 +129,8 @@ def _build_synth_fn(
         mel = mels_pred.values[0, :, :mel_len]  # (mel_dim, mel_len)
         wav = codec.decode(mel.unsqueeze(0))[0].squeeze(0)  # (T_audio,)
 
-        # Per-position frames-remaining prediction: read the head at t=1 on the
-        # generated mels. The head is trained to be accurate at clean positions.
-        mel_norm = (mel - model.mel_mean) / model.mel_std
-        mels_for_pred = MaskedTensor(
-            values=mel_norm.unsqueeze(0),
-            mask=torch.ones(1, mel_len, dtype=torch.bool, device=device),
-        )
-        t_clean = torch.ones(1, mel_len, device=device)
-        _, r_pred = model(text_mt, mels_for_pred, t_clean)
-        remaining_pred = torch.expm1(r_pred[0]).clamp(min=0.0)  # (mel_len,)
-
         wav_np = wav.detach().cpu().float().numpy()
-        fig = _plot_mel(mel, remaining_pred, hop_length=hop, sample_rate=sr)
+        fig = _plot_mel(mel, hop_length=hop, sample_rate=sr)
         return (sr, wav_np), fig, phonemes
 
     return synthesize
