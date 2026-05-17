@@ -88,7 +88,8 @@ def main() -> None:
 
     full = AudioDataset(tts_source=source, sample_rate=args.sample_rate)
     N = len(full)
-    assert args.n_valid + args.n_smp < N, "dataset too small for the requested splits"
+    if args.n_valid + args.n_smp >= N:
+        raise ValueError("dataset too small for the requested splits")
     smp_ds = Subset(full, list(range(args.n_smp)))
     valid_ds = Subset(full, list(range(N - args.n_valid, N)))
     train_ds = Subset(full, list(range(args.n_smp, N - args.n_valid)))
@@ -99,14 +100,14 @@ def main() -> None:
     smp_dl = _make_loader(smp_ds, args.n_smp, 0, False, pin)
 
     codec = None
-    mel_dim = args.mel_dim
     if args.use_codec:
         from tts.data.audio.codecs import BigVGAN
 
         codec = BigVGAN().to(device)
-        assert codec.n_mels == mel_dim, (
-            f"codec mel_dim {codec.n_mels} != configured mel_dim {mel_dim}"
-        )
+        if codec.n_mels != args.mel_dim:
+            raise ValueError(
+                f"codec mel_dim {codec.n_mels} != configured mel_dim {args.mel_dim}"
+            )
 
     model = RollingFlowSpeaker(
         RollingFlowConfig(
@@ -116,7 +117,7 @@ def main() -> None:
                 num_layers=args.num_layers,
             ),
             vocabulary_size=len(vocab),
-            mel_dim=mel_dim,
+            mel_dim=args.mel_dim,
             n_denoising_steps=args.n_denoising_steps,
         )
     ).to(device)
@@ -138,9 +139,7 @@ def main() -> None:
         from tts.training.tensorboard_logger import TensorBoardLogger
 
         sub_loggers.append(TensorBoardLogger(log_dir=output_dir / "tb"))
-    logger: Logger = (
-        sub_loggers[0] if len(sub_loggers) == 1 else MultiLogger(*sub_loggers)
-    )
+    logger: Logger = MultiLogger(*sub_loggers)
 
     checkpoint_manager = CheckpointManager(exp_path=output_dir / "checkpoints")
 
