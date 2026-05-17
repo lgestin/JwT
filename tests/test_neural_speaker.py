@@ -151,7 +151,7 @@ def test_training_step_is_deterministic(
 
 
 def test_remaining_target_correctness(model: RollingFlowSpeaker) -> None:
-    """r_target[b, i] = log1p(max(L_b - i - 1, 0)) on real frames; r_mask = mels.mask."""
+    """r_target[b, i] = log1p(max(L_b - i - 1, 0)) on real frames; r_mask = real & t=1."""
     T_mel = 8
     # Two samples with different real lengths: 5 and 8.
     mask = torch.tensor(
@@ -171,7 +171,14 @@ def test_remaining_target_correctness(model: RollingFlowSpeaker) -> None:
         text, mels, mel_front=mel_front
     )
 
-    assert torch.equal(r_mask, mask)
+    # r_mask supervises only positions with t==1 (clean tail up to mel_front).
+    expected_r_mask = torch.tensor(
+        [
+            [True, True, False, False, False, False, False, False],
+            [True, True, True, False, False, False, False, False],
+        ]
+    )
+    assert torch.equal(r_mask, expected_r_mask)
     # Real-frame targets match log1p(L - i - 1).
     lens = [5, 8]
     for b in range(B):

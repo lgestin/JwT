@@ -163,7 +163,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         - v_mask:   (B, T_mel)           supervision mask for the velocity ramp
         - r_pred:   (B, T_mel)           predicted log1p(remaining frames)
         - r_target: (B, T_mel)           log1p(remaining frames) ground truth
-        - r_mask:   (B, T_mel)           supervision mask for the head (= mels.mask)
+        - r_mask:   (B, T_mel)           supervision mask: real frames with t=1
         - t:        (B, T_mel)           per-position rolling timestep in [0, 1]
         """
         B, mel_dim, T_mel = mels.values.shape
@@ -202,13 +202,13 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             & (mel_idx < mel_front.unsqueeze(1) + n)
         )
 
-        # Remaining-frames head: target is log1p(L - i - 1) at every real frame,
-        # independent of the rolling t. Supervising broadly (not just inside the
-        # ramp) trains the head to predict accurately at clean (t=1) positions,
-        # which is where inference reads it.
+        # Remaining-frames head: supervise only at clean (t=1) positions —
+        # the trailing edge of the rolling front, which is exactly where
+        # speak() reads the head. Noisy positions carry no useful "remaining"
+        # signal and would train a behavior inference never uses.
         remaining = (mel_lens.unsqueeze(1) - mel_idx - 1).clamp(min=0).float()
         r_target = torch.log1p(remaining)
-        r_mask = mels.mask
+        r_mask = mels.mask & (t == 1.0)
 
         return v_pred, v_target, v_mask, r_pred, r_target, r_mask, t
 
@@ -277,10 +277,12 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             update = (v_pred * dt) * in_window.unsqueeze(-1)
             mels_values = mels_values + update.transpose(1, 2)
 
-            # Read remaining at the trailing clean edge of the rolling front.
-            p = max(k - (n - 1), 0)
-            if p >= L:
+            # Read remaining only at the trailing clean (t=1) edge of the
+            # rolling front — matches the training supervision mask. During
+            # warmup (k < n-1) no position is fully clean yet, so skip.
+            if k < n - 1:
                 continue
+            p = k - (n - 1)
             r_at_p = r_pred[:, p]  # (B,)
             predicted_remaining = torch.expm1(r_at_p)
             newly_decided = (decided_len == max_T) & (
