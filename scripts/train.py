@@ -38,7 +38,7 @@ class Args:
     device: str = "cuda"
     batch_size: int = 64
     num_workers: int = 6
-    max_steps: int = 30_000
+    max_steps: int = 200_001
     valid_steps: int = 1_000
     smp_steps: int = 2_500
     checkpoint_steps: int = 5_000
@@ -48,7 +48,7 @@ class Args:
     # Model
     dim: int = 256
     num_heads: int = 4
-    num_layers: int = 6
+    num_layers: int = 10
     mel_dim: int = 100
     n_denoising_steps: int = 32
     # Codec
@@ -57,19 +57,6 @@ class Args:
     use_tensorboard: bool = True
     # Perf
     compile: bool = True
-
-
-def _make_loader(
-    dataset, batch_size: int, num_workers: int, shuffle: bool, pin_memory: bool
-) -> DataLoader:
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        collate_fn=collate,
-        pin_memory=pin_memory,
-    )
 
 
 def main() -> None:
@@ -95,9 +82,30 @@ def main() -> None:
     train_ds = Subset(full, list(range(args.n_smp, N - args.n_valid)))
 
     pin = device.type == "cuda"
-    train_dl = _make_loader(train_ds, args.batch_size, args.num_workers, True, pin)
-    valid_dl = _make_loader(valid_ds, args.batch_size, args.num_workers, False, pin)
-    smp_dl = _make_loader(smp_ds, args.n_smp, 0, False, pin)
+    train_dl = DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        collate_fn=collate,
+        pin_memory=pin,
+    )
+    valid_dl = DataLoader(
+        valid_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=collate,
+        pin_memory=pin,
+    )
+    smp_dl = DataLoader(
+        smp_ds,
+        batch_size=args.n_smp,
+        shuffle=False,
+        num_workers=0,
+        collate_fn=collate,
+        pin_memory=pin,
+    )
 
     codec = None
     if args.use_codec:
