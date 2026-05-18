@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import torch
@@ -23,10 +23,10 @@ class NeuralSpeaker(Protocol):
 
 @dataclass
 class RollingFlowConfig:
-    transformer_config: TransformerConfig
-    vocabulary_size: int
-    mel_dim: int
-    n_denoising_steps: int
+    transformer_config: TransformerConfig = field(default_factory=TransformerConfig)
+    vocabulary_size: int = 0
+    mel_dim: int = 100
+    n_denoising_steps: int = 32
     length_loss_weight: float = 1.0
     length_encoder_num_layers: int = 2
     max_mel_len: int = 2048

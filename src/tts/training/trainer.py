@@ -37,15 +37,14 @@ class AMPDtype(StrEnum):
 
 @dataclass
 class TrainerConfig:
-    clip_grad_norm: float | None
-    device: torch.device
-    amp_dtype: AMPDtype
-    smp_steps: int
-    valid_steps: int
-    checkpoint_steps: int
-    max_steps: int
-    noamp: bool
-    n_smp: int = 8
+    clip_grad_norm: float | None = 1.0
+    device: str = "cuda"
+    amp_dtype: AMPDtype = AMPDtype.BF16
+    smp_steps: int = 2_500
+    valid_steps: int = 1_000
+    checkpoint_steps: int = 5_000
+    max_steps: int = 200_001
+    n_smp: int = 16
     grad_accum_steps: int = 1
 
 
@@ -53,10 +52,11 @@ class Trainer:
     def __init__(self, config: TrainerConfig, state: TrainerState | None = None):
         self.config = config
         self.state = state or TrainerState(step=0)
+        self._device = torch.device(config.device)
 
     @property
     def device(self):
-        return self.config.device
+        return self._device
 
     @property
     def amp_dtype(self):
@@ -80,7 +80,7 @@ class Trainer:
 
     @property
     def noamp(self):
-        return self.config.noamp
+        return self._device.type != "cuda"
 
     @property
     def step(self):

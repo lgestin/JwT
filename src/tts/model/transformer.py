@@ -10,9 +10,9 @@ from simple_parsing import Serializable
 
 @dataclass
 class TransformerConfig(Serializable):
-    dim: int
-    num_heads: int
-    num_layers: int
+    dim: int = 256
+    num_heads: int = 4
+    num_layers: int = 10
     mlp_ratio: float = 4.0
     max_seq_len: int = 8192
     rope_theta: float = 10000.0

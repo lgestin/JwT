@@ -1,6 +1,6 @@
 """End-to-end training entrypoint for RollingFlowSpeaker."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
@@ -13,12 +13,10 @@ from tts.data.dataset import AudioDataset
 from tts.data.source import ArrowTTSSource
 from tts.data.text import Tokenizer, Vocabulary
 from tts.model.neural_speaker import RollingFlowConfig, RollingFlowSpeaker
-from tts.model.transformer import TransformerConfig
 from tts.training.checkpoint_manager import CheckpointManager
 from tts.training.console_logger import ConsoleLogger
 from tts.training.loggers import Logger, MultiLogger
 from tts.training.trainer import (
-    AMPDtype,
     TrainerConfig,
     TrainerState,
     TTSRollingFlowMatchingTrainer,
@@ -32,31 +30,21 @@ class Args:
     arrow_path: str = "data/ljspeech_24khz.arrow"
     sample_rate: int = 24000
     n_valid: int = 64
-    n_smp: int = 16
     # Run
     output_dir: str = "outputs/run0"
-    device: str = "cuda"
     batch_size: int = 64
     num_workers: int = 6
-    max_steps: int = 200_001
-    valid_steps: int = 1_000
-    smp_steps: int = 2_500
-    checkpoint_steps: int = 5_000
-    clip_grad_norm: float = 1.0
-    grad_accum_steps: int = 1
     lr: float = 1e-3
-    # Model
-    dim: int = 256
-    num_heads: int = 4
-    num_layers: int = 10
-    mel_dim: int = 100
-    n_denoising_steps: int = 32
     # Codec
     use_codec: bool = True
     # Logging
     use_tensorboard: bool = True
     # Perf
     compile: bool = True
+    # Model
+    model: RollingFlowConfig = field(default_factory=RollingFlowConfig)
+    # Trainer
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
 
 
 def main() -> None:
@@ -64,7 +52,7 @@ def main() -> None:
     parser.add_arguments(Args, dest="args")
     args: Args = parser.parse_args().args
 
-    device = torch.device(args.device)
+    device = torch.device(args.trainer.device)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -75,11 +63,12 @@ def main() -> None:
 
     full = AudioDataset(tts_source=source, sample_rate=args.sample_rate)
     N = len(full)
-    if args.n_valid + args.n_smp >= N:
+    n_smp = args.trainer.n_smp
+    if args.n_valid + n_smp >= N:
         raise ValueError("dataset too small for the requested splits")
-    smp_ds = Subset(full, list(range(args.n_smp)))
+    smp_ds = Subset(full, list(range(n_smp)))
     valid_ds = Subset(full, list(range(N - args.n_valid, N)))
-    train_ds = Subset(full, list(range(args.n_smp, N - args.n_valid)))
+    train_ds = Subset(full, list(range(n_smp, N - args.n_valid)))
 
     pin = device.type == "cuda"
     train_dl = DataLoader(
@@ -100,7 +89,7 @@ def main() -> None:
     )
     smp_dl = DataLoader(
         smp_ds,
-        batch_size=args.n_smp,
+        batch_size=n_smp,
         shuffle=False,
         num_workers=0,
         collate_fn=collate,
@@ -112,23 +101,13 @@ def main() -> None:
         from tts.data.audio.codecs import BigVGAN
 
         codec = BigVGAN().to(device)
-        if codec.n_mels != args.mel_dim:
+        if codec.n_mels != args.model.mel_dim:
             raise ValueError(
-                f"codec mel_dim {codec.n_mels} != configured mel_dim {args.mel_dim}"
+                f"codec mel_dim {codec.n_mels} != configured mel_dim {args.model.mel_dim}"
             )
 
-    model = RollingFlowSpeaker(
-        RollingFlowConfig(
-            transformer_config=TransformerConfig(
-                dim=args.dim,
-                num_heads=args.num_heads,
-                num_layers=args.num_layers,
-            ),
-            vocabulary_size=len(vocab),
-            mel_dim=args.mel_dim,
-            n_denoising_steps=args.n_denoising_steps,
-        )
-    ).to(device)
+    args.model.vocabulary_size = len(vocab)
+    model = RollingFlowSpeaker(args.model).to(device)
     if args.compile:
         # Disable inductor's split_reductions pass — its mix_order_reduction
         # codegen can't factor expressions like s13*(s23 + s79) and crashes
@@ -141,7 +120,7 @@ def main() -> None:
     optimizer = AdamW(model.parameters(), lr=args.lr)
 
     sub_loggers: list[Logger] = [
-        ConsoleLogger(total=args.max_steps, audio_dir=output_dir / "audio")
+        ConsoleLogger(total=args.trainer.max_steps, audio_dir=output_dir / "audio")
     ]
     if args.use_tensorboard:
         from tts.training.tensorboard_logger import TensorBoardLogger
@@ -152,18 +131,7 @@ def main() -> None:
     checkpoint_manager = CheckpointManager(exp_path=output_dir / "checkpoints")
 
     trainer = TTSRollingFlowMatchingTrainer(
-        config=TrainerConfig(
-            clip_grad_norm=args.clip_grad_norm,
-            device=device,
-            amp_dtype=AMPDtype.BF16 if device.type == "cuda" else AMPDtype.FP32,
-            smp_steps=args.smp_steps,
-            valid_steps=args.valid_steps,
-            checkpoint_steps=args.checkpoint_steps,
-            max_steps=args.max_steps,
-            noamp=device.type != "cuda",
-            n_smp=args.n_smp,
-            grad_accum_steps=args.grad_accum_steps,
-        ),
+        config=args.trainer,
         codec=codec,
         model=model,
         optimizer=optimizer,
