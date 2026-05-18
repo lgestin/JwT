@@ -276,7 +276,9 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         """Sample a rolling front + noise, run forward, and return loss inputs.
 
         Optional args let callers pin the random choices for reproducibility:
-        - mel_front: (B,) long, where each sample's denoising front lands
+        - mel_front: (B,) long, where each sample's denoising front lands;
+          defaults to a uniform sample in [-(n-1), mel_lens) so negative values
+          reproduce the inference warm-up distribution
         - x_0:       (B, T_mel, mel_dim), the noise tensor mixed with x_1
         - n:         override for cfg.n_denoising_steps
 
@@ -295,8 +297,11 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         text_lens = text.mask.sum(-1)
 
         if mel_front is None:
+            # Sample mel_front in [-(n-1), mel_lens). Negative values reproduce
+            # the inference warm-up shapes (partial ramp, no clean anchor yet),
+            # which the model otherwise never sees in training.
             u = torch.rand(B, device=device)
-            mel_front = (u * mel_lens.float()).long()
+            mel_front = (u * (mel_lens.float() + (n - 1)) - (n - 1)).long()
         # Normalize log-mels to roughly N(0, 1) so noise and signal share scale.
         x_1 = (mels.values.transpose(1, 2) - self.mel_mean) / self.mel_std
         if x_0 is None:

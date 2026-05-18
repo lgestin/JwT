@@ -177,6 +177,56 @@ def test_forward_invariant_to_text_padding(model: RollingFlowSpeaker) -> None:
     )
 
 
+def test_training_step_covers_warmup_with_negative_mel_front(
+    model: RollingFlowSpeaker, text: MaskedTensor, mels: MaskedTensor
+) -> None:
+    """Negative mel_front must produce the partial-ramp distribution that
+    inference sees during warm-up (steps k=0..n-2 in speak)."""
+    n = model.cfg.n_denoising_steps
+    # mel_front=-(n-1) reproduces inference k=0 (single noise frame, no anchor);
+    # mel_front=-1 reproduces inference k=n-2 (full ramp, still no clean anchor).
+    mel_front = torch.tensor([-(n - 1), -1], dtype=torch.long)
+    v_pred, _, v_mask, *_ = model.training_step(text, mels, mel_front=mel_front)
+    assert torch.isfinite(v_pred).all()
+    # Sample 0 (mel_front=-(n-1)): only position 0 is in the supervision window
+    # (mel_idx in (-(n-1), 1)), matching what Euler updates at inference k=0.
+    assert v_mask[0].sum().item() == 1
+    assert bool(v_mask[0, 0])
+    # Sample 1 (mel_front=-1): positions 0..n-2 are supervised (mel_idx in (-1, n-1)),
+    # matching what Euler updates at inference k=n-2.
+    assert v_mask[1].sum().item() == n - 1
+    assert bool(v_mask[1, : n - 1].all())
+
+
+def test_training_step_default_mel_front_samples_warmup_region(
+    model: RollingFlowSpeaker, text: MaskedTensor, mels: MaskedTensor
+) -> None:
+    """Default mel_front sampler must cover [-(n-1), mel_lens) so the training
+    distribution includes the inference warm-up shapes."""
+    n = model.cfg.n_denoising_steps
+    mel_lens = mels.mask.sum(-1)
+    torch.manual_seed(0)
+    fronts = []
+    for _ in range(500):
+        _, _, _, _, _, t = model.training_step(text, mels)
+        # Recover mel_front from t: it's the first index where t == 1, or
+        # -1 - argmax-of-ramp if no t==1 exists in the sample.
+        for b in range(B):
+            tb = t[b]
+            ones = (tb == 1.0).nonzero(as_tuple=True)[0]
+            if len(ones) > 0:
+                fronts.append(int(ones[0].item()))
+            else:
+                # No clean anchor in this sample → mel_front is negative.
+                # Position 0 has t = 1 - (-mel_front)/(n-1), so we can invert.
+                fronts.append(int(round((tb[0].item() - 1.0) * (n - 1))))
+    fronts_t = torch.tensor(fronts)
+    assert fronts_t.min().item() >= -(n - 1), fronts_t.min().item()
+    assert fronts_t.max().item() < int(mel_lens.max().item())
+    # At least some samples must be in the warm-up region for the fix to matter.
+    assert (fronts_t < 0).any(), "default sampler never produced negative mel_front"
+
+
 def test_training_step_shapes(
     model: RollingFlowSpeaker, text: MaskedTensor, mels: MaskedTensor
 ) -> None:
