@@ -129,9 +129,18 @@ def _build_synth_fn(
         mel = mels_pred.values[0, :, :mel_len]  # (mel_dim, mel_len)
         wav = codec.decode(mel.unsqueeze(0))[0].squeeze(0)  # (T_audio,)
 
+        n_tokens = len(token_ids)
+        duration_s = mel_len * hop / sr
+        rate = mel_len / n_tokens if n_tokens else 0.0
+        length_info = (
+            f"Predicted length: {mel_len} frames ({duration_s:.2f}s)\n"
+            f"Tokens: {n_tokens}\n"
+            f"Rate: {rate:.2f} frames/token"
+        )
+
         wav_np = wav.detach().cpu().float().numpy()
         fig = _plot_mel(mel, hop_length=hop, sample_rate=sr)
-        return (sr, wav_np), fig, phonemes
+        return (sr, wav_np), fig, phonemes, length_info
 
     return synthesize
 
@@ -176,6 +185,9 @@ def main() -> None:
                 seed = gr.Number(label="Seed", value=0, precision=0)
                 go = gr.Button("Synthesize", variant="primary")
                 phonemes_out = gr.Textbox(label="Phonemes", interactive=False)
+                length_out = gr.Textbox(
+                    label="Length predictor", interactive=False, lines=3
+                )
             with gr.Column(scale=3):
                 audio_out = gr.Audio(label="Synthesized audio", type="numpy")
                 mel_out = gr.Plot(label="log-mel spectrogram")
@@ -183,7 +195,7 @@ def main() -> None:
         go.click(
             synthesize,
             inputs=[text_in, seed],
-            outputs=[audio_out, mel_out, phonemes_out],
+            outputs=[audio_out, mel_out, phonemes_out, length_out],
         )
 
     demo.launch(server_name=args.host, server_port=args.port, share=args.share)
