@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 import torch
-import torch.nn.functional as F
 from torch import GradScaler
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
@@ -187,16 +186,11 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             dtype=self.amp_dtype,
             enabled=not self.noamp,
         ):
-            v_pred, v_target, v_mask, length_pred, length_target, t = (
-                self.model.training_step(text, mels)
-            )
-            v_per_pos = (v_pred - v_target).pow(2).mean(-1)  # (B, T_mel)
+            v_pred, v_target, v_mask, t = self.model.training_step(text, mels)
+            v_per_pos = (v_pred - v_target).pow(2).mean(-1)  # (B, T_mel+eos_n)
             v_loss = (v_per_pos * v_mask).sum() / v_mask.sum().clamp(min=1)
 
-            length_loss = F.mse_loss(length_pred.float(), length_target)
-
-            weight = self.model.cfg.length_loss_weight
-            loss = v_loss + weight * length_loss
+            loss = v_loss
 
             # L1 reconstruction in log-mel units: x_1_pred - x_1 = (1 - t) * (v_pred - v_target),
             # then undo the normalization by mel_std.
@@ -210,7 +204,6 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         metrics: dict[str, torch.Tensor] = {
             "loss": loss.detach(),
             "v_loss": v_loss.detach(),
-            "length_loss": length_loss.detach(),
             "mel_l1": mel_l1.detach(),
         }
 

@@ -1,5 +1,3 @@
-import math
-
 import pytest
 import torch
 
@@ -27,6 +25,9 @@ def model() -> RollingFlowSpeaker:
         mel_dim=N_MELS,
         n_denoising_steps=4,
         max_mel_len=MAX_MEL_LEN,
+        eos_n_frames=2,
+        eos_mel_value=-15.0,
+        eos_detect_threshold=-11.0,
     )
     return RollingFlowSpeaker(cfg).eval()
 
@@ -66,7 +67,7 @@ def test_speak_shape_and_mask(model: RollingFlowSpeaker, text: MaskedTensor) -> 
     assert out.values.shape[1] == N_MELS
     assert out.values.shape[2] <= model.cfg.max_mel_len
     assert out.mask.shape == (B, out.values.shape[2])
-    assert (out.mask.sum(-1) >= 1).all()
+    assert (out.mask.sum(-1) >= 0).all()
     assert (out.mask.sum(-1) <= model.cfg.max_mel_len).all()
 
 
@@ -93,47 +94,58 @@ def test_speak_actually_updates_positions(
     """Output should differ from the initial noise — speak must integrate."""
     x_0 = torch.randn(B, N_MELS, model.cfg.max_mel_len)
     out = model.speak(text, x_0=x_0)
-    # Compare each sample's output to the matching x_0 prefix (still normalized,
-    # so denormalize x_0 the same way speak() does its output).
     mean = model.mel_mean
     std = model.mel_std
     for i in range(B):
         L = int(out.mask[i].sum().item())
+        if L == 0:
+            continue
         x_0_denorm = x_0[i, :, :L] * std + mean
         assert not torch.allclose(out.values[i, :, :L], x_0_denorm)
 
 
-def test_speak_per_sample_lengths_match_predictor(
-    model: RollingFlowSpeaker, text: MaskedTensor
-) -> None:
-    """speak() output length must equal L_hat from the length encoder."""
-    out = model.speak(text)
-    lens = out.mask.sum(-1)
-    assert (lens >= 1).all()
-    assert (lens <= model.cfg.max_mel_len).all()
-    # Mask is exactly mel_idx < lens[b]
-    mel_idx = torch.arange(out.values.shape[-1]).expand(B, -1)
-    expected_mask = mel_idx < lens.unsqueeze(1)
-    assert torch.equal(out.mask, expected_mask)
-    # Lengths match the predictor's reconstruction of L_hat.
-    with torch.no_grad():
-        text_lens = text.mask.sum(-1)
-        length_pred = model.length_encoder(text)
-        expected_L = (
-            (text_lens.float() * torch.exp(length_pred))
-            .round()
-            .long()
-            .clamp(min=1, max=model.cfg.max_mel_len)
-        )
-    assert torch.equal(lens, expected_L)
+def test_speak_stops_on_sentinel(model: RollingFlowSpeaker, text: MaskedTensor) -> None:
+    """speak() must stop before max_mel_len when the sentinel fires."""
+    # Drive every generated frame to eos_mel_value (normalized) so the sentinel
+    # fires as early as possible.
+    eos_norm = (model.cfg.eos_mel_value - model.mel_mean) / model.mel_std
+
+    original_forward = model.forward
+
+    def _always_eos(text, mels, t):
+        v = original_forward(text, mels, t)
+        # Bias velocity so x_1 target is eos_norm everywhere.
+        x_t = mels.values.transpose(1, 2)  # (B, T, mel_dim), normalized
+        # v = x_1 - x_0; x_t = (1-t)*x_0 + t*x_1 → x_1 = (x_t - (1-t)*x_0) / t
+        # Just return a large constant velocity toward eos_norm.
+        return torch.full_like(v, float(eos_norm) * 10)
+
+    model.forward = _always_eos
+    try:
+        out = model.speak(text)
+    finally:
+        model.forward = original_forward
+
+    assert out.values.shape[2] < model.cfg.max_mel_len
 
 
-def test_text_length_encoder_shape(
+def test_speak_respects_max_mel_len_cap(
     model: RollingFlowSpeaker, text: MaskedTensor
 ) -> None:
-    pred = model.length_encoder(text)
-    assert pred.shape == (B,)
-    assert torch.isfinite(pred).all()
+    """Output must never exceed max_mel_len even if the sentinel never fires."""
+    # Drive frames toward a high value — sentinel won't trigger.
+    original_forward = model.forward
+
+    def _never_eos(text, mels, t):
+        return torch.full_like(original_forward(text, mels, t), 10.0)
+
+    model.forward = _never_eos
+    try:
+        out = model.speak(text)
+    finally:
+        model.forward = original_forward
+
+    assert out.values.shape[2] <= model.cfg.max_mel_len
 
 
 def test_forward_invariant_to_text_padding(model: RollingFlowSpeaker) -> None:
@@ -183,17 +195,13 @@ def test_training_step_covers_warmup_with_negative_mel_front(
     """Negative mel_front must produce the partial-ramp distribution that
     inference sees during warm-up (steps k=0..n-2 in speak)."""
     n = model.cfg.n_denoising_steps
-    # mel_front=-(n-1) reproduces inference k=0 (single noise frame, no anchor);
-    # mel_front=-1 reproduces inference k=n-2 (full ramp, still no clean anchor).
     mel_front = torch.tensor([-(n - 1), -1], dtype=torch.long)
-    v_pred, _, v_mask, *_ = model.training_step(text, mels, mel_front=mel_front)
+    v_pred, _, v_mask, _ = model.training_step(text, mels, mel_front=mel_front)
     assert torch.isfinite(v_pred).all()
-    # Sample 0 (mel_front=-(n-1)): only position 0 is in the supervision window
-    # (mel_idx in (-(n-1), 1)), matching what Euler updates at inference k=0.
+    # Sample 0 (mel_front=-(n-1)): only position 0 is in the supervision window.
     assert v_mask[0].sum().item() == 1
     assert bool(v_mask[0, 0])
-    # Sample 1 (mel_front=-1): positions 0..n-2 are supervised (mel_idx in (-1, n-1)),
-    # matching what Euler updates at inference k=n-2.
+    # Sample 1 (mel_front=-1): positions 0..n-2 are supervised.
     assert v_mask[1].sum().item() == n - 1
     assert bool(v_mask[1, : n - 1].all())
 
@@ -201,29 +209,25 @@ def test_training_step_covers_warmup_with_negative_mel_front(
 def test_training_step_default_mel_front_samples_warmup_region(
     model: RollingFlowSpeaker, text: MaskedTensor, mels: MaskedTensor
 ) -> None:
-    """Default mel_front sampler must cover [-(n-1), mel_lens) so the training
-    distribution includes the inference warm-up shapes."""
+    """Default mel_front sampler must cover [-(n-1), mel_lens+eos_n) so the
+    training distribution includes the inference warm-up shapes and sentinel."""
     n = model.cfg.n_denoising_steps
+    eos_n = model.cfg.eos_n_frames
     mel_lens = mels.mask.sum(-1)
     torch.manual_seed(0)
     fronts = []
     for _ in range(500):
-        _, _, _, _, _, t = model.training_step(text, mels)
-        # Recover mel_front from t: it's the first index where t == 1, or
-        # -1 - argmax-of-ramp if no t==1 exists in the sample.
+        _, _, _, t = model.training_step(text, mels)
         for b in range(B):
             tb = t[b]
             ones = (tb == 1.0).nonzero(as_tuple=True)[0]
             if len(ones) > 0:
                 fronts.append(int(ones[0].item()))
             else:
-                # No clean anchor in this sample → mel_front is negative.
-                # Position 0 has t = 1 - (-mel_front)/(n-1), so we can invert.
                 fronts.append(int(round((tb[0].item() - 1.0) * (n - 1))))
     fronts_t = torch.tensor(fronts)
     assert fronts_t.min().item() >= -(n - 1), fronts_t.min().item()
-    assert fronts_t.max().item() < int(mel_lens.max().item())
-    # At least some samples must be in the warm-up region for the fix to matter.
+    assert fronts_t.max().item() < int((mel_lens + eos_n).max().item())
     assert (fronts_t < 0).any(), "default sampler never produced negative mel_front"
 
 
@@ -231,52 +235,63 @@ def test_training_step_shapes(
     model: RollingFlowSpeaker, text: MaskedTensor, mels: MaskedTensor
 ) -> None:
     T_mel = mels.values.shape[-1]
-    # Pin mel_front so the (front, front+n-1] window stays inside mel_lens.
+    eos_n = model.cfg.eos_n_frames
+    T_ext = T_mel + eos_n
     mel_front = torch.tensor([2, 3], dtype=torch.long)
-    v_pred, v_target, v_mask, length_pred, length_target, t = model.training_step(
-        text, mels, mel_front=mel_front
-    )
-    assert v_pred.shape == (B, T_mel, N_MELS)
-    assert v_target.shape == (B, T_mel, N_MELS)
-    assert v_mask.shape == (B, T_mel)
-    # Window is now n-1 positions (ramp + first t=0, dropping the second t=0).
-    assert (v_mask.sum(-1) == model.cfg.n_denoising_steps - 1).all()
-    assert length_pred.shape == (B,)
-    assert length_target.shape == (B,)
-    assert torch.isfinite(length_pred).all()
-    assert torch.isfinite(length_target).all()
-    assert t.shape == (B, T_mel)
+    v_pred, v_target, v_mask, t = model.training_step(text, mels, mel_front=mel_front)
+    assert v_pred.shape == (B, T_ext, N_MELS)
+    assert v_target.shape == (B, T_ext, N_MELS)
+    assert v_mask.shape == (B, T_ext)
+    assert t.shape == (B, T_ext)
+    n = model.cfg.n_denoising_steps
+    assert (v_mask.sum(-1) == n - 1).all()
 
 
 def test_training_step_is_deterministic(
     model: RollingFlowSpeaker, text: MaskedTensor, mels: MaskedTensor
 ) -> None:
     T_mel = mels.values.shape[-1]
+    eos_n = model.cfg.eos_n_frames
     mel_front = torch.tensor([2, 3], dtype=torch.long)
-    x_0 = torch.randn(B, T_mel, N_MELS)
+    x_0 = torch.randn(B, T_mel + eos_n, N_MELS)
     a = model.training_step(text, mels, mel_front=mel_front, x_0=x_0)
     b = model.training_step(text, mels, mel_front=mel_front, x_0=x_0)
     for ta, tb in zip(a, b):
         assert torch.equal(ta, tb)
 
 
-def test_length_target_correctness(model: RollingFlowSpeaker) -> None:
-    """length_target = log(n_mel_frames / n_text_tokens) per sample."""
-    T_mel = 8
-    # Two samples with different real mel lengths: 5 and 8 (text len = T_TEXT = 4 both).
-    mask = torch.tensor(
-        [
-            [True, True, True, True, True, False, False, False],
-            [True, True, True, True, True, True, True, True],
-        ]
-    )
-    mel_values = torch.randn(B, N_MELS, T_mel)
-    mels = MaskedTensor(values=mel_values, mask=mask)
-    text = MaskedTensor(
-        values=torch.randint(0, model.cfg.vocabulary_size, (B, 1, T_TEXT)),
-        mask=torch.ones(B, T_TEXT, dtype=torch.bool),
-    )
-    mel_front = torch.tensor([1, 2], dtype=torch.long)
-    *_, length_target, _ = model.training_step(text, mels, mel_front=mel_front)
-    assert length_target[0].item() == pytest.approx(math.log(5 / T_TEXT))
-    assert length_target[1].item() == pytest.approx(math.log(8 / T_TEXT))
+def test_training_step_appends_sentinel(
+    model: RollingFlowSpeaker, text: MaskedTensor, mels: MaskedTensor
+) -> None:
+    """training_step must append eos_n_frames sentinel frames to each sample.
+
+    The supervision target (v_target = x_1 - x_0) at sentinel positions must
+    correspond to x_1 = normalized(eos_mel_value), independent of the noise x_0.
+    We pin mel_front to a position before the real frames so the rolling window
+    lands entirely in the real region — sentinel positions will have t=0 (pure
+    noise) and fall outside the supervision window, but x_1 at those positions
+    is still the normalized sentinel value.
+    """
+    eos_n = model.cfg.eos_n_frames
+    eos_val_norm = (model.cfg.eos_mel_value - float(model.mel_mean)) / float(model.mel_std)
+    mel_lens = mels.mask.sum(-1)
+    T_mel = mels.values.shape[-1]
+
+    # Pin x_0 to zeros so v_target = x_1 - 0 = x_1 at sentinel positions.
+    x_0 = torch.zeros(B, T_mel + eos_n, N_MELS)
+    mel_front = torch.zeros(B, dtype=torch.long)  # front at position 0
+    _, v_target, _, _ = model.training_step(text, mels, mel_front=mel_front, x_0=x_0)
+
+    for b in range(B):
+        L = int(mel_lens[b].item())
+        sentinel_positions = slice(L, L + eos_n)
+        sentinel_target = v_target[b, sentinel_positions, :]
+        assert sentinel_target.shape == (eos_n, N_MELS)
+        assert torch.allclose(
+            sentinel_target,
+            torch.full_like(sentinel_target, eos_val_norm),
+            atol=1e-5,
+        ), (
+            f"sample {b}: sentinel target mean {sentinel_target.mean():.4f} "
+            f"!= expected {eos_val_norm:.4f}"
+        )

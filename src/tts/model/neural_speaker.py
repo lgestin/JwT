@@ -7,13 +7,8 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from tts.model.transformer import (
-    FeedForward,
-    QKNorm,
-    RMSNorm,
-    SelfAttention,
     Transformer,
     TransformerConfig,
-    precompute_freqs_cis,
 )
 
 
@@ -27,9 +22,10 @@ class RollingFlowConfig:
     vocabulary_size: int = 0
     mel_dim: int = 100
     n_denoising_steps: int = 32
-    length_loss_weight: float = 1.0
-    length_encoder_num_layers: int = 2
     max_mel_len: int = 2048
+    eos_n_frames: int = 3
+    eos_mel_value: float = -15.0
+    eos_detect_threshold: float = -11.0
 
 
 @dataclass
@@ -54,109 +50,6 @@ _LJSPEECH_LOG_MEL_MEAN = -5.896610
 _LJSPEECH_LOG_MEL_STD = 2.226763
 
 
-class _TextEncoderBlock(nn.Module):
-    """Transformer block without AdaLN — text-only, no timestep conditioning."""
-
-    def __init__(self, dim: int, num_heads: int, mlp_ratio: float = 4.0):
-        super().__init__()
-        self.norm1 = RMSNorm(dim)
-        self.attn = SelfAttention(dim, num_heads)
-        self.norm2 = RMSNorm(dim)
-        self.ff = FeedForward(dim, mlp_ratio)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        freqs_cis: torch.Tensor,
-        mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        x = x + self.attn(self.norm1(x), freqs_cis, mask)
-        x = x + self.ff(self.norm2(x))
-        return x
-
-
-class _SingleQueryCrossAttention(nn.Module):
-    """Cross-attention with a single learned query (no RoPE on either side)."""
-
-    def __init__(self, dim: int, num_heads: int):
-        super().__init__()
-        assert dim % num_heads == 0
-        self.num_heads = num_heads
-        self.q_proj = nn.Linear(dim, dim, bias=False)
-        self.kv_proj = nn.Linear(dim, 2 * dim, bias=False)
-        self.qk_norm = QKNorm(dim // num_heads)
-        self.proj = nn.Linear(dim, dim, bias=False)
-
-    def forward(
-        self,
-        query: torch.Tensor,
-        context: torch.Tensor,
-        context_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """query: (B, 1, D), context: (B, L, D), context_mask: (B, L) bool."""
-        q = self.q_proj(query)
-        kv = self.kv_proj(context)
-        q = rearrange(q, "B L (H D) -> B H L D", H=self.num_heads)
-        k, v = rearrange(kv, "B L (K H D) -> K B H L D", K=2, H=self.num_heads)
-        q, k = self.qk_norm(q, k)
-        attn_mask = (
-            context_mask[:, None, None, :] if context_mask is not None else None
-        )
-        x = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
-        x = rearrange(x, "B H L D -> B L (H D)")
-        return self.proj(x)
-
-
-class TextLengthEncoder(nn.Module):
-    """Predicts log(mel_frames / text_tokens) from text tokens alone.
-
-    Architecture: token embedding → N self-attention blocks (no AdaLN) →
-    a learned query cross-attends to the encoder outputs → MLP head → scalar.
-    The scalar `pred` is interpreted as `log(L / n_text_tokens)`, so
-    `L_hat = n_text_tokens * exp(pred)`.
-    """
-
-    def __init__(
-        self,
-        vocabulary_size: int,
-        dim: int,
-        num_heads: int,
-        num_layers: int,
-        mlp_ratio: float = 4.0,
-        max_text_len: int = 8192,
-        rope_theta: float = 10000.0,
-    ):
-        super().__init__()
-        self.embed = nn.Embedding(vocabulary_size, dim)
-        self.blocks = nn.ModuleList(
-            [_TextEncoderBlock(dim, num_heads, mlp_ratio) for _ in range(num_layers)]
-        )
-        self.norm = RMSNorm(dim)
-        self.query = nn.Parameter(torch.randn(dim) * 0.02)
-        self.cross_attn = _SingleQueryCrossAttention(dim, num_heads)
-        self.head = nn.Sequential(
-            nn.Linear(dim, dim),
-            nn.SiLU(),
-            nn.Linear(dim, 1),
-        )
-        freqs_cis = precompute_freqs_cis(max_text_len, dim // num_heads, rope_theta)
-        self.register_buffer("freqs_cis", freqs_cis, persistent=False)
-
-    def forward(self, text: "MaskedTensor") -> torch.Tensor:
-        """text.values: (B, 1, T_text); text.mask: (B, T_text). Returns (B,)."""
-        text_ids = text.values.squeeze(-2)  # (B, T_text)
-        B, T_text = text_ids.shape
-        x = self.embed(text_ids)
-        freqs_cis = self.freqs_cis[:, :, :T_text]
-        attn_mask = text.mask[:, None, None, :]  # (B, 1, 1, T_text)
-        for block in self.blocks:
-            x = block(x, freqs_cis, attn_mask)
-        x = self.norm(x)
-        q = self.query.view(1, 1, -1).expand(B, 1, -1)
-        pooled = self.cross_attn(q, x, context_mask=text.mask)  # (B, 1, D)
-        return self.head(pooled).squeeze(-1).squeeze(-1)  # (B,)
-
-
 class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
     def __init__(self, cfg: RollingFlowConfig):
         nn.Module.__init__(self)
@@ -168,15 +61,6 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         self.text_modality = nn.Parameter(torch.randn(dim) * 0.02)
         self.mel_modality = nn.Parameter(torch.randn(dim) * 0.02)
         self.transformer = Transformer(cfg.transformer_config)
-        self.length_encoder = TextLengthEncoder(
-            vocabulary_size=cfg.vocabulary_size,
-            dim=dim,
-            num_heads=cfg.transformer_config.num_heads,
-            num_layers=cfg.length_encoder_num_layers,
-            mlp_ratio=cfg.transformer_config.mlp_ratio,
-            max_text_len=cfg.transformer_config.max_seq_len,
-            rope_theta=cfg.transformer_config.rope_theta,
-        )
         # Global log-mel stats (LJSpeech 24 kHz, BigVGAN log-mels). The model
         # operates in normalized space; speak() denormalizes before returning.
         self.register_buffer(
@@ -270,75 +154,78 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         torch.Tensor,
         torch.BoolTensor,
         torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
     ]:
-        """Sample a rolling front + noise, run forward, and return loss inputs.
+        """Append EOS sentinel frames, sample a rolling front, run forward, return loss inputs.
 
         Optional args let callers pin the random choices for reproducibility:
         - mel_front: (B,) long, where each sample's denoising front lands;
-          defaults to a uniform sample in [-(n-1), mel_lens) so negative values
-          reproduce the inference warm-up distribution
-        - x_0:       (B, T_mel, mel_dim), the noise tensor mixed with x_1
+          defaults to a uniform sample in [-(n-1), mel_lens+eos_n_frames) so
+          negative values reproduce the inference warm-up distribution
+        - x_0:       (B, T_mel+eos_n_frames, mel_dim), the noise tensor
         - n:         override for cfg.n_denoising_steps
 
-        Returns (v_pred, v_target, v_mask, length_pred, length_target, t):
-        - v_pred:        (B, T_mel, mel_dim)  predicted velocity
-        - v_target:      (B, T_mel, mel_dim)  flow-matching velocity target
-        - v_mask:        (B, T_mel)           supervision mask for the ramp
-        - length_pred:   (B,)                 predicted log(L / n_text_tokens)
-        - length_target: (B,)                 log(L / n_text_tokens) ground truth
-        - t:             (B, T_mel)           per-position rolling timestep
+        Returns (v_pred, v_target, v_mask, t):
+        - v_pred:   (B, T_mel+eos_n_frames, mel_dim)  predicted velocity
+        - v_target: (B, T_mel+eos_n_frames, mel_dim)  flow-matching velocity target
+        - v_mask:   (B, T_mel+eos_n_frames)           supervision mask for the ramp
+        - t:        (B, T_mel+eos_n_frames)           per-position rolling timestep
         """
         B, mel_dim, T_mel = mels.values.shape
         device = mels.values.device
         n = n if n is not None else self.cfg.n_denoising_steps
         mel_lens = mels.mask.sum(-1)
-        text_lens = text.mask.sum(-1)
+
+        eos_n = self.cfg.eos_n_frames
+        eos_val = self.cfg.eos_mel_value
+        T_mel_ext = T_mel + eos_n
+
+        # Build extended values: real frames followed by sentinel, then padding.
+        # values_ext starts as the padded real frames extended by eos_n zero columns.
+        values_ext = F.pad(mels.values, (0, eos_n))  # (B, mel_dim, T_mel_ext)
+        mel_idx_ext = torch.arange(T_mel_ext, device=device).unsqueeze(0)  # (1, T_mel_ext)
+        in_sentinel = (mel_idx_ext >= mel_lens.unsqueeze(1)) & (
+            mel_idx_ext < (mel_lens + eos_n).unsqueeze(1)
+        )  # (B, T_mel_ext)
+        values_ext = torch.where(
+            in_sentinel.unsqueeze(1),
+            torch.full_like(values_ext, eos_val),
+            values_ext,
+        )
+
+        in_real = mel_idx_ext < mel_lens.unsqueeze(1)  # (B, T_mel_ext)
+        mask_ext = in_real | in_sentinel  # (B, T_mel_ext)
+
+        mel_lens_ext = mel_lens + eos_n
 
         if mel_front is None:
-            # Sample mel_front in [-(n-1), mel_lens). Negative values reproduce
-            # the inference warm-up shapes (partial ramp, no clean anchor yet),
-            # which the model otherwise never sees in training.
             u = torch.rand(B, device=device)
-            mel_front = (u * (mel_lens.float() + (n - 1)) - (n - 1)).long()
-        # Normalize log-mels to roughly N(0, 1) so noise and signal share scale.
-        x_1 = (mels.values.transpose(1, 2) - self.mel_mean) / self.mel_std
+            mel_front = (u * (mel_lens_ext.float() + (n - 1)) - (n - 1)).long()
+
+        # Normalize to ~N(0,1) so noise and signal share scale.
+        x_1 = (values_ext.transpose(1, 2) - self.mel_mean) / self.mel_std
         if x_0 is None:
             x_0 = torch.randn_like(x_1)
 
-        mel_idx = torch.arange(T_mel, device=device).expand(B, T_mel)
+        mel_idx = torch.arange(T_mel_ext, device=device).expand(B, T_mel_ext)
         t = torch.clamp(
             1.0 - (mel_idx - mel_front.unsqueeze(1)).float() / (n - 1),
             0.0,
             1.0,
-        )  # (B, T_mel)
+        )  # (B, T_mel_ext)
 
         x_t = (1 - t.unsqueeze(-1)) * x_0 + t.unsqueeze(-1) * x_1
         v_target = x_1 - x_0
 
-        noisy_mels = MaskedTensor(values=x_t.transpose(1, 2), mask=mels.mask)
+        noisy_mels = MaskedTensor(values=x_t.transpose(1, 2), mask=mask_ext)
         v_pred = self.forward(text, noisy_mels, t)
 
-        # Supervise the active rolling window: ramp (0 < t < 1) + first t=0.
-        # Positions at relative-n from the front (the second t=0) are never
-        # touched by the inference Euler loop, so supervising them trains a
-        # behavior the model would never use.
         v_mask = (
-            mels.mask
+            mask_ext
             & (mel_idx > mel_front.unsqueeze(1))
             & (mel_idx < mel_front.unsqueeze(1) + n)
         )
 
-        # Global length predictor: a single scalar per sample, predicted from
-        # text alone, representing log(frames-per-token). Reconstruction at
-        # inference: L_hat = n_text_tokens * exp(pred).
-        length_pred = self.length_encoder(text)
-        length_target = torch.log(
-            mel_lens.float() / text_lens.float().clamp(min=1)
-        )
-
-        return v_pred, v_target, v_mask, length_pred, length_target, t
+        return v_pred, v_target, v_mask, t
 
     @torch.no_grad()
     def speak(
@@ -347,20 +234,18 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         *,
         x_0: torch.Tensor | None = None,
     ) -> MaskedTensor:
-        """Generate mels by rolling-Euler integration up to a predicted length.
+        """Generate mels via rolling-Euler integration, stopping on the EOS sentinel.
 
-        The length encoder predicts per-sample log(L / n_text_tokens) from text
-        alone; the recovered L_hat (clamped to [1, cfg.max_mel_len]) is the
-        exact number of frames generated for each sample. The batched buffer
-        grows up to the longest L_hat to keep attention context consistent.
+        Each generated frame is checked once it is fully denoised (t → 1). When
+        its denormalized mean drops below cfg.eos_detect_threshold the loop marks
+        that sample done and records the trim position. The loop exits once all
+        samples are done or cfg.max_mel_len frames have been added.
 
-        text:     MaskedTensor — values (B, 1, T_text), mask (B, T_text)
-        x_0:      optional (B, mel_dim, >= cfg.max_mel_len) noise override for
-                  reproducibility (sliced one frame per step as the buffer grows)
+        text: MaskedTensor — values (B, 1, T_text), mask (B, T_text)
+        x_0:  optional (B, mel_dim, max_mel_len) noise override for reproducibility
 
-        Returns a MaskedTensor with values (B, mel_dim, T_out) and mask
-        (B, T_out) where T_out = L_hat.max(). Each sample's mask sums to its
-        predicted length; positions beyond that are False.
+        Returns a MaskedTensor with values (B, mel_dim, T_out) where T_out is the
+        longest trim across the batch. Each sample's mask sums to its trim length.
         """
         B = text.values.shape[0]
         device = text.values.device
@@ -369,35 +254,26 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         mel_dim = self.cfg.mel_dim
         max_T = self.cfg.max_mel_len
 
-        # Predict per-sample length from text alone.
-        text_lens = text.mask.sum(-1)
-        length_pred = self.length_encoder(text)  # (B,)
-        L_hat = (text_lens.float() * torch.exp(length_pred)).round().long()
-        L_hat = L_hat.clamp(min=1, max=max_T)
-        T_out = int(L_hat.max().item())
-
         if x_0 is None:
             x_0 = torch.randn(B, mel_dim, max_T, device=device)
         else:
             assert x_0.shape[-1] >= max_T, (
-                f"x_0 must have at least cfg.max_mel_len ({max_T}) frames along "
-                f"the time axis, got {x_0.shape[-1]}"
+                f"x_0 must have at least cfg.max_mel_len ({max_T}) frames, "
+                f"got {x_0.shape[-1]}"
             )
 
         mels_values = torch.empty(B, mel_dim, 0, device=device, dtype=x_0.dtype)
+        done = torch.zeros(B, dtype=torch.bool, device=device)
+        trim = torch.full((B,), -1, dtype=torch.long, device=device)
 
-        for k in range(T_out + n - 2):
-            # Grow the buffer by one new noise frame — the new t=0 frontier.
-            if k < T_out:
+        for k in range(max_T + n - 1):
+            if k < max_T:
                 mels_values = torch.cat([mels_values, x_0[..., k : k + 1]], dim=-1)
 
             L = mels_values.shape[-1]
             mel_idx = torch.arange(L, device=device).expand(B, L)
-            # Each sample's true (predicted) length caps in_mels so the
-            # attention distribution matches training.
-            buffer_mask = mel_idx < L_hat.clamp(max=L).unsqueeze(1)
+            buffer_mask = torch.ones(B, L, dtype=torch.bool, device=device)
 
-            # t per position = (steps since it was added) / (n - 1), clamped.
             t = torch.clamp((k - mel_idx).float() / (n - 1), 0.0, 1.0)
 
             mels_mt = MaskedTensor(values=mels_values, mask=buffer_mask)
@@ -407,10 +283,36 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             update = (v_pred * dt) * in_window.unsqueeze(-1)
             mels_values = mels_values + update.transpose(1, 2)
 
-        mels_values = mels_values[..., :T_out]
-        mel_idx = torch.arange(T_out, device=device).expand(B, T_out)
-        mask = mel_idx < L_hat.unsqueeze(1)
+            # Check the frame that just reached t=1 for the EOS sentinel.
+            if k >= n - 1:
+                p = k - (n - 1)
+                frame_raw = mels_values[:, :, p] * self.mel_std + self.mel_mean
+                triggered = (~done) & (frame_raw.mean(dim=-1) < self.cfg.eos_detect_threshold)
+                trim[triggered] = p
+                done |= triggered
 
-        # Denormalize from N(0, 1) space to log-mel scale for downstream consumers.
-        mels_values = mels_values * self.mel_std + self.mel_mean
-        return MaskedTensor(values=mels_values, mask=mask)
+            if done.all():
+                break
+
+        # Samples that hit max_T without triggering: scan for first below-threshold frame.
+        if not done.all():
+            frames_raw = mels_values * self.mel_std + self.mel_mean  # (B, mel_dim, L)
+            frame_means = frames_raw.mean(dim=1)  # (B, L)
+            L = mels_values.shape[-1]
+            for b in range(B):
+                if trim[b] == -1:
+                    below = (frame_means[b] < self.cfg.eos_detect_threshold).nonzero(
+                        as_tuple=True
+                    )[0]
+                    trim[b] = int(below[0].item()) if len(below) > 0 else L
+
+        trim = trim.clamp(min=0, max=max_T)
+        T_out = int(trim.max().item())
+        T_out = max(T_out, 1)
+
+        mels_out = mels_values[..., :T_out]
+        mel_idx_out = torch.arange(T_out, device=device).expand(B, T_out)
+        mask = mel_idx_out < trim.unsqueeze(1)
+
+        mels_out = mels_out * self.mel_std + self.mel_mean
+        return MaskedTensor(values=mels_out, mask=mask)
