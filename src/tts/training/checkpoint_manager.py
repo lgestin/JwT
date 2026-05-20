@@ -22,6 +22,14 @@ class CheckpointManager:
         self.exp_path: Path = Path(self.exp_path)
         self.exp_path.mkdir(parents=True, exist_ok=True)
         self.best_checkpoint_path = self.exp_path / "checkpoint.best.pt"
+        self.latest_checkpoint_path = self.exp_path / "checkpoint.latest.pt"
+
+    @staticmethod
+    def _point_symlink(link_path: Path, target_name: str) -> None:
+        """(Re)point a symlink at a sibling file, replacing any existing one."""
+        if link_path.is_symlink():
+            link_path.unlink()
+        link_path.symlink_to(target_name)
 
     def save(
         self,
@@ -79,13 +87,12 @@ class CheckpointManager:
         checkpoint_path = self.exp_path / f"checkpoint.{step}.pt"
         torch.save(checkpoint_data, checkpoint_path)
 
-        # Update best checkpoint symlink if this is the best
+        # Point the "latest" symlink at the checkpoint just written.
+        self._point_symlink(self.latest_checkpoint_path, checkpoint_path.name)
+
+        # Point the "best" symlink here if this is the best loss so far.
         if self.save_best and best_loss < float("inf"):
-            # Remove old symlink if it exists
-            if self.best_checkpoint_path.is_symlink():
-                self.best_checkpoint_path.unlink()
-            # Create new symlink to current checkpoint
-            self.best_checkpoint_path.symlink_to(checkpoint_path.name)
+            self._point_symlink(self.best_checkpoint_path, checkpoint_path.name)
 
         return checkpoint_path
 
@@ -96,7 +103,11 @@ class CheckpointManager:
         scaler: torch.cuda.amp.GradScaler | None = None,
         map_location: torch.device | str | None = None,
     ) -> dict[str, Any]:
-        """Load the latest checkpoint.
+        """Load the most recent checkpoint.
+
+        Follows the "checkpoint.latest.pt" symlink that `save` maintains. Runs
+        created before that symlink existed fall back to the highest-numbered
+        "checkpoint.<step>.pt" on disk.
 
         Args:
             model: Model to load state into
@@ -107,18 +118,21 @@ class CheckpointManager:
         Returns:
             Dictionary with checkpoint metadata
         """
-        # Find latest checkpoint
-        checkpoints = sorted(
-            self.exp_path.glob("checkpoint.*.pt"),
-            key=lambda p: int(p.stem.split(".")[-1]),
-        )
+        latest = self.latest_checkpoint_path
+        if not latest.exists():
+            # Fallback for runs predating the latest symlink. Glob only
+            # numeric-stepped checkpoints — "checkpoint.*.pt" would also match
+            # the "checkpoint.best.pt" symlink, and int("best") raises.
+            checkpoints = sorted(
+                self.exp_path.glob("checkpoint.[0-9]*.pt"),
+                key=lambda p: int(p.stem.split(".")[-1]),
+            )
+            if not checkpoints:
+                raise FileNotFoundError(f"No checkpoints found in {self.exp_path}")
+            latest = checkpoints[-1]
 
-        if not checkpoints:
-            raise FileNotFoundError(f"No checkpoints found in {self.exp_path}")
-
-        latest_checkpoint = checkpoints[-1]
         return self.load(
-            latest_checkpoint,
+            latest,
             model=model,
             optimizer=optimizer,
             scaler=scaler,
@@ -222,8 +236,10 @@ class CheckpointManager:
         Args:
             keep_n: Number of recent checkpoints to keep
         """
+        # Glob only numeric-stepped checkpoints — "checkpoint.*.pt" would also
+        # match the "checkpoint.best.pt" symlink, and int("best") raises.
         checkpoints = sorted(
-            self.exp_path.glob("checkpoint.*.pt"),
+            self.exp_path.glob("checkpoint.[0-9]*.pt"),
             key=lambda p: int(p.stem.split(".")[-1]),
         )
 
