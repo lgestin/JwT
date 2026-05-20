@@ -200,6 +200,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         accum: dict[str, float] = {}
         diag_accum: dict[str, torch.Tensor] = {}
         diag_micro = 0
+        bin_accum: dict[str, torch.Tensor] = {}
         if self.device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(self.device)
         last_log_step = self.step
@@ -229,10 +230,11 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                     self.optimizer.train()
                 self.model.train()
 
-                metrics, diag = self.training_step(batch)
+                metrics, scalars, bins = self.training_step(batch)
                 for k, v in metrics.items():
                     accum[k] = accum.get(k, 0.0) + float(v)
-                self._accumulate_diagnostics(diag_accum, diag)
+                self._accumulate_diagnostics(diag_accum, scalars)
+                self._accumulate_diagnostics(bin_accum, bins)
                 micro += 1
                 diag_micro += 1
 
@@ -255,19 +257,28 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                         last_log_step = self.step
                         last_log_time = time.perf_counter()
 
+                    if self.step % self.config.hist_steps == 0:
+                        self._emit_loss_histogram(bin_accum, self.step, "train")
+                        bin_accum = {}
+
                     if self.step >= self.max_steps:
                         self.logger.close()
                         return
 
     def training_step(
         self, batch: Batch
-    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+    ) -> tuple[
+        dict[str, torch.Tensor],
+        dict[str, torch.Tensor],
+        dict[str, torch.Tensor],
+    ]:
         """Single micro-step: forward + (under training) scaled backward.
 
         Loss is divided by grad_accum_steps before backward so accumulated
-        gradients average across the window. Returns `(metrics, diag)`:
-        `metrics` are the headline scalars (unscaled loss); `diag` holds the
-        on-GPU diagnostic tensors the caller accumulates and flushes lazily.
+        gradients average across the window. Returns `(metrics, scalars,
+        bins)`: `metrics` are the headline scalars (unscaled loss); `scalars`
+        are on-GPU diagnostics averaged over the logging window; `bins` are the
+        loss-by-t (sum, count) tensors accumulated for the histogram.
         """
         batch = batch.to(self.device)
         text = MaskedTensor(values=batch.tokens.unsqueeze(1), mask=batch.tokens_mask)
@@ -315,7 +326,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             "fm_loss": fm_loss.detach(),
             "logmel_l1": logmel_l1.detach(),
         }
-        diag = self._step_diagnostics(out, text, acoustic)
+        scalars, bins = self._step_diagnostics(out, text, acoustic)
 
         if self.model.training:
             scaled = loss / self.config.grad_accum_steps
@@ -324,29 +335,30 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             else:
                 scaled.backward()
 
-        return metrics, diag
+        return metrics, scalars, bins
 
     def _step_diagnostics(
         self, out: TrainingStepOutput, text: MaskedTensor, acoustic: MaskedTensor
-    ) -> dict[str, torch.Tensor]:
-        """Per-micro-step diagnostic tensors — all kept on-GPU (no host sync).
+    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+        """Per-micro-step diagnostics — all kept on-GPU (no host sync).
 
-        `bin_sums`/`bin_counts` are pure sums; the scalar entries are summed by
-        the caller and divided by the micro-step count at flush time.
+        Returns `(scalars, bins)`: `scalars` are 0-dim tensors the caller
+        averages over the logging window; `bins` holds the loss-by-t
+        `(sum, count)` tensors the caller accumulates for the histogram.
         """
         bin_sums, bin_counts = binned_loss_stats(
             out.per_pos_loss, out.t, out.v_mask, self.config.n_loss_bins
         )
         ac_mean, ac_std = masked_mean_std(acoustic.values, out.v_mask)
-        return {
-            "bin_sums": bin_sums,
-            "bin_counts": bin_counts,
+        scalars = {
             "vmask_fill": out.v_mask.float().mean(),
             "ac_len_mean": acoustic.mask.sum(-1).float().mean(),
             "text_len_mean": text.mask.sum(-1).float().mean(),
             "ac_target_mean": ac_mean,
             "ac_target_std": ac_std,
         }
+        bins = {"bin_sums": bin_sums, "bin_counts": bin_counts}
+        return scalars, bins
 
     @staticmethod
     def _accumulate_diagnostics(
@@ -435,7 +447,6 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             torch.cuda.reset_peak_memory_stats(self.device)
 
         self._emit_diagnostics(reduced, self.step, "train", host_metrics=host)
-        self._emit_loss_histogram(diag_accum, self.step, "train")
 
     def _optimizer_step(self) -> dict[str, torch.Tensor]:
         """Clip + step + zero_grad. Called once per accumulation window."""
@@ -463,12 +474,14 @@ class TTSRollingFlowMatchingTrainer(Trainer):
 
         sums: dict[str, float] = {}
         diag_accum: dict[str, torch.Tensor] = {}
+        bin_accum: dict[str, torch.Tensor] = {}
         count = 0
         for vbatch in self.valid_dloader:
-            metrics, diag = self.training_step(vbatch)
+            metrics, scalars, bins = self.training_step(vbatch)
             for k, v in metrics.items():
                 sums[k] = sums.get(k, 0.0) + float(v)
-            self._accumulate_diagnostics(diag_accum, diag)
+            self._accumulate_diagnostics(diag_accum, scalars)
+            self._accumulate_diagnostics(bin_accum, bins)
             count += 1
 
         if count == 0:
@@ -479,7 +492,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self._emit_diagnostics(
             self._reduce_diagnostics(diag_accum, count), self.step, "valid"
         )
-        self._emit_loss_histogram(diag_accum, self.step, "valid")
+        self._emit_loss_histogram(bin_accum, self.step, "valid")
 
         loss_val = val_metrics.get("loss", float("inf"))
         if loss_val < self.best_loss:
