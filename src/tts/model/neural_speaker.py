@@ -4,8 +4,13 @@ from typing import Protocol
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
 
+from tts.data.audio.codecs import Codec, Codecs
+from tts.model.flow import (
+    FlowParametrizations,
+    JustWaveformTransformersParametrization,
+    RectifiedFlowParametrization,
+)
 from tts.model.transformer import (
     Transformer,
     TransformerConfig,
@@ -13,19 +18,37 @@ from tts.model.transformer import (
 
 
 class NeuralSpeaker(Protocol):
-    def speak(self, text: "MaskedTensor") -> "MaskedTensor": ...
+    def speak(self, text: "MaskedTensor", codec: Codec) -> "MaskedTensor": ...
 
 
 @dataclass
 class RollingFlowConfig:
     transformer_config: TransformerConfig = field(default_factory=TransformerConfig)
     vocabulary_size: int = 0
-    mel_dim: int = 100
+    codec: Codecs = Codecs.BIGVGAN
+    parametrization: FlowParametrizations = FlowParametrizations.RECTIFIED_FLOW
+    acoustic_dim: int = 100
     n_denoising_steps: int = 32
-    max_mel_len: int = 2048
+    max_acoustic_len: int = 2048
     eos_n_frames: int = 3
-    eos_mel_value: float = -15.0
-    eos_detect_threshold: float = -11.0
+
+
+def _per_pos_mse(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Per-position MSE: reduces only over the last (acoustic_dim) axis."""
+    return (a - b).pow(2).mean(-1)
+
+
+def _per_pos_l1(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Per-position L1: reduces only over the last (acoustic_dim) axis."""
+    return (a - b).abs().mean(-1)
+
+
+# Mirror flow.py's default loss_fn per parametrization, but per-position so the
+# trainer can apply the rolling-window v_mask before reducing.
+_PER_POS_LOSS_FN = {
+    RectifiedFlowParametrization: _per_pos_mse,
+    JustWaveformTransformersParametrization: _per_pos_l1,
+}
 
 
 @dataclass
@@ -46,70 +69,86 @@ class MaskedTensor:
         return self.mask.sum(-1)
 
 
-_LJSPEECH_LOG_MEL_MEAN = -5.896610
-_LJSPEECH_LOG_MEL_STD = 2.226763
+@dataclass
+class TrainingStepOutput:
+    """Result of `RollingFlowSpeaker.training_step` — all fields are GPU tensors.
+
+    `per_pos_loss` is the parametrization's per-position loss *before* the
+    rolling-window mask is applied; the trainer reuses it to bin the loss by
+    timestep without recomputing anything.
+    """
+
+    loss: torch.Tensor          # scalar, masked-mean of per_pos_loss
+    x_pred: torch.Tensor        # (B, T_ext, acoustic_dim) — recovered x_1
+    v_mask: torch.Tensor        # (B, T_ext) bool — rolling-window supervision mask
+    t: torch.Tensor             # (B, T_ext) — per-position timestep in [0, 1]
+    per_pos_loss: torch.Tensor  # (B, T_ext) — per-position loss before masking
 
 
 class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
     def __init__(self, cfg: RollingFlowConfig):
         nn.Module.__init__(self)
         self.cfg = cfg
+        # Resolve the parametrization class once — it's a static dispatch table,
+        # not an instance, so this stays free of training state.
+        self.param = cfg.parametrization.parametrization
+        self._per_pos_loss_fn = _PER_POS_LOSS_FN[self.param]
         dim = cfg.transformer_config.dim
         self.text_in = nn.Embedding(cfg.vocabulary_size, dim)
-        self.mel_in = nn.Linear(cfg.mel_dim, dim)
-        self.mel_out = nn.Linear(dim, cfg.mel_dim)
+        self.acoustic_in = nn.Linear(cfg.acoustic_dim, dim)
+        self.acoustic_out = nn.Linear(dim, cfg.acoustic_dim)
         self.text_modality = nn.Parameter(torch.randn(dim) * 0.02)
-        self.mel_modality = nn.Parameter(torch.randn(dim) * 0.02)
+        self.acoustic_modality = nn.Parameter(torch.randn(dim) * 0.02)
         self.transformer = Transformer(cfg.transformer_config)
-        # Global log-mel stats (LJSpeech 24 kHz, BigVGAN log-mels). The model
-        # operates in normalized space; speak() denormalizes before returning.
-        self.register_buffer(
-            "mel_mean", torch.tensor(_LJSPEECH_LOG_MEL_MEAN, dtype=torch.float32)
-        )
-        self.register_buffer(
-            "mel_std", torch.tensor(_LJSPEECH_LOG_MEL_STD, dtype=torch.float32)
-        )
 
     def forward(
         self,
         text: MaskedTensor,
-        mels: MaskedTensor,
+        acoustic: MaskedTensor,
         t: torch.Tensor,
     ) -> torch.Tensor:
-        """Predict velocity at every mel position.
+        """Run a forward pass and return the raw model output.
 
-        text.values: (B, 1, T_text)       text.mask: (B, T_text)
-        mels.values: (B, mel_dim, T_mel)  mels.mask: (B, T_mel)
-        t:           (B, T_mel)           per-mel-position timestep in [0, 1]
+        The semantic meaning of the returned tensor depends on the configured
+        parametrization (velocity for RectifiedFlow, x_1 for JWT). The model
+        itself is parametrization-agnostic; the parametrization class converts
+        this tensor into a loss (during training) or a velocity (during
+        sampling).
+
+        text.values:     (B, 1, T_text)             text.mask: (B, T_text)
+        acoustic.values: (B, acoustic_dim, T_ac)    acoustic.mask: (B, T_ac)
+        t:               (B, T_ac)                  per-acoustic-position timestep in [0, 1]
         returns:
-            v_pred: (B, T_mel, mel_dim)   predicted velocity
+            pred: (B, T_ac, acoustic_dim)            raw model output
         """
-        B, mel_dim, T_mel = mels.values.shape
+        B, acoustic_dim, T_ac = acoustic.values.shape
         text_ids = text.values.squeeze(-2)  # (B, T_text)
         T_text = text_ids.shape[-1]
-        T = T_text + T_mel
-        device = mels.values.device
+        T = T_text + T_ac
+        device = acoustic.values.device
 
         text_lens = text.mask.sum(-1)
-        mel_lens = mels.mask.sum(-1)
-        total_lens = text_lens + mel_lens
+        acoustic_lens = acoustic.mask.sum(-1)
+        total_lens = text_lens + acoustic_lens
 
         # Project both modalities into the transformer's hidden dim and tag them.
         text_lat = self.text_in(text_ids) + self.text_modality
-        mel_lat = self.mel_in(mels.values.transpose(1, 2)) + self.mel_modality
+        acoustic_lat = (
+            self.acoustic_in(acoustic.values.transpose(1, 2)) + self.acoustic_modality
+        )
         dim = text_lat.shape[-1]
 
-        # Pack [real text | real mels | trailing pad] per sample.
+        # Pack [real text | real acoustic | trailing pad] per sample.
         arange = torch.arange(T, device=device).expand(B, T)
-        in_text = F.pad(text.mask, (0, T_mel))
-        in_mels = F.pad(mels.mask, (T_text, 0))
+        in_text = F.pad(text.mask, (0, T_ac))
+        in_ac = F.pad(acoustic.mask, (T_text, 0))
         pack_idx = torch.where(
             in_text,
             arange,
             T_text + (arange - text_lens.unsqueeze(1)),
         ).clamp(min=0, max=T - 1)
 
-        x_concat = torch.cat([text_lat, mel_lat], dim=1)
+        x_concat = torch.cat([text_lat, acoustic_lat], dim=1)
         x_packed = torch.gather(x_concat, 1, pack_idx.unsqueeze(-1).expand(B, T, dim))
 
         # Pack per-position t: text positions are always clean (t=1).
@@ -118,176 +157,196 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         )
         t_packed = torch.gather(t_concat, 1, pack_idx)
 
-        # Keep masks in packed coords. in_text/in_mels above are in original
+        # Keep masks in packed coords. in_text/in_ac above are in original
         # coords and silently misalign the attention mask when text is padded.
         in_real_packed = arange < total_lens.unsqueeze(1)
-        in_mels_packed = (arange >= text_lens.unsqueeze(1)) & in_real_packed
+        in_ac_packed = (arange >= text_lens.unsqueeze(1)) & in_real_packed
 
         # Attention keys: visible up to and including the first real t=0 (the
         # "next frontier"). Pure-noise positions beyond it carry no signal
         # and would only distract attention.
-        is_zero_real = (t_packed == 0.0) & in_mels_packed
+        is_zero_real = (t_packed == 0.0) & in_ac_packed
         keep_first_zero = is_zero_real.cumsum(-1) <= 1
         attn_keys = in_real_packed & keep_first_zero  # (B, T)
         attn_mask = attn_keys.unsqueeze(1).unsqueeze(2)  # (B, 1, 1, T)
         out_packed = self.transformer(x_packed, t_packed, attn_mask)
-        v_pred_packed = self.mel_out(out_packed)  # (B, T, mel_dim)
+        pred_packed = self.acoustic_out(out_packed)  # (B, T, acoustic_dim)
 
-        # Unpack: mel position i in sample b lives at packed position text_lens[b] + i.
-        mel_idx = torch.arange(T_mel, device=device).expand(B, T_mel)
-        unpack_idx = (text_lens.unsqueeze(1) + mel_idx).clamp(max=T - 1)
-        v_pred = torch.gather(
-            v_pred_packed, 1, unpack_idx.unsqueeze(-1).expand(B, T_mel, mel_dim)
+        # Unpack: acoustic position i in sample b lives at packed position text_lens[b] + i.
+        ac_idx = torch.arange(T_ac, device=device).expand(B, T_ac)
+        unpack_idx = (text_lens.unsqueeze(1) + ac_idx).clamp(max=T - 1)
+        pred = torch.gather(
+            pred_packed, 1, unpack_idx.unsqueeze(-1).expand(B, T_ac, acoustic_dim)
         )
-        return v_pred
+        return pred
 
     def training_step(
         self,
         text: MaskedTensor,
-        mels: MaskedTensor,
+        acoustic: MaskedTensor,
         *,
-        mel_front: torch.LongTensor | None = None,
+        acoustic_front: torch.LongTensor | None = None,
         x_0: torch.Tensor | None = None,
         n: int | None = None,
-    ) -> tuple[
-        torch.Tensor,
-        torch.Tensor,
-        torch.BoolTensor,
-        torch.Tensor,
-    ]:
-        """Append EOS sentinel frames, sample a rolling front, run forward, return loss inputs.
+    ) -> TrainingStepOutput:
+        """Sample a rolling front, run forward, return masked loss + x_pred.
+
+        The trainer is expected to have already appended EOS sentinel frames and
+        normalized the values. `acoustic.values` is therefore (B, acoustic_dim,
+        T_ext) in normalized space with `acoustic.mask` covering real + sentinel.
 
         Optional args let callers pin the random choices for reproducibility:
-        - mel_front: (B,) long, where each sample's denoising front lands;
-          defaults to a uniform sample in [-(n-1), mel_lens+eos_n_frames) so
+        - acoustic_front: (B,) long, where each sample's denoising front lands;
+          defaults to a uniform sample in [-(n-1), acoustic_lens_ext) so
           negative values reproduce the inference warm-up distribution
-        - x_0:       (B, T_mel+eos_n_frames, mel_dim), the noise tensor
-        - n:         override for cfg.n_denoising_steps
+        - x_0: (B, T_ext, acoustic_dim), the noise tensor
+        - n: override for cfg.n_denoising_steps
 
-        Returns (v_pred, v_target, v_mask, t):
-        - v_pred:   (B, T_mel+eos_n_frames, mel_dim)  predicted velocity
-        - v_target: (B, T_mel+eos_n_frames, mel_dim)  flow-matching velocity target
-        - v_mask:   (B, T_mel+eos_n_frames)           supervision mask for the ramp
-        - t:        (B, T_mel+eos_n_frames)           per-position rolling timestep
+        Returns a `TrainingStepOutput`:
+        - loss:         scalar — masked-mean of the parametrization's per-position loss
+        - x_pred:       (B, T_ext, acoustic_dim) — predicted x_1 (normalized)
+                        recovered by the parametrization; used for codec-agnostic
+                        monitoring
+        - v_mask:       (B, T_ext) — supervision mask for the rolling window
+        - t:            (B, T_ext) — per-position rolling timestep
+        - per_pos_loss: (B, T_ext) — per-position loss before masking
         """
-        B, mel_dim, T_mel = mels.values.shape
-        device = mels.values.device
+        B, acoustic_dim, T_ext = acoustic.values.shape
+        device = acoustic.values.device
         n = n if n is not None else self.cfg.n_denoising_steps
-        mel_lens = mels.mask.sum(-1)
+        acoustic_lens_ext = acoustic.mask.sum(-1)
 
-        eos_n = self.cfg.eos_n_frames
-        eos_val = self.cfg.eos_mel_value
-        T_mel_ext = T_mel + eos_n
-
-        # Build extended values: real frames followed by sentinel, then padding.
-        # values_ext starts as the padded real frames extended by eos_n zero columns.
-        values_ext = F.pad(mels.values, (0, eos_n))  # (B, mel_dim, T_mel_ext)
-        mel_idx_ext = torch.arange(T_mel_ext, device=device).unsqueeze(0)  # (1, T_mel_ext)
-        in_sentinel = (mel_idx_ext >= mel_lens.unsqueeze(1)) & (
-            mel_idx_ext < (mel_lens + eos_n).unsqueeze(1)
-        )  # (B, T_mel_ext)
-        values_ext = torch.where(
-            in_sentinel.unsqueeze(1),
-            torch.full_like(values_ext, eos_val),
-            values_ext,
-        )
-
-        in_real = mel_idx_ext < mel_lens.unsqueeze(1)  # (B, T_mel_ext)
-        mask_ext = in_real | in_sentinel  # (B, T_mel_ext)
-
-        mel_lens_ext = mel_lens + eos_n
-
-        if mel_front is None:
+        if acoustic_front is None:
             u = torch.rand(B, device=device)
-            mel_front = (u * (mel_lens_ext.float() + (n - 1)) - (n - 1)).long()
+            acoustic_front = (
+                u * (acoustic_lens_ext.float() + (n - 1)) - (n - 1)
+            ).long()
 
-        # Normalize to ~N(0,1) so noise and signal share scale.
-        x_1 = (values_ext.transpose(1, 2) - self.mel_mean) / self.mel_std
+        x_1 = acoustic.values.transpose(1, 2)  # (B, T_ext, acoustic_dim), normalized
         if x_0 is None:
             x_0 = torch.randn_like(x_1)
 
-        mel_idx = torch.arange(T_mel_ext, device=device).expand(B, T_mel_ext)
+        ac_idx = torch.arange(T_ext, device=device).expand(B, T_ext)
         t = torch.clamp(
-            1.0 - (mel_idx - mel_front.unsqueeze(1)).float() / (n - 1),
+            1.0 - (ac_idx - acoustic_front.unsqueeze(1)).float() / (n - 1),
             0.0,
             1.0,
-        )  # (B, T_mel_ext)
+        )  # (B, T_ext)
+        t_b = t.unsqueeze(-1)  # (B, T_ext, 1) for broadcasting along acoustic_dim
 
-        x_t = (1 - t.unsqueeze(-1)) * x_0 + t.unsqueeze(-1) * x_1
-        v_target = x_1 - x_0
+        x_t = self.param.prepare_x_t(x_0, x_1, t_b)
 
-        noisy_mels = MaskedTensor(values=x_t.transpose(1, 2), mask=mask_ext)
-        v_pred = self.forward(text, noisy_mels, t)
+        noisy = MaskedTensor(values=x_t.transpose(1, 2), mask=acoustic.mask)
+        pred = self.forward(text, noisy, t)
 
         v_mask = (
-            mask_ext
-            & (mel_idx > mel_front.unsqueeze(1))
-            & (mel_idx < mel_front.unsqueeze(1) + n)
+            acoustic.mask
+            & (ac_idx > acoustic_front.unsqueeze(1))
+            & (ac_idx < acoustic_front.unsqueeze(1) + n)
         )
 
-        return v_pred, v_target, v_mask, t
+        # Per-position loss (B, T_ext) + recovered x_1 prediction (B, T_ext, D).
+        loss_out = self.param.loss(
+            x_t=x_t, timestep=t_b, pred=pred, x_0=x_0, x_1=x_1,
+            loss_fn=self._per_pos_loss_fn,
+        )
+        loss = (loss_out.loss * v_mask).sum() / v_mask.sum().clamp(min=1)
+        return TrainingStepOutput(
+            loss=loss,
+            x_pred=loss_out.x_pred,
+            v_mask=v_mask,
+            t=t,
+            per_pos_loss=loss_out.loss,
+        )
 
     @torch.no_grad()
     def speak(
         self,
         text: MaskedTensor,
+        codec: Codec,
         *,
         x_0: torch.Tensor | None = None,
     ) -> MaskedTensor:
-        """Generate mels via rolling-Euler integration, stopping on the EOS sentinel.
+        """Generate acoustic features via rolling-Euler integration, stopping on EOS.
 
         Each generated frame is checked once it is fully denoised (t → 1). When
-        its denormalized mean drops below cfg.eos_detect_threshold the loop marks
-        that sample done and records the trim position. The loop exits once all
-        samples are done or cfg.max_mel_len frames have been added.
+        codec.is_eos fires on its unnormalized form the loop marks that sample
+        done and records the trim position. The loop exits once all samples are
+        done or cfg.max_acoustic_len frames have been added.
 
-        text: MaskedTensor — values (B, 1, T_text), mask (B, T_text)
-        x_0:  optional (B, mel_dim, max_mel_len) noise override for reproducibility
+        text:  MaskedTensor — values (B, 1, T_text), mask (B, T_text)
+        codec: Codec used for unnormalize + EOS detection. Must match the codec
+               type that the model config was instantiated with.
+        x_0:   optional (B, acoustic_dim, max_acoustic_len) noise override.
 
-        Returns a MaskedTensor with values (B, mel_dim, T_out) where T_out is the
-        longest trim across the batch. Each sample's mask sums to its trim length.
+        Returns a MaskedTensor with values (B, acoustic_dim, T_out) in **normalized**
+        space — callers are expected to call codec.unnormalize before codec.decode.
+
+        The model's `cfg.codec` enum records which codec the model was trained
+        with; the loader is responsible for instantiating the matching codec.
+        Here we only sanity-check that the duck implements the Codec protocol
+        and the acoustic_dim matches.
         """
+        assert isinstance(codec, Codec), (
+            f"speak() received {type(codec).__name__}, which does not implement Codec"
+        )
+        assert codec.acoustic_dim == self.cfg.acoustic_dim, (
+            f"codec.acoustic_dim={codec.acoustic_dim} but model "
+            f"cfg.acoustic_dim={self.cfg.acoustic_dim}"
+        )
+
         B = text.values.shape[0]
         device = text.values.device
         n = self.cfg.n_denoising_steps
         dt = 1.0 / (n - 1)
-        mel_dim = self.cfg.mel_dim
-        max_T = self.cfg.max_mel_len
+        acoustic_dim = self.cfg.acoustic_dim
+        max_T = self.cfg.max_acoustic_len
 
         if x_0 is None:
-            x_0 = torch.randn(B, mel_dim, max_T, device=device)
+            x_0 = torch.randn(B, acoustic_dim, max_T, device=device)
         else:
             assert x_0.shape[-1] >= max_T, (
-                f"x_0 must have at least cfg.max_mel_len ({max_T}) frames, "
+                f"x_0 must have at least cfg.max_acoustic_len ({max_T}) frames, "
                 f"got {x_0.shape[-1]}"
             )
 
-        mels_values = torch.empty(B, mel_dim, 0, device=device, dtype=x_0.dtype)
+        values = torch.empty(B, acoustic_dim, 0, device=device, dtype=x_0.dtype)
         done = torch.zeros(B, dtype=torch.bool, device=device)
         trim = torch.full((B,), -1, dtype=torch.long, device=device)
 
         for k in range(max_T + n - 1):
             if k < max_T:
-                mels_values = torch.cat([mels_values, x_0[..., k : k + 1]], dim=-1)
+                values = torch.cat([values, x_0[..., k : k + 1]], dim=-1)
 
-            L = mels_values.shape[-1]
-            mel_idx = torch.arange(L, device=device).expand(B, L)
+            L = values.shape[-1]
+            ac_idx = torch.arange(L, device=device).expand(B, L)
             buffer_mask = torch.ones(B, L, dtype=torch.bool, device=device)
 
-            t = torch.clamp((k - mel_idx).float() / (n - 1), 0.0, 1.0)
+            t = torch.clamp((k - ac_idx).float() / (n - 1), 0.0, 1.0)
 
-            mels_mt = MaskedTensor(values=mels_values, mask=buffer_mask)
-            v_pred = self.forward(text, mels_mt, t)
+            mt = MaskedTensor(values=values, mask=buffer_mask)
+            pred = self.forward(text, mt, t)
+
+            # Take a rolling-Euler step through the parametrization. For RF this
+            # adds dt*pred; for JWT it divides by (1-t), so the t=1 column may
+            # contain inf/nan — torch.where below zeroes those positions before
+            # they touch `values`.
+            x_t_BLD = values.transpose(1, 2)  # (B, L, dim)
+            x_t_new = self.param.step(x_t_BLD, t.unsqueeze(-1), pred, dt)
 
             in_window = (t < 1.0) & buffer_mask
-            update = (v_pred * dt) * in_window.unsqueeze(-1)
-            mels_values = mels_values + update.transpose(1, 2)
+            update = torch.where(
+                in_window.unsqueeze(-1),
+                x_t_new - x_t_BLD,
+                x_t_BLD.new_zeros(()),
+            )
+            values = values + update.transpose(1, 2)
 
             # Check the frame that just reached t=1 for the EOS sentinel.
             if k >= n - 1:
                 p = k - (n - 1)
-                frame_raw = mels_values[:, :, p] * self.mel_std + self.mel_mean
-                triggered = (~done) & (frame_raw.mean(dim=-1) < self.cfg.eos_detect_threshold)
+                frame_raw = codec.unnormalize(values[:, :, p])
+                triggered = (~done) & codec.is_eos(frame_raw)
                 trim[triggered] = p
                 done |= triggered
 
@@ -296,23 +355,20 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
 
         # Samples that hit max_T without triggering: scan for first below-threshold frame.
         if not done.all():
-            frames_raw = mels_values * self.mel_std + self.mel_mean  # (B, mel_dim, L)
-            frame_means = frames_raw.mean(dim=1)  # (B, L)
-            L = mels_values.shape[-1]
+            frames_raw = codec.unnormalize(values)  # (B, acoustic_dim, L)
+            # codec.is_eos expects (..., acoustic_dim); transpose so last dim is acoustic_dim.
+            is_eos_per_frame = codec.is_eos(frames_raw.transpose(1, 2))  # (B, L)
+            L = values.shape[-1]
             for b in range(B):
                 if trim[b] == -1:
-                    below = (frame_means[b] < self.cfg.eos_detect_threshold).nonzero(
-                        as_tuple=True
-                    )[0]
+                    below = is_eos_per_frame[b].nonzero(as_tuple=True)[0]
                     trim[b] = int(below[0].item()) if len(below) > 0 else L
 
         trim = trim.clamp(min=0, max=max_T)
         T_out = int(trim.max().item())
         T_out = max(T_out, 1)
 
-        mels_out = mels_values[..., :T_out]
-        mel_idx_out = torch.arange(T_out, device=device).expand(B, T_out)
-        mask = mel_idx_out < trim.unsqueeze(1)
-
-        mels_out = mels_out * self.mel_std + self.mel_mean
-        return MaskedTensor(values=mels_out, mask=mask)
+        out = values[..., :T_out]
+        ac_idx_out = torch.arange(T_out, device=device).expand(B, T_out)
+        mask = ac_idx_out < trim.unsqueeze(1)
+        return MaskedTensor(values=out, mask=mask)
