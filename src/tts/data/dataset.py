@@ -19,8 +19,8 @@ class Sample:
 class Batch:
     idxs: list[int]
     audios: list[Audio]
-    mels: torch.FloatTensor
-    mels_mask: torch.BoolTensor
+    acoustic: torch.FloatTensor
+    acoustic_mask: torch.BoolTensor
     tokens: torch.LongTensor
     tokens_mask: torch.BoolTensor
 

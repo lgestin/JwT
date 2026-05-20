@@ -1,5 +1,8 @@
 """Convert an LJSpeech folder into a single PyArrow IPC file with waveforms,
-text, phonemes, tokens, and codec-encoded mels."""
+text, phonemes, tokens, and codec-encoded acoustic features.
+
+The acoustic column is named ``acoustic_{codec_name}`` so multiple codecs can
+produce arrow files that don't clash with each other on disk."""
 
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -21,7 +24,7 @@ from tts.data.text import Tokenizer, Vocabulary
 class Args:
     lj_folder: Path  # Root folder of the LJSpeech-1.1 dataset.
     vocab_path: Path  # JSON vocabulary produced by create_vocabulary.py.
-    output_path: Path  # Destination .arrow file.
+    output_path: Path  # Destination .arrow file (suggest including the codec name).
     codec: Codecs = Codecs.BIGVGAN
     device: str = "cuda"
     n_workers: int = 8
@@ -29,21 +32,22 @@ class Args:
     target_loudness: float = -24.0
 
 
-SCHEMA = pa.schema(
-    [
-        pa.field("audio_id", pa.string()),
-        pa.field("text", pa.string()),
-        pa.field("phonemes", pa.string()),
-        pa.field("tokens", pa.list_(pa.int32())),
-        pa.field("waveform_i16", pa.binary()),
-        pa.field("num_samples", pa.int32()),
-        pa.field("sample_rate", pa.int32()),
-        pa.field("loudness", pa.float32()),
-        pa.field("mel", pa.binary()),
-        pa.field("n_mels", pa.int32()),
-        pa.field("n_frames", pa.int32()),
-    ]
-)
+def _build_schema(codec_name: str) -> pa.Schema:
+    return pa.schema(
+        [
+            pa.field("audio_id", pa.string()),
+            pa.field("text", pa.string()),
+            pa.field("phonemes", pa.string()),
+            pa.field("tokens", pa.list_(pa.int32())),
+            pa.field("waveform_i16", pa.binary()),
+            pa.field("num_samples", pa.int32()),
+            pa.field("sample_rate", pa.int32()),
+            pa.field("loudness", pa.float32()),
+            pa.field(f"acoustic_{codec_name}", pa.binary()),
+            pa.field("acoustic_dim", pa.int32()),
+            pa.field("n_frames", pa.int32()),
+        ]
+    )
 
 
 def _prepare(idx: int, source: LJTTSSource, target_sr: int, target_loudness: float):
@@ -73,13 +77,16 @@ def main(args: Args) -> None:
     codec = args.codec.codec
     codec = codec.eval().to(device)
     target_sr = codec.sample_rate
+    codec_name = str(args.codec).lower()
+    acoustic_field = f"acoustic_{codec_name}"
 
     args.output_path.parent.mkdir(parents=True, exist_ok=True)
-    type_map = {f.name: f.type for f in SCHEMA}
+    schema = _build_schema(codec_name)
+    type_map = {f.name: f.type for f in schema}
 
     with (
         pa.OSFile(str(args.output_path), "wb") as sink,
-        pa.ipc.new_file(sink, SCHEMA) as writer,
+        pa.ipc.new_file(sink, schema) as writer,
         ThreadPoolExecutor(args.n_workers) as executor,
     ):
         futures = [
@@ -94,9 +101,11 @@ def main(args: Args) -> None:
 
             with torch.inference_mode():
                 wav_f = waveform_i16.to(device, dtype=torch.float32).div_(32678.0)
-                mel = codec.encode(wav_f[None]).squeeze(0).to(torch.float32).cpu()
+                acoustic = (
+                    codec.encode(wav_f[None]).squeeze(0).to(torch.float32).cpu()
+                )
 
-            n_mels, n_frames = int(mel.shape[-2]), int(mel.shape[-1])
+            acoustic_dim, n_frames = int(acoustic.shape[-2]), int(acoustic.shape[-1])
             buffer["audio_id"].append(item["audio_id"])
             buffer["text"].append(item["text"])
             buffer["phonemes"].append(item["phonemes"])
@@ -107,8 +116,10 @@ def main(args: Args) -> None:
             buffer["num_samples"].append(int(waveform_i16.numel()))
             buffer["sample_rate"].append(int(target_sr))
             buffer["loudness"].append(item["loudness"])
-            buffer["mel"].append(np.ascontiguousarray(mel.numpy()).tobytes())
-            buffer["n_mels"].append(n_mels)
+            buffer[acoustic_field].append(
+                np.ascontiguousarray(acoustic.numpy()).tobytes()
+            )
+            buffer["acoustic_dim"].append(acoustic_dim)
             buffer["n_frames"].append(n_frames)
 
             if len(buffer["audio_id"]) >= args.chunk_size:

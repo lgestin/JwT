@@ -38,7 +38,7 @@ def _(mo):
     import torch
 
     arrow_path = mo.ui.text(
-        value="data/ljspeech_24khz.arrow",
+        value="data/ljspeech_24khz_bigvgan.arrow",
         label="arrow file",
         full_width=True,
     )
@@ -47,13 +47,17 @@ def _(mo):
         label="vocabulary json",
         full_width=True,
     )
+    codec_name = mo.ui.text(
+        value="bigvgan",
+        label="codec name (acoustic column suffix)",
+    )
     device = mo.ui.dropdown(
         options=["cuda", "cpu"] if torch.cuda.is_available() else ["cpu"],
         value="cuda" if torch.cuda.is_available() else "cpu",
         label="device",
     )
-    mo.vstack([arrow_path, vocab_path, device])
-    return arrow_path, device, torch, vocab_path
+    mo.vstack([arrow_path, vocab_path, codec_name, device])
+    return arrow_path, codec_name, device, torch, vocab_path
 
 
 @app.cell
@@ -98,7 +102,7 @@ def _(row_idx, table):
         "num_samples",
         "sample_rate",
         "loudness",
-        "n_mels",
+        "acoustic_dim",
         "n_frames",
     ]
     raw_row = {c: table.column(c)[row_idx.value].as_py() for c in scalar_cols}
@@ -116,19 +120,21 @@ def _(mo, raw_row):
         - **phonemes**: `{raw_row["phonemes"]}`
         - **samples**: {raw_row["num_samples"]:,} @ {raw_row["sample_rate"]} Hz ({raw_duration_s:.2f}s)
         - **loudness**: {raw_row["loudness"]:.2f} dB
-        - **mel**: {raw_row["n_mels"]} mels x {raw_row["n_frames"]} frames
+        - **acoustic**: {raw_row["acoustic_dim"]} channels x {raw_row["n_frames"]} frames
         """
     )
     return
 
 
 @app.cell
-def _(arrow_path, vocab_path):
+def _(arrow_path, codec_name, vocab_path):
     from tts.data.source import ArrowTTSSource
     from tts.data.text import Tokenizer, Vocabulary
 
     tokenizer = Tokenizer(Vocabulary.from_json(vocab_path.value))
-    arrow_source = ArrowTTSSource(arrow_path.value, tokenizer=tokenizer)
+    arrow_source = ArrowTTSSource(
+        arrow_path.value, tokenizer=tokenizer, codec_name=codec_name.value
+    )
     return arrow_source, tokenizer
 
 
@@ -150,7 +156,7 @@ def _(audio, mo, text, tokenizer):
         - sample_rate: {audio.sample_rate}
         - duration_s: {audio.duration_s:.3f}
         - loudness: {audio.loudness:.2f} dB
-        - mels: shape={tuple(audio.mels.shape)}, dtype=`{audio.mels.dtype}`
+        - acoustic: shape={tuple(audio.acoustic.shape)}, dtype=`{audio.acoustic.dtype}`
 
         ### `Text`
         - text: {text.text!r}
@@ -181,12 +187,12 @@ def _(audio, mo):
 
 @app.cell
 def _(audio, mo):
-    stored_mel = audio.mels
+    stored_mel = audio.acoustic
     mo.md(
         f"""
-        ### Stored mel (log-scaled at encode time)
+        ### Stored acoustic features (as encoded by the codec)
 
-        - shape: {tuple(stored_mel.shape)} (batch x n_mels x n_frames)
+        - shape: {tuple(stored_mel.shape)} (batch x acoustic_dim x n_frames)
         - dtype: `{stored_mel.dtype}`
         - min: {stored_mel.min().item():.3f}, max: {stored_mel.max().item():.3f}, mean: {stored_mel.mean().item():.3f}
 
@@ -291,7 +297,7 @@ def _(device, mo):
             ### BigVGAN loaded
 
             - sample_rate: {bigvgan.sample_rate}
-            - n_mels: {bigvgan.n_mels}
+            - acoustic_dim: {bigvgan.acoustic_dim}
             - hop_length: {bigvgan.hop_length}
             - device: `{device.value}`
             """

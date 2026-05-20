@@ -45,14 +45,19 @@ class ArrowTTSSource(TTSSource):
 
     Each row carries the waveform (int16 PCM, already resampled and
     loudness-normalized), text, phonemes, tokenizer ids, and the codec-encoded
-    mel — so ``__getitem__`` is pure decode + tensor construction.
+    acoustic features — so ``__getitem__`` is pure decode + tensor construction.
+
+    ``codec_name`` selects which ``acoustic_{codec_name}`` column to read, so
+    one arrow file per codec keeps schemas explicit on disk.
     """
 
-    def __init__(self, arrow_path: str, tokenizer: Tokenizer):
+    def __init__(self, arrow_path: str, tokenizer: Tokenizer, codec_name: str):
         source = pa.memory_map(arrow_path, "r")
         reader = pa.ipc.open_file(source)
         self._table = reader.read_all()
         self.tokenizer = tokenizer
+        self._codec_name = codec_name.lower()
+        self._acoustic_field = f"acoustic_{self._codec_name}"
 
     def __len__(self) -> int:
         return self._table.num_rows
@@ -62,7 +67,7 @@ class ArrowTTSSource(TTSSource):
 
         sample_rate = row["sample_rate"].as_py()
         loudness = row["loudness"].as_py()
-        n_mels = row["n_mels"].as_py()
+        acoustic_dim = row["acoustic_dim"].as_py()
         n_frames = row["n_frames"].as_py()
 
         waveform_i16 = torch.frombuffer(
@@ -70,14 +75,16 @@ class ArrowTTSSource(TTSSource):
         )
         waveform = waveform_i16.view(1, -1).float() / 32678.0
 
-        mels = torch.frombuffer(bytearray(row["mel"].as_py()), dtype=torch.float)
-        mels = mels.view(1, n_mels, n_frames).float()
+        acoustic = torch.frombuffer(
+            bytearray(row[self._acoustic_field].as_py()), dtype=torch.float
+        )
+        acoustic = acoustic.view(1, acoustic_dim, n_frames).float()
 
         audio = Audio(
             waveform=waveform,
             sample_rate=sample_rate,
             loudness=loudness,
-            mels=mels,
+            acoustic=acoustic,
         )
         text = Text(text=row["text"].as_py(), tokenizer=self.tokenizer)
         return audio, text

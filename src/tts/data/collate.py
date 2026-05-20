@@ -24,10 +24,10 @@ def mask_from_lengths(lengths: list[int]) -> torch.BoolTensor:
 def collate(samples: list[Sample]) -> Batch:
     idxs = [sample.idx for sample in samples]
     audios = [sample.audio for sample in samples]
-    mels = [audio.mels for audio in audios]
-    padded_mels, mels_lengths = pad_sequences_longest(mels)
-    stacked_mels = torch.stack(padded_mels)
-    mels_mask = mask_from_lengths(mels_lengths)
+    acoustics = [audio.acoustic for audio in audios]
+    padded_acoustics, acoustic_lengths = pad_sequences_longest(acoustics)
+    stacked_acoustic = torch.stack(padded_acoustics)
+    acoustic_mask = mask_from_lengths(acoustic_lengths)
     tokens = [torch.tensor(sample.text.tokens) for sample in samples]
     padded_tokens, tokens_lengths = pad_sequences_longest(tokens)
     stacked_tokens = torch.stack(padded_tokens).long()
@@ -35,8 +35,8 @@ def collate(samples: list[Sample]) -> Batch:
     return Batch(
         idxs=idxs,
         audios=audios,
-        mels=stacked_mels,
-        mels_mask=mels_mask,
+        acoustic=stacked_acoustic,
+        acoustic_mask=acoustic_mask,
         tokens=stacked_tokens,
         tokens_mask=tokens_mask,
     )
