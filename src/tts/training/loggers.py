@@ -15,6 +15,23 @@ class Logger(Protocol):
     def log_metrics(
         self, metrics: dict[str, float], step: int, prefix: str = "train"
     ): ...
+    def log_diagnostics(
+        self, metrics: dict[str, float], step: int, prefix: str = "train"
+    ):
+        """Low-frequency, high-cardinality diagnostics (e.g. binned loss).
+
+        Human-facing loggers (console / progress bar) should no-op this; only
+        machine-readable backends (TensorBoard) implement it.
+        """
+        ...
+
+    def log_histogram(
+        self, tag: str, bin_edges: list[float], bin_values: list[float], step: int
+    ):
+        """Log a precomputed histogram — `bin_edges` holds the outer edges, so
+        it has one more entry than `bin_values`. Human-facing loggers no-op it.
+        """
+        ...
 
     @abstractmethod
     def set_description(self, description: str):
@@ -24,6 +41,11 @@ class Logger(Protocol):
     @abstractmethod
     def update_progress(self, n: int = 1):
         """Update progress counter."""
+        pass
+
+    @abstractmethod
+    def set_progress(self, completed: int):
+        """Set the progress counter to an absolute value (e.g. on resume)."""
         pass
 
     @abstractmethod
@@ -74,6 +96,18 @@ class MultiLogger:
         for lg in self.loggers:
             lg.log_metrics(metrics, step, prefix)
 
+    def log_diagnostics(
+        self, metrics: dict[str, float], step: int, prefix: str = "train"
+    ) -> None:
+        for lg in self.loggers:
+            lg.log_diagnostics(metrics, step, prefix)
+
+    def log_histogram(
+        self, tag: str, bin_edges: list[float], bin_values: list[float], step: int
+    ) -> None:
+        for lg in self.loggers:
+            lg.log_histogram(tag, bin_edges, bin_values, step)
+
     def set_description(self, description: str) -> None:
         for lg in self.loggers:
             lg.set_description(description)
@@ -81,6 +115,10 @@ class MultiLogger:
     def update_progress(self, n: int = 1) -> None:
         for lg in self.loggers:
             lg.update_progress(n)
+
+    def set_progress(self, completed: int) -> None:
+        for lg in self.loggers:
+            lg.set_progress(completed)
 
     def close(self) -> None:
         for lg in self.loggers:

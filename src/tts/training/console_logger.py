@@ -91,11 +91,28 @@ class ConsoleLogger:
                 highlight=False,
             )
 
+    def log_diagnostics(
+        self, metrics: dict[str, float], step: int, prefix: str = "train"
+    ) -> None:
+        # High-cardinality diagnostics never touch the console / progress bar.
+        pass
+
+    def log_histogram(
+        self, tag: str, bin_edges: list[float], bin_values: list[float], step: int
+    ) -> None:
+        # Histograms are a TensorBoard-only artifact.
+        pass
+
     def set_description(self, description: str) -> None:
         self.progress.update(self.task, description=description)
 
     def update_progress(self, n: int = 1) -> None:
         self.progress.update(self.task, advance=n)
+
+    def set_progress(self, completed: int) -> None:
+        # `reset` clears the speed-sample history too, so iter/s and ETA are
+        # estimated fresh from the resumed step rather than skewed by a jump.
+        self.progress.reset(self.task, completed=completed)
 
     def close(self) -> None:
         self.progress.stop()

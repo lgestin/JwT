@@ -28,10 +28,41 @@ class TensorBoardLogger:
         for k, v in metrics.items():
             self.writer.add_scalar(f"{prefix}/{k}", float(v), step)
 
+    def log_diagnostics(
+        self, metrics: dict[str, float], step: int, prefix: str = "train"
+    ) -> None:
+        for k, v in metrics.items():
+            fv = float(v)
+            if fv == fv:  # skip NaN — e.g. an empty timestep bin
+                self.writer.add_scalar(f"{prefix}/{k}", fv, step)
+
+    def log_histogram(
+        self, tag: str, bin_edges: list[float], bin_values: list[float], step: int
+    ) -> None:
+        # Render a precomputed histogram (e.g. FM loss bucketed by timestep) in
+        # the Histograms tab. `bin_edges` are the outer edges, so the right edge
+        # of bucket i is `bin_edges[i + 1]`. The summary statistics are
+        # placeholders: this is a precomputed function of the bin axis, not a
+        # sample of values, so the Distributions-tab stats are not meaningful.
+        self.writer.add_histogram_raw(
+            tag=tag,
+            min=bin_edges[0],
+            max=bin_edges[-1],
+            num=len(bin_values),
+            sum=0.0,
+            sum_squares=0.0,
+            bucket_limits=bin_edges[1:],
+            bucket_counts=bin_values,
+            global_step=step,
+        )
+
     def set_description(self, description: str) -> None:
         pass
 
     def update_progress(self, n: int = 1) -> None:
+        pass
+
+    def set_progress(self, completed: int) -> None:
         pass
 
     def close(self) -> None:
