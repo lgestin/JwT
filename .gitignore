@@ -17,3 +17,7 @@ wheels/
 # Coverage
 .coverage
 htmlcov/
+
+# Local data and training artifacts
+data/
+outputs/
