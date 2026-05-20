@@ -21,10 +21,12 @@ from simple_parsing import ArgumentParser
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
+from tts.data.audio.codecs import Codec, Codecs
 from tts.data.collate import collate
 from tts.data.dataset import AudioDataset
 from tts.data.source import ArrowTTSSource
 from tts.data.text import Tokenizer, Vocabulary
+from tts.model.flow import FlowParametrizations
 from tts.model.neural_speaker import (
     MaskedTensor,
     RollingFlowConfig,
@@ -32,21 +34,24 @@ from tts.model.neural_speaker import (
 )
 from tts.model.transformer import TransformerConfig
 from tts.training.tensorboard_logger import TensorBoardLogger
+from tts.training.trainer import prepare_acoustic_batch
 
 
 @dataclass
 class Args:
     # Data (defaults mirror scripts/train.py)
     vocab_path: str = "/data/ljspeech/vocabulary.json"
-    arrow_path: str = "data/ljspeech_24khz.arrow"
-    sample_rate: int = 24000
+    arrow_path: str = "data/ljspeech_24khz_bigvgan.arrow"
     batch_size: int = 64
     num_workers: int = 6
+    # Codec
+    codec: Codecs = Codecs.BIGVGAN
+    # Flow-matching parametrization
+    parametrization: FlowParametrizations = FlowParametrizations.RECTIFIED_FLOW
     # Model (defaults mirror scripts/train.py)
     dim: int = 256
     num_heads: int = 4
     num_layers: int = 6
-    mel_dim: int = 100
     n_denoising_steps: int = 32
     # LR finder
     output_dir: str = "outputs/lr_finder"
@@ -60,25 +65,20 @@ class Args:
 
 def _training_step(
     model: RollingFlowSpeaker,
+    codec: Codec,
     batch,
     device: torch.device,
     amp_dtype: torch.dtype,
     noamp: bool,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     batch = batch.to(device)
-    mels_values = batch.mels
-    if mels_values.ndim == 4 and mels_values.shape[1] == 1:
-        mels_values = mels_values.squeeze(1)
     text = MaskedTensor(values=batch.tokens.unsqueeze(1), mask=batch.tokens_mask)
-    mels = MaskedTensor(values=mels_values, mask=batch.mels_mask)
+    acoustic = prepare_acoustic_batch(batch, codec, model.cfg.eos_n_frames)
 
     with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=not noamp):
-        v_pred, v_target, v_mask, _t = model.training_step(text, mels)
-        v_per_pos = (v_pred - v_target).pow(2).mean(-1)
-        v_loss = (v_per_pos * v_mask).sum() / v_mask.sum().clamp(min=1)
-        loss = v_loss
+        loss = model.training_step(text, acoustic).loss
 
-    return loss, v_loss.detach()
+    return loss, loss.detach()
 
 
 def main() -> None:
@@ -97,9 +97,11 @@ def main() -> None:
 
     vocab = Vocabulary.from_json(args.vocab_path)
     tokenizer = Tokenizer(vocab)
-    source = ArrowTTSSource(args.arrow_path, tokenizer=tokenizer)
+    codec = args.codec.codec.to(device)
+    codec_name = str(args.codec).lower()
+    source = ArrowTTSSource(args.arrow_path, tokenizer=tokenizer, codec_name=codec_name)
     print(f"Source size: {len(source)}")
-    dataset = AudioDataset(tts_source=source, sample_rate=args.sample_rate)
+    dataset = AudioDataset(tts_source=source, sample_rate=codec.sample_rate)
 
     pin = device.type == "cuda"
     train_dl = DataLoader(
@@ -120,7 +122,9 @@ def main() -> None:
                 num_layers=args.num_layers,
             ),
             vocabulary_size=len(vocab),
-            mel_dim=args.mel_dim,
+            codec=args.codec,
+            parametrization=args.parametrization,
+            acoustic_dim=codec.acoustic_dim,
             n_denoising_steps=args.n_denoising_steps,
         )
     ).to(device)
@@ -155,10 +159,10 @@ def main() -> None:
                 pg["lr"] = lr
 
             optimizer.zero_grad()
-            loss, v_loss = _training_step(
-                model, batch, device, amp_dtype, noamp
+            loss, loss_detached = _training_step(
+                model, codec, batch, device, amp_dtype, noamp
             )
-            loss_val = float(loss.detach())
+            loss_val = float(loss_detached)
 
             if not math.isfinite(loss_val):
                 diverged_at = lr
@@ -188,7 +192,6 @@ def main() -> None:
                     "loss": loss_val,
                     "smoothed_loss": smoothed,
                     "grad_norm": grad_norm,
-                    "v_loss": float(v_loss),
                 },
                 step,
                 prefix="lr_find",

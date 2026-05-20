@@ -114,32 +114,33 @@ def _build_synth_fn(
         )
 
         # Pin noise to the seed for reproducibility. speak() consumes one
-        # frame of x_0 per step as the buffer grows, so size it to max_mel_len.
+        # frame of x_0 per step as the buffer grows, so size it to max_acoustic_len.
         gen = torch.Generator(device=device).manual_seed(int(seed))
         x_0 = torch.randn(
             1,
-            model.cfg.mel_dim,
-            model.cfg.max_mel_len,
+            model.cfg.acoustic_dim,
+            model.cfg.max_acoustic_len,
             device=device,
             generator=gen,
         )
 
-        mels_pred = model.speak(text_mt, x_0=x_0)
-        mel_len = int(mels_pred.mask[0].sum().item())
-        mel = mels_pred.values[0, :, :mel_len]  # (mel_dim, mel_len)
-        wav = codec.decode(mel.unsqueeze(0))[0].squeeze(0)  # (T_audio,)
+        acoustic_pred = model.speak(text_mt, codec=codec, x_0=x_0)
+        ac_len = int(acoustic_pred.mask[0].sum().item())
+        ac = acoustic_pred.values[0, :, :ac_len]  # (acoustic_dim, ac_len), normalized
+        ac_unnorm = codec.unnormalize(ac.unsqueeze(0))
+        wav = codec.decode(ac_unnorm)[0].squeeze(0)  # (T_audio,)
 
         n_tokens = len(token_ids)
-        duration_s = mel_len * hop / sr
-        rate = mel_len / n_tokens if n_tokens else 0.0
+        duration_s = ac_len * hop / sr
+        rate = ac_len / n_tokens if n_tokens else 0.0
         length_info = (
-            f"Predicted length: {mel_len} frames ({duration_s:.2f}s)\n"
+            f"Predicted length: {ac_len} frames ({duration_s:.2f}s)\n"
             f"Tokens: {n_tokens}\n"
             f"Rate: {rate:.2f} frames/token"
         )
 
         wav_np = wav.detach().cpu().float().numpy()
-        fig = _plot_mel(mel, hop_length=hop, sample_rate=sr)
+        fig = _plot_mel(ac_unnorm[0], hop_length=hop, sample_rate=sr)
         return (sr, wav_np), fig, phonemes, length_info
 
     return synthesize
