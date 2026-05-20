@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tts.data.audio import AudioFile
-from tts.data.audio.codecs import BigVGAN, BigVGANVersions
+from tts.data.audio.codecs import BigVGAN, BigVGANVersions, Codec, RawAudioPatcher
 
 
 @pytest.fixture(scope="module")
@@ -45,6 +45,71 @@ def test_bigvgan_roundtrip_shape(codec: BigVGAN) -> None:
     # Reconstructed length within one hop of the input
     hop = codec.decoder.h.hop_size
     assert abs(reconstructed.shape[-1] - waveform.shape[-1]) <= 2 * hop
+
+
+# --- RawAudioPatcher (no HF download required) ------------------------------
+
+
+def test_rawaudio_protocol_conformance() -> None:
+    assert isinstance(RawAudioPatcher(), Codec)
+
+
+@pytest.mark.parametrize("patch_size", [128, 256])
+def test_rawaudio_roundtrip_exact_multiple(patch_size: int) -> None:
+    codec = RawAudioPatcher(patch_size=patch_size)
+    # Length already a multiple of patch_size — round-trip must be exact.
+    waveform = torch.randn(2, patch_size * 10)
+    z = codec.encode(waveform)
+    assert z.shape == (2, patch_size, 10)
+    out = codec.decode(z)
+    assert out.shape == waveform.shape
+    assert torch.equal(out, waveform)
+
+
+def test_rawaudio_pads_non_multiple_length() -> None:
+    codec = RawAudioPatcher(patch_size=256)
+    # Non-multiple length: encode pads to the next patch boundary.
+    waveform = torch.randn(2, 256 * 3 + 17)
+    z = codec.encode(waveform)
+    assert z.shape == (2, 256, 4)
+    # Decoded length is the padded length, not the original.
+    out = codec.decode(z)
+    assert out.shape == (2, 256 * 4)
+    # The original prefix must match.
+    assert torch.equal(out[:, : waveform.shape[-1]], waveform)
+
+
+def test_rawaudio_eos_detection() -> None:
+    codec = RawAudioPatcher(patch_size=256)
+    zero_frame = codec.eos_frames(1).T  # (1, patch_size), unnormalized
+    assert codec.is_eos(zero_frame).all()
+    loud_frame = torch.full((1, 256), 0.5)
+    assert not codec.is_eos(loud_frame).any()
+
+
+def test_rawaudio_normalize_scales_by_wav_std() -> None:
+    """normalize divides by wav_std (waveforms sit near -24 dBFS upstream);
+    unnormalize is its inverse, so the round-trip is identity."""
+    codec = RawAudioPatcher(patch_size=256)
+    x = torch.randn(2, 256, 8)
+    assert torch.allclose(codec.normalize(x), x / codec.wav_std)
+    assert torch.allclose(codec.unnormalize(x), x * codec.wav_std)
+    assert torch.allclose(codec.unnormalize(codec.normalize(x)), x)
+
+
+def test_rawaudio_to_logmel_preserves_time_axis() -> None:
+    """to_logmel's time axis must align with the acoustic time axis so the
+    trainer can reuse v_mask without resampling."""
+    codec = RawAudioPatcher(patch_size=256)
+    T_acoustic = 12
+    features = torch.randn(2, codec.acoustic_dim, T_acoustic)
+    lm = codec.to_logmel(features)
+    assert lm.shape[0] == 2
+    assert lm.shape[-1] == T_acoustic, (lm.shape, T_acoustic)
+    assert torch.isfinite(lm).all()
+
+
+# --- BigVGAN (requires HF download) -----------------------------------------
 
 
 def test_bigvgan_encode_matches_reference_mel(

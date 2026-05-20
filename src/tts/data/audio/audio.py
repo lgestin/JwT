@@ -22,7 +22,7 @@ class Audio:
     waveform: torch.FloatTensor
     sample_rate: int
     stft: torch.FloatTensor | None = None
-    mels: torch.FloatTensor | None = None
+    acoustic: torch.FloatTensor | None = None
     loudness: float | None = None
 
 
