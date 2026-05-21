@@ -1,11 +1,12 @@
-# Default training config for scripts/train.py.
+# Example training config for scripts/train.py — copy this file and edit it.
 #
-# Launch:                 uv run python scripts/train.py
-# Override one value:     uv run python scripts/train.py --batch_size 32
-# Use a different file:   uv run python scripts/train.py --config_path configs/my.yaml
+# --config_path is required; there is no default config.
 #
-# The resolved config of each run is written to <output_dir>/config.yaml,
-# and a run launched with --resume reuses that saved config.
+# Launch:              uv run python scripts/train.py --config_path configs/example.yaml
+# Override one value:  uv run python scripts/train.py --config_path configs/example.yaml --batch_size 32
+#
+# The resolved config of each run is written to <output_dir>/config.yaml.
+# To resume a run, point --config_path at that run's saved config.yaml.
 
 arrow_path: data/ljspeech_24khz_bigvgan.arrow
 batch_size: 64

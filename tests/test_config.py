@@ -60,7 +60,7 @@ def test_consistency_raises_on_mismatch() -> None:
 
 def test_parse_args_loads_values_from_config_file(tmp_path: Path) -> None:
     """parse_args reads field values from the --config_path file."""
-    cfg = tmp_path / "default.yaml"
+    cfg = tmp_path / "run.yaml"
     args = Args(batch_size=7)
     args.trainer.max_steps = 321
     dump_config(args, cfg)
@@ -73,7 +73,7 @@ def test_parse_args_loads_values_from_config_file(tmp_path: Path) -> None:
 
 def test_cli_flag_overrides_config_file(tmp_path: Path) -> None:
     """An explicit CLI flag wins over the config file value."""
-    cfg = tmp_path / "default.yaml"
+    cfg = tmp_path / "run.yaml"
     dump_config(Args(batch_size=7), cfg)
 
     parsed = parse_args(["--config_path", str(cfg), "--batch_size", "99"])
@@ -81,50 +81,27 @@ def test_cli_flag_overrides_config_file(tmp_path: Path) -> None:
     assert parsed.batch_size == 99
 
 
-def test_resume_prefers_saved_config(tmp_path: Path) -> None:
-    """With --resume, the saved output_dir/config.yaml wins over --config_path."""
-    default_cfg = tmp_path / "default.yaml"
-    dump_config(Args(batch_size=7), default_cfg)
+def test_parse_args_requires_config_path() -> None:
+    """parse_args exits when --config_path is not given."""
+    with pytest.raises(SystemExit):
+        parse_args([])
 
-    output_dir = tmp_path / "run"
-    output_dir.mkdir()
-    dump_config(Args(batch_size=555), output_dir / "config.yaml")
 
-    parsed = parse_args(
-        [
-            "--config_path", str(default_cfg),
-            "--resume",
-            "--output_dir", str(output_dir),
-        ]
-    )
+def test_resume_flag_is_parsed(tmp_path: Path) -> None:
+    """--resume is a plain flag; resuming means pointing --config_path at the
+    saved config."""
+    saved = tmp_path / "run" / "config.yaml"
+    dump_config(Args(batch_size=42), saved)
 
-    assert parsed.batch_size == 555
+    parsed = parse_args(["--config_path", str(saved), "--resume"])
+
     assert parsed.resume is True
+    assert parsed.batch_size == 42
 
 
-def test_resume_without_saved_config_warns(tmp_path: Path) -> None:
-    """--resume with no saved config.yaml falls back to --config_path and warns."""
-    default_cfg = tmp_path / "default.yaml"
-    dump_config(Args(batch_size=7), default_cfg)
-
-    output_dir = tmp_path / "run"
-    output_dir.mkdir()  # no config.yaml inside
-
-    with pytest.warns(UserWarning, match="no saved config"):
-        parsed = parse_args(
-            [
-                "--config_path", str(default_cfg),
-                "--resume",
-                "--output_dir", str(output_dir),
-            ]
-        )
-
-    assert parsed.batch_size == 7
-
-
-def test_default_config_round_trips() -> None:
-    """configs/default.yaml deserializes to the Args() defaults."""
+def test_example_config_round_trips() -> None:
+    """configs/example.yaml deserializes to the Args() defaults."""
     repo_root = Path(__file__).parent.parent
-    default_yaml = repo_root / "configs" / "default.yaml"
-    assert default_yaml.exists()
-    assert load(Args, default_yaml) == Args()
+    example_yaml = repo_root / "configs" / "example.yaml"
+    assert example_yaml.exists()
+    assert load(Args, example_yaml) == Args()

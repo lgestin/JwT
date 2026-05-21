@@ -1,13 +1,13 @@
 """Training run config: the `Args` dataclass, file-backed parsing, and the
 checkpoint-consistency guard.
 
-Training is launched from a YAML config file (default `configs/default.yaml`),
-with individual CLI flags overriding any value. The resolved config a run used
-is dumped to `output_dir/config.yaml` so the run can be resumed faithfully.
+Training is launched from a YAML config file given by a required `--config_path`
+argument, with individual CLI flags overriding any value. The resolved config a
+run used is dumped to `output_dir/config.yaml`; to resume a run, point
+`--config_path` at that saved file.
 """
 
 import argparse
-import warnings
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
@@ -20,8 +20,6 @@ from tts.model.neural_speaker import RollingFlowConfig
 from tts.training.ema import EMAConfig
 from tts.training.optimizer import OptimizerConfig
 from tts.training.trainer import TrainerConfig
-
-DEFAULT_CONFIG_PATH = "configs/default.yaml"
 
 
 @dataclass
@@ -60,48 +58,29 @@ def dump_config(args: Args, path: Path | str) -> None:
     save(args, path)
 
 
-def _select_config_path(argv: list[str] | None) -> str:
-    """Pick which config file to load from a lightweight pre-parse of the CLI.
-
-    Defaults to `configs/default.yaml`, or `--config_path` if given. When
-    `--resume` is set and `output_dir/config.yaml` exists, that saved config
-    is used instead so a resumed run reuses its original config.
-    """
-    pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--config_path", default=DEFAULT_CONFIG_PATH)
-    pre.add_argument("--resume", action="store_true")
-    pre.add_argument("--output_dir", default=None)
-    known, _ = pre.parse_known_args(argv)
-
-    config_path = known.config_path
-    if known.resume:
-        output_dir = known.output_dir
-        if output_dir is None:
-            output_dir = load(Args, config_path).output_dir
-        saved = Path(output_dir) / "config.yaml"
-        if saved.exists():
-            config_path = str(saved)
-        else:
-            warnings.warn(
-                f"--resume set but no saved config at {saved}; "
-                f"falling back to {config_path}",
-                stacklevel=2,
-            )
-    return config_path
-
-
 def parse_args(argv: list[str] | None = None) -> Args:
-    """Parse training `Args` from a config file with CLI overrides.
+    """Parse training `Args` from the YAML file given by a required
+    `--config_path`, with CLI flags overriding individual values.
 
     Precedence, lowest to highest: `Args` defaults < config file < CLI flags.
-    On `--resume`, the config saved next to the checkpoints is preferred over
-    `configs/default.yaml`.
+    There is no default config file. To resume a run, point `--config_path`
+    at that run's saved `<output_dir>/config.yaml`.
     """
-    config_path = _select_config_path(argv)
-    defaults = load(Args, config_path)
+    # Pre-parse just `--config_path` so the file can be loaded before its
+    # values seed the real parser's defaults.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config_path")
+    known, _ = pre.parse_known_args(argv)
 
     parser = ArgumentParser(add_config_path_arg=True)
-    parser.add_arguments(Args, dest="args", default=defaults)
+    if known.config_path is None:
+        # No config given. Build a bare parser so `-h/--help` still prints,
+        # then fail with a clear message if help was not what was asked.
+        parser.add_arguments(Args, dest="args")
+        parser.parse_args(argv)  # exits here if -h/--help was passed
+        parser.error("--config_path is required")
+
+    parser.add_arguments(Args, dest="args", default=load(Args, known.config_path))
     return parser.parse_args(argv).args
 
 
