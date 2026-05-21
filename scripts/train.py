@@ -1,9 +1,9 @@
 """End-to-end training entrypoint for RollingFlowSpeaker."""
 
+import warnings
 from pathlib import Path
 
 import torch
-from simple_parsing import ArgumentParser
 from torch.utils.data import DataLoader, Subset
 
 from tts.data.collate import collate
@@ -12,7 +12,12 @@ from tts.data.source import ArrowTTSSource
 from tts.data.text import Tokenizer, Vocabulary
 from tts.model.neural_speaker import RollingFlowSpeaker
 from tts.training.checkpoint_manager import CheckpointManager
-from tts.training.config import Args
+from tts.training.config import (
+    Args,
+    check_model_config_consistency,
+    dump_config,
+    parse_args,
+)
 from tts.training.console_logger import ConsoleLogger
 from tts.training.ema import EMA
 from tts.training.loggers import Logger, MultiLogger
@@ -21,13 +26,12 @@ from tts.training.trainer import TrainerState, TTSRollingFlowMatchingTrainer
 
 
 def main() -> None:
-    parser = ArgumentParser()
-    parser.add_arguments(Args, dest="args")
-    args: Args = parser.parse_args().args
+    args: Args = parse_args()
 
     device = torch.device(args.trainer.device)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    dump_config(args, output_dir / "config.yaml")
 
     vocab = Vocabulary.from_json(args.vocab_path)
     tokenizer = Tokenizer(vocab)
@@ -106,6 +110,14 @@ def main() -> None:
         meta = checkpoint_manager.load_latest(
             model, optimizer, ema=ema, map_location=device
         )
+        if "config" in meta:
+            check_model_config_consistency(args.model, meta["config"])
+        else:
+            warnings.warn(
+                "checkpoint has no stored model config; "
+                "skipping the consistency check",
+                stacklevel=2,
+            )
         state = TrainerState(step=meta["step"], best_loss=meta["best_loss"])
         print(f"Resumed from step {state.step} (best_loss={meta['best_loss']})")
 
