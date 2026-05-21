@@ -1,9 +1,12 @@
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn as nn
+
+from tts.training.ema import EMA
 
 
 @dataclass
@@ -101,6 +104,7 @@ class CheckpointManager:
         model: nn.Module,
         optimizer: torch.optim.Optimizer | None = None,
         scaler: torch.cuda.amp.GradScaler | None = None,
+        ema: EMA | None = None,
         map_location: torch.device | str | None = None,
     ) -> dict[str, Any]:
         """Load the most recent checkpoint.
@@ -136,6 +140,7 @@ class CheckpointManager:
             model=model,
             optimizer=optimizer,
             scaler=scaler,
+            ema=ema,
             map_location=map_location,
         )
 
@@ -176,6 +181,7 @@ class CheckpointManager:
         model: nn.Module,
         optimizer: torch.optim.Optimizer | None = None,
         scaler: torch.cuda.amp.GradScaler | None = None,
+        ema: EMA | None = None,
         map_location: torch.device | str | None = None,
     ) -> dict[str, Any]:
         """Load a specific checkpoint.
@@ -213,6 +219,18 @@ class CheckpointManager:
         # Load scaler state if provided
         if scaler is not None and "scaler" in checkpoint_data:
             scaler.load_state_dict(checkpoint_data["scaler"])
+
+        # Load EMA state if provided. A checkpoint predating EMA has no "ema"
+        # key — leave the EMA at its from-loaded-weights initialization.
+        if ema is not None:
+            if "ema" in checkpoint_data:
+                ema.load_state_dict(checkpoint_data["ema"])
+            else:
+                warnings.warn(
+                    "checkpoint has no EMA state; EMA initialized from the "
+                    "loaded model weights",
+                    stacklevel=2,
+                )
 
         # Return metadata
         metadata = {
