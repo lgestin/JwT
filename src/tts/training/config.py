@@ -6,7 +6,7 @@ with individual CLI flags overriding any value. The resolved config a run used
 is dumped to `output_dir/config.yaml` so the run can be resumed faithfully.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from simple_parsing.helpers.serialization import save
@@ -55,3 +55,26 @@ def dump_config(args: Args, path: Path | str) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     save(args, path)
+
+
+def check_model_config_consistency(
+    runtime: RollingFlowConfig, checkpoint: RollingFlowConfig
+) -> None:
+    """Raise if the run's model config differs from the checkpoint's.
+
+    `RollingFlowConfig` carries `codec` and `parametrization`, so this single
+    comparison guards every checkpoint-locked architecture field. A mismatch
+    would corrupt a resumed run (or crash `load_state_dict` with a far less
+    actionable error), so it is a hard failure.
+    """
+    diffs = [
+        f"  {f.name}: checkpoint={getattr(checkpoint, f.name)!r} "
+        f"run={getattr(runtime, f.name)!r}"
+        for f in fields(RollingFlowConfig)
+        if getattr(checkpoint, f.name) != getattr(runtime, f.name)
+    ]
+    if diffs:
+        raise ValueError(
+            "resumed run's model config does not match the checkpoint:\n"
+            + "\n".join(diffs)
+        )
