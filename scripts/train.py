@@ -1,58 +1,23 @@
 """End-to-end training entrypoint for RollingFlowSpeaker."""
 
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
 from simple_parsing import ArgumentParser
 from torch.utils.data import DataLoader, Subset
 
-from tts.data.audio.codecs import Codecs
 from tts.data.collate import collate
 from tts.data.dataset import AudioDataset
 from tts.data.source import ArrowTTSSource
 from tts.data.text import Tokenizer, Vocabulary
-from tts.model.flow import FlowParametrizations
-from tts.model.neural_speaker import RollingFlowConfig, RollingFlowSpeaker
+from tts.model.neural_speaker import RollingFlowSpeaker
 from tts.training.checkpoint_manager import CheckpointManager
+from tts.training.config import Args
 from tts.training.console_logger import ConsoleLogger
-from tts.training.ema import EMA, EMAConfig
+from tts.training.ema import EMA
 from tts.training.loggers import Logger, MultiLogger
-from tts.training.optimizer import OptimizerConfig, build_optimizer
-from tts.training.trainer import (
-    TrainerConfig,
-    TrainerState,
-    TTSRollingFlowMatchingTrainer,
-)
-
-
-@dataclass
-class Args:
-    # Data
-    vocab_path: str = "/data/ljspeech/vocabulary.json"
-    arrow_path: str = "data/ljspeech_24khz_bigvgan.arrow"
-    n_valid: int = 64
-    # Run
-    output_dir: str = "outputs/run0"
-    resume: bool = False  # load the latest checkpoint from output_dir/checkpoints
-    batch_size: int = 64
-    num_workers: int = 6
-    # Optimizer
-    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
-    # EMA (exponential moving average of weights)
-    ema: EMAConfig = field(default_factory=EMAConfig)
-    # Codec
-    codec: Codecs = Codecs.BIGVGAN
-    # Flow-matching parametrization (locked to the model checkpoint).
-    parametrization: FlowParametrizations = FlowParametrizations.RECTIFIED_FLOW
-    # Logging
-    use_tensorboard: bool = True
-    # Perf
-    compile: bool = True
-    # Model
-    model: RollingFlowConfig = field(default_factory=RollingFlowConfig)
-    # Trainer
-    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+from tts.training.optimizer import build_optimizer
+from tts.training.trainer import TrainerState, TTSRollingFlowMatchingTrainer
 
 
 def main() -> None:
