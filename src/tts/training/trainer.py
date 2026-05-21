@@ -1,5 +1,6 @@
 import time
 import warnings
+from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -17,6 +18,7 @@ from tts.model.neural_speaker import (
     TrainingStepOutput,
 )
 from tts.training.checkpoint_manager import CheckpointManager
+from tts.training.ema import EMA
 from tts.training.loggers import Logger, log_mel
 from tts.training.metrics import binned_loss_stats, masked_mean_std
 
@@ -164,6 +166,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         smp_dloader: DataLoader,
         state: TrainerState | None,
         checkpoint_manager: CheckpointManager | None,
+        ema: EMA | None = None,
     ):
         super().__init__(config=config, state=state)
         self.codec = codec
@@ -175,6 +178,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self.valid_dloader = valid_dloader
         self.smp_dloader = smp_dloader
         self.checkpoint_manager = checkpoint_manager
+        self.ema = ema
         self.viz_mel = MelSpectrogram(
             n_fft=_VIZ_MEL_N_FFT,
             hop_length=_VIZ_MEL_HOP,
@@ -188,6 +192,14 @@ class TTSRollingFlowMatchingTrainer(Trainer):
 
     def _prepare_acoustic(self, batch: Batch) -> MaskedTensor:
         return prepare_acoustic_batch(batch, self.codec, self.model.cfg.eos_n_frames)
+
+    def _ema_weights(self):
+        """EMA weights installed for the block, or a no-op when EMA is off."""
+        return (
+            self.ema.swapped(self.model)
+            if self.ema is not None
+            else nullcontext()
+        )
 
     def train(self):
         self._log_initial_samples()
@@ -210,9 +222,11 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             for batch in self.train_dloader:
                 if micro == 0:
                     if self.step % self.smp_steps == 0:
-                        self._log_samples()
+                        with self._ema_weights():
+                            self._log_samples()
                     if self.step % self.valid_steps == 0:
-                        self.validation()
+                        with self._ema_weights():
+                            self.validation()
                     if (
                         self.checkpoint_manager is not None
                         and self.step % self.checkpoint_steps == 0
@@ -224,6 +238,11 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                             optimizer=self.optimizer,
                             scaler=self.scaler,
                             best_loss=self.best_loss,
+                            additional_state=(
+                                {"ema": self.ema.state_dict()}
+                                if self.ema is not None
+                                else None
+                            ),
                         )
 
                 if hasattr(self.optimizer, "train"):
@@ -371,8 +390,10 @@ class TTSRollingFlowMatchingTrainer(Trainer):
     def _reduce_diagnostics(
         self, acc: dict[str, torch.Tensor], micro: int
     ) -> dict[str, torch.Tensor]:
-        """Window-average the accumulated scalar diagnostics (0-dim GPU tensors).
+        """Window-average the accumulated data diagnostics (0-dim GPU tensors).
 
+        These describe the batches being fed (lengths, target stats, supervision
+        fill), so they are logged under the `data/` section rather than `train/`.
         The binned FM loss is emitted separately by `_emit_loss_histogram`.
         """
         return {
@@ -424,10 +445,15 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         last_step: int,
         last_time: float,
     ) -> None:
-        reduced = self._reduce_diagnostics(diag_accum, diag_micro)
-        reduced["param_norm"] = torch.stack(
-            [p.detach().norm() for p in self.model.parameters()]
-        ).norm()
+        # Batch-shape / target diagnostics describe the data, not the
+        # optimization — they go under `data/train`. Optimization and hardware
+        # diagnostics (param norm, throughput, memory) stay under `train`.
+        data_metrics = self._reduce_diagnostics(diag_accum, diag_micro)
+        train_metrics: dict[str, torch.Tensor] = {
+            "param_norm": torch.stack(
+                [p.detach().norm() for p in self.model.parameters()]
+            ).norm()
+        }
 
         now = time.perf_counter()
         elapsed = max(now - last_time, 1e-6)
@@ -446,7 +472,8 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             )
             torch.cuda.reset_peak_memory_stats(self.device)
 
-        self._emit_diagnostics(reduced, self.step, "train", host_metrics=host)
+        self._emit_diagnostics(data_metrics, self.step, "data/train")
+        self._emit_diagnostics(train_metrics, self.step, "train", host_metrics=host)
 
     def _optimizer_step(self) -> dict[str, torch.Tensor]:
         """Clip + step + zero_grad. Called once per accumulation window."""
@@ -463,6 +490,8 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             self.scaler.update()
         else:
             self.optimizer.step()
+        if self.ema is not None:
+            self.ema.update(self.model, self.step)
         self.optimizer.zero_grad()
         return metrics
 
@@ -489,8 +518,10 @@ class TTSRollingFlowMatchingTrainer(Trainer):
 
         val_metrics = {k: v / count for k, v in sums.items()}
         self.logger.log_metrics(val_metrics, self.step, prefix="valid")
+        # Validation emits only data diagnostics — route them to `data/valid`
+        # to mirror the `data/train` split.
         self._emit_diagnostics(
-            self._reduce_diagnostics(diag_accum, count), self.step, "valid"
+            self._reduce_diagnostics(diag_accum, count), self.step, "data/valid"
         )
         self._emit_loss_histogram(bin_accum, self.step, "valid")
 
