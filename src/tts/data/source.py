@@ -16,7 +16,7 @@ class TTSSource(Protocol):
 
 
 class LJTTSSource(TTSSource):
-    def __init__(self, folder_path: str, tokenizer: Tokenizer):
+    def __init__(self, folder_path: str, tokenizer: Tokenizer | None = None):
         folder = Path(folder_path)
         items: list[tuple[Path, str]] = []
         with open(folder / "metadata.csv", encoding="utf-8", newline="") as f:
@@ -66,6 +66,8 @@ class ArrowTTSSource(TTSSource):
     def sample_rate(self) -> int:
         """Sample rate of the stored audio. create_arrow_ljspeech.py resamples
         every clip to one rate, so the first row's value holds for the file."""
+        if self._table.num_rows == 0:
+            raise ValueError("arrow file is empty; cannot read its sample rate")
         return self._table.column("sample_rate")[0].as_py()
 
     def __getitem__(self, idx: int) -> tuple[Audio, Text]:
