@@ -5,7 +5,6 @@ from pathlib import Path
 
 import torch
 from simple_parsing import ArgumentParser
-from torch.optim import AdamW
 from torch.utils.data import DataLoader, Subset
 
 from tts.data.audio.codecs import Codecs
@@ -17,7 +16,9 @@ from tts.model.flow import FlowParametrizations
 from tts.model.neural_speaker import RollingFlowConfig, RollingFlowSpeaker
 from tts.training.checkpoint_manager import CheckpointManager
 from tts.training.console_logger import ConsoleLogger
+from tts.training.ema import EMA, EMAConfig
 from tts.training.loggers import Logger, MultiLogger
+from tts.training.optimizer import OptimizerConfig, build_optimizer
 from tts.training.trainer import (
     TrainerConfig,
     TrainerState,
@@ -36,7 +37,10 @@ class Args:
     resume: bool = False  # load the latest checkpoint from output_dir/checkpoints
     batch_size: int = 64
     num_workers: int = 6
-    lr: float = 1e-3
+    # Optimizer
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    # EMA (exponential moving average of weights)
+    ema: EMAConfig = field(default_factory=EMAConfig)
     # Codec
     codec: Codecs = Codecs.BIGVGAN
     # Flow-matching parametrization (locked to the model checkpoint).
@@ -117,7 +121,9 @@ def main() -> None:
         inductor_config.split_reductions = False
         model.forward = torch.compile(model.forward, dynamic=True)
 
-    optimizer = AdamW(model.parameters(), lr=args.lr)
+    optimizer = build_optimizer(model, args.optimizer)
+
+    ema = EMA(model, decay=args.ema.decay) if args.ema.enabled else None
 
     sub_loggers: list[Logger] = [
         ConsoleLogger(total=args.trainer.max_steps, audio_dir=output_dir / "audio")
@@ -132,7 +138,9 @@ def main() -> None:
 
     state = TrainerState(step=0)
     if args.resume:
-        meta = checkpoint_manager.load_latest(model, optimizer, map_location=device)
+        meta = checkpoint_manager.load_latest(
+            model, optimizer, ema=ema, map_location=device
+        )
         state = TrainerState(step=meta["step"], best_loss=meta["best_loss"])
         print(f"Resumed from step {state.step} (best_loss={meta['best_loss']})")
 
@@ -148,6 +156,7 @@ def main() -> None:
         smp_dloader=smp_dl,
         state=state,
         checkpoint_manager=checkpoint_manager,
+        ema=ema,
     )
 
     trainer.train()
