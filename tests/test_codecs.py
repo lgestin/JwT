@@ -2,7 +2,13 @@ import pytest
 import torch
 
 from tts.data.audio import AudioFile
-from tts.data.audio.codecs import BigVGAN, BigVGANVersions, Codec, RawAudioPatcher
+from tts.data.audio.codecs import (
+    BigVGAN,
+    BigVGANVersions,
+    Codec,
+    Codecs,
+    RawAudioPatcher,
+)
 
 
 @pytest.fixture(scope="module")
@@ -107,6 +113,33 @@ def test_rawaudio_to_logmel_preserves_time_axis() -> None:
     assert lm.shape[0] == 2
     assert lm.shape[-1] == T_acoustic, (lm.shape, T_acoustic)
     assert torch.isfinite(lm).all()
+
+
+# --- Codecs enum: RawAudio variants -----------------------------------------
+
+
+@pytest.mark.parametrize("patch_size", [32, 64, 128, 256])
+def test_rawaudio_variant_builds_patcher_at_its_patch_size(patch_size: int) -> None:
+    """Each RawAudio<N> enum variant resolves to a RawAudioPatcher patched at N."""
+    codec = Codecs[f"RAWAUDIO_{patch_size}"].codec
+    assert isinstance(codec, RawAudioPatcher)
+    assert codec.patch_size == patch_size
+    assert codec.acoustic_dim == patch_size
+
+
+@pytest.mark.parametrize("patch_size", [32, 64, 128, 256])
+def test_rawaudio_variant_codec_class_is_patcher(patch_size: int) -> None:
+    assert Codecs[f"RAWAUDIO_{patch_size}"].codec_class is RawAudioPatcher
+
+
+def test_rawaudio_variant_str_drives_arrow_column_name() -> None:
+    """str(variant).lower() is the codec_name used for acoustic_{name} columns
+    by create_arrow_ljspeech.py and ArrowTTSSource."""
+    assert str(Codecs["RAWAUDIO_256"]).lower() == "rawaudio256"
+
+
+def test_bigvgan_codec_class() -> None:
+    assert Codecs.BIGVGAN.codec_class is BigVGAN
 
 
 # --- BigVGAN (requires HF download) -----------------------------------------

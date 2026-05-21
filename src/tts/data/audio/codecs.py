@@ -9,21 +9,39 @@ from einops import rearrange
 from tts.data.audio.stft import MelSpectrogram
 
 
+# Patch sizes for the RawAudio codec variants. Each variant is its own codec
+# identity: str(variant).lower() names the acoustic_{name} arrow column, so the
+# patch size baked into the precomputed dataset and the runtime codec can't drift.
+_RAWAUDIO_PATCH = {
+    "RawAudio32": 32,
+    "RawAudio64": 64,
+    "RawAudio128": 128,
+    "RawAudio256": 256,
+}
+
+
 class Codecs(StrEnum):
     BIGVGAN = "BigVGAN"
-    RAWAUDIO = "RawAudio"
+    RAWAUDIO_32 = "RawAudio32"
+    RAWAUDIO_64 = "RawAudio64"
+    RAWAUDIO_128 = "RawAudio128"
+    RAWAUDIO_256 = "RawAudio256"
 
     @property
     def codec_class(self) -> type:
         match self:
             case Codecs.BIGVGAN:
                 return BigVGAN
-            case Codecs.RAWAUDIO:
+            case _:
                 return RawAudioPatcher
 
     @property
     def codec(self):
-        return self.codec_class()
+        match self:
+            case Codecs.BIGVGAN:
+                return BigVGAN()
+            case _:
+                return RawAudioPatcher(patch_size=_RAWAUDIO_PATCH[self.value])
 
 
 @runtime_checkable
