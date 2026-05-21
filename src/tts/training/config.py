@@ -7,6 +7,9 @@ is dumped to `output_dir/config.yaml` so the run can be resumed faithfully.
 """
 
 from dataclasses import dataclass, field
+from pathlib import Path
+
+from simple_parsing.helpers.serialization import save
 
 from tts.data.audio.codecs import Codecs
 from tts.model.flow import FlowParametrizations
@@ -45,3 +48,10 @@ class Args:
     model: RollingFlowConfig = field(default_factory=RollingFlowConfig)
     # Trainer
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
+
+
+def dump_config(args: Args, path: Path | str) -> None:
+    """Serialize a resolved `Args` to a YAML file, creating parent dirs."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save(args, path)
