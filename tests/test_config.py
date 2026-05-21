@@ -120,3 +120,11 @@ def test_resume_without_saved_config_warns(tmp_path: Path) -> None:
         )
 
     assert parsed.batch_size == 7
+
+
+def test_default_config_round_trips() -> None:
+    """configs/default.yaml deserializes to the Args() defaults."""
+    repo_root = Path(__file__).parent.parent
+    default_yaml = repo_root / "configs" / "default.yaml"
+    assert default_yaml.exists()
+    assert load(Args, default_yaml) == Args()
