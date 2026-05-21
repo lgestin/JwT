@@ -40,7 +40,7 @@ from tts.training.trainer import prepare_acoustic_batch
 @dataclass
 class Args:
     # Data (defaults mirror scripts/train.py)
-    vocab_path: str = "/data/ljspeech/vocabulary.json"
+    vocab_path: str = "data/vocabulary.json"
     arrow_path: str = "data/ljspeech_24khz_bigvgan.arrow"
     batch_size: int = 64
     num_workers: int = 6

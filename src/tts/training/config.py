@@ -24,7 +24,7 @@ from tts.training.trainer import TrainerConfig
 @dataclass
 class Args:
     # Data
-    vocab_path: str = "/data/ljspeech/vocabulary.json"
+    vocab_path: str = "data/vocabulary.json"
     arrow_path: str = "data/ljspeech_24khz_bigvgan.arrow"
     n_valid: int = 64
     # Run

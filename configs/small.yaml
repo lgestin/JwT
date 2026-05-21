@@ -8,50 +8,49 @@
 # The resolved config of each run is written to <output_dir>/config.yaml.
 # To resume a run, point --config_path at that run's saved config.yaml.
 
-arrow_path: data/ljspeech_24khz_bigvgan.arrow
+arrow_path: data/ljspeech_24khz.raw256.arrow
 batch_size: 64
-codec: BIGVGAN
+codec: RAWAUDIO_256
 compile: true
 ema:
   decay: 0.9995
-  enabled: true
+  enabled: false
 model:
-  acoustic_dim: 100
-  codec: BIGVGAN
+  acoustic_dim: 128
   eos_n_frames: 3
   max_acoustic_len: 2048
   n_denoising_steps: 32
-  parametrization: RECTIFIED_FLOW
+  parametrization: JWT
   transformer_config:
-    dim: 256
+    dim: 128
     max_seq_len: 8192
-    mlp_ratio: 4.0
+    mlp_ratio: 2.0
     num_heads: 4
-    num_layers: 10
+    num_layers: 8
     rope_theta: 10000.0
-    time_freq_embed_dim: 256
+    time_freq_embed_dim: 128
   vocabulary_size: 0
 n_valid: 64
 num_workers: 6
 optimizer:
   betas:
-  - 0.9
-  - 0.999
-  lr: 0.001
-  warmup_steps: 0
-  weight_decay: 0.01
-output_dir: outputs/run0
+    - 0.9
+    - 0.999
+  lr: 0.01
+  warmup_steps: 2500
+  weight_decay: 0.0
+output_dir: outputs/run_small
 resume: false
 trainer:
   amp_dtype: BF16
-  aux_mel_weight: 0.0
+  aux_mel_weight: 0.1
   checkpoint_steps: 5000
   clip_grad_norm: 1.0
   device: cuda
   grad_accum_steps: 1
   hist_steps: 500
   log_steps: 100
-  max_steps: 200001
+  max_steps: 500001
   n_loss_bins: 10
   n_smp: 16
   smp_steps: 2500

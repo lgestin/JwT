@@ -3,7 +3,7 @@
 Usage:
     uv run --extra demo --extra bigvgan python scripts/demo.py \
         --checkpoint outputs/run2/checkpoints/checkpoint.best.pt \
-        --vocab-path /data/ljspeech/vocabulary.json
+        --vocab-path data/vocabulary.json
 """
 
 from dataclasses import dataclass
@@ -28,7 +28,7 @@ import matplotlib.pyplot as plt
 @dataclass
 class Args:
     checkpoint: str
-    vocab_path: str = "/data/ljspeech/vocabulary.json"
+    vocab_path: str = "data/vocabulary.json"
     device: str = "cuda"
     # Server
     host: str = "127.0.0.1"

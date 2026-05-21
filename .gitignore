@@ -19,5 +19,6 @@ wheels/
 htmlcov/
 
 # Local data and training artifacts
-data/
+data/*
+!data/vocabulary.json
 outputs/
