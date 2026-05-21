@@ -135,7 +135,6 @@ class BigVGAN(nn.Module):
             f_max=torch.inf,
             window="hann",
             center=False,
-            log_eps=1e-5,
             mel_scale="slaney",
         )
         assert int(h.sampling_rate) == self.required_sample_rate, (
@@ -160,7 +159,7 @@ class BigVGAN(nn.Module):
 
     @torch.no_grad()
     def encode(self, waveform: torch.Tensor) -> torch.Tensor:
-        return self.mel_spectrogram(waveform)
+        return self.mel_spectrogram(waveform).clamp(min=1e-5).log()
 
     @torch.no_grad()
     def decode(self, z: torch.Tensor) -> torch.Tensor:

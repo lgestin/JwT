@@ -119,27 +119,6 @@ def test_stft_center_default_is_false(random_audio: AudioFile) -> None:
     torch.testing.assert_close(out_default, out_explicit)
 
 
-def test_melspectrogram_log_eps(random_audio: AudioFile) -> None:
-    n_fft, hop_length, n_mels = 1024, 256, 80
-    mel_linear = MelSpectrogram(
-        n_fft=n_fft,
-        hop_length=hop_length,
-        n_mels=n_mels,
-        sample_rate=random_audio.sample_rate,
-    )
-    mel_log = MelSpectrogram(
-        n_fft=n_fft,
-        hop_length=hop_length,
-        n_mels=n_mels,
-        sample_rate=random_audio.sample_rate,
-        log_eps=1e-5,
-    )
-    out_linear = mel_linear(random_audio.waveform)
-    out_log = mel_log(random_audio.waveform)
-    expected = torch.log(out_linear.clamp(min=1e-5))
-    torch.testing.assert_close(out_log, expected)
-
-
 def test_melspectrogram_default_is_linear(random_audio: AudioFile) -> None:
     n_fft, hop_length, n_mels = 512, 128, 80
     mel = MelSpectrogram(

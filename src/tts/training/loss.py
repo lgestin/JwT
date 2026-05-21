@@ -29,7 +29,6 @@ class MelAuxLoss(nn.Module):
             sample_rate=sample_rate,
             window="hann",
             center=False,
-            log_eps=1e-5,
             mel_scale="slaney",
         )
 
@@ -40,8 +39,8 @@ class MelAuxLoss(nn.Module):
         v_mask: torch.Tensor,
     ) -> torch.Tensor:
         """pred_wav/target_wav: (B, S). v_mask: (B, T). Returns a 0-dim tensor."""
-        logmel_pred = self.mel(pred_wav)
-        logmel_target = self.mel(target_wav)
+        logmel_pred = self.mel(pred_wav).clamp(min=1e-5).log()
+        logmel_target = self.mel(target_wav).clamp(min=1e-5).log()
         assert logmel_pred.shape == logmel_target.shape, (
             f"pred/target mels differ in shape: "
             f"{logmel_pred.shape} vs {logmel_target.shape}"

@@ -191,7 +191,6 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             sample_rate=sample_rate,
             window="hann",
             center=False,
-            log_eps=1e-5,
             mel_scale="slaney",
         ).to(self._device)
         # Auxiliary mel loss, only when weighted in. Config validation forbids
@@ -571,7 +570,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                     stacklevel=2,
                 )
                 continue
-            viz_mel = self.viz_mel(wav.unsqueeze(0))[0]
+            viz_mel = self.viz_mel(wav.unsqueeze(0))[0].clamp(min=1e-5).log()
             log_mel(self.logger, f"sampled/{i}/mel", viz_mel, self.step)
 
     def _log_initial_samples(self):
@@ -590,8 +589,10 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                 enabled=not self.noamp,
             ):
                 reconstructed = self.codec.reconstruct(waveform[None])[0]
-                clean_viz = self.viz_mel(waveform)
-                recon_viz = self.viz_mel(reconstructed.unsqueeze(0))[0]
+                clean_viz = self.viz_mel(waveform).clamp(min=1e-5).log()
+                recon_viz = (
+                    self.viz_mel(reconstructed.unsqueeze(0))[0].clamp(min=1e-5).log()
+                )
             self.logger.log_audio(
                 f"{i}/reconstructed",
                 reconstructed,

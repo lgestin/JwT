@@ -95,13 +95,11 @@ class MelSpectrogram(STFT):
         f_max: float = torch.inf,
         window: Literal["hann", "hamming"] = "hamming",
         center: bool = False,
-        log_eps: float | None = None,
         mel_scale: Literal["htk", "slaney"] = "htk",
     ):
         super().__init__(
             n_fft=n_fft, hop_length=hop_length, window=window, center=center
         )
-        self.log_eps = log_eps
         melscale_fbanks = torchaudio.functional.melscale_fbanks(
             n_freqs=n_fft // 2 + 1,
             f_min=max(f_min, 0.0),
@@ -117,6 +115,4 @@ class MelSpectrogram(STFT):
         magnitudes = super().magnitudes(x)
         self.melscale_fbanks = self.melscale_fbanks.to(magnitudes.device)
         mels = self.melscale_fbanks.T @ magnitudes
-        if self.log_eps is not None:
-            mels = torch.log(mels.clamp(min=self.log_eps))
         return mels
