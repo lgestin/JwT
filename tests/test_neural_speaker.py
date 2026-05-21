@@ -23,9 +23,10 @@ class StubCodec:
     without the HF download. Implements the Codec protocol via duck typing.
     """
 
-    def __init__(self, acoustic_dim: int = N_MELS, sample_rate: int = 24000):
+    required_sample_rate: int | None = None
+
+    def __init__(self, acoustic_dim: int = N_MELS):
         self.acoustic_dim = acoustic_dim
-        self.sample_rate = sample_rate
         self.hop_length = 256
         self.mean = -5.0
         self.std = 2.0
@@ -51,9 +52,6 @@ class StubCodec:
 
     def is_eos(self, frame: torch.Tensor) -> torch.BoolTensor:
         return frame.mean(dim=-1) < self.eos_threshold
-
-    def to_logmel(self, features: torch.Tensor) -> torch.Tensor:
-        return features
 
     def reconstruct(self, w: torch.Tensor) -> torch.Tensor:  # pragma: no cover
         raise NotImplementedError

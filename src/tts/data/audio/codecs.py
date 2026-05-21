@@ -53,7 +53,10 @@ class Codec(Protocol):
     Shape contract: (B, acoustic_dim, T).
     """
 
-    sample_rate: int
+    # The sample rate encode/decode is locked to, or None if the codec works at
+    # any rate. The data's sample rate is a property of the dataset, not the
+    # codec — this only expresses a hard constraint (see check_sample_rate).
+    required_sample_rate: int | None
     acoustic_dim: int
     hop_length: int
 
@@ -71,18 +74,22 @@ class Codec(Protocol):
         """Test unnormalized frames, shape (..., acoustic_dim) -> (...,)."""
         ...
 
-    def to_logmel(self, features: torch.Tensor) -> torch.Tensor:
-        """Map unnormalized features to a log-mel spectrogram for monitoring.
-
-        Input shape: (B, acoustic_dim, T). Output shape: (B, n_mels, T_mel).
-        The output time axis must align frame-for-frame with the input so a
-        v_mask in acoustic-time can be reused as a mel-time mask. For codecs
-        where features are already log-mel, this is identity.
-        """
-        ...
-
     def reconstruct(self, waveform: torch.Tensor) -> torch.Tensor:
         return self.decode(self.encode(waveform))
+
+
+def check_sample_rate(codec: Codec, sample_rate: int) -> None:
+    """Raise if `sample_rate` is incompatible with `codec`.
+
+    A codec whose `required_sample_rate` is None accepts any rate; otherwise the
+    data must match it exactly (e.g. BigVGAN's vocoder is locked to 24 kHz).
+    """
+    required = codec.required_sample_rate
+    if required is not None and required != sample_rate:
+        raise ValueError(
+            f"{type(codec).__name__} requires {required} Hz audio, but the "
+            f"data sample rate is {sample_rate} Hz"
+        )
 
 
 class BigVGANVersions(StrEnum):
@@ -95,6 +102,9 @@ _LJSPEECH_LOG_MEL_STD = 2.226763
 
 
 class BigVGAN(nn.Module):
+    # The bundled vocoder and its mel front-end are trained at 24 kHz.
+    required_sample_rate: int | None = 24000
+
     def __init__(self, version: BigVGANVersions = BigVGANVersions.V2_24KHz_100MEL_256X):
         nn.Module.__init__(self)
         # local: avoid heavy bigvgan import at module load
@@ -128,7 +138,10 @@ class BigVGAN(nn.Module):
             log_eps=1e-5,
             mel_scale="slaney",
         )
-        self.sample_rate = int(h.sampling_rate)
+        assert int(h.sampling_rate) == self.required_sample_rate, (
+            f"BigVGAN checkpoint sample rate {h.sampling_rate} != "
+            f"required_sample_rate {self.required_sample_rate}"
+        )
         self.acoustic_dim = int(h.num_mels)
         self.hop_length = int(h.hop_size)
 
@@ -162,10 +175,6 @@ class BigVGAN(nn.Module):
     def unnormalize(self, x: torch.Tensor) -> torch.Tensor:
         return x * self.mel_std + self.mel_mean
 
-    def to_logmel(self, features: torch.Tensor) -> torch.Tensor:
-        # Features are already log-mel; identity preserves the (B, n_mels, T) layout.
-        return features
-
     def eos_frames(
         self,
         n: int,
@@ -189,32 +198,20 @@ class RawAudioPatcher(nn.Module):
     projection is responsible for learning a useful per-patch embedding.
     """
 
-    def __init__(self, patch_size: int = 256, sample_rate: int = 24000):
+    # Patching raw samples is sample-rate agnostic.
+    required_sample_rate: int | None = None
+
+    def __init__(self, patch_size: int = 256):
         nn.Module.__init__(self)
         self.patch_size = patch_size
         self.acoustic_dim = patch_size
         self.hop_length = patch_size
-        self.sample_rate = sample_rate
         self.eos_threshold: float = 1e-4
 
         # In __init__: waveform is RMS-normalized to -24 dBFS upstream
         # (create_arrow_ljspeech.py target_loudness), so per-sample std ~ 10**(-24/20).
         wav_std = 10 ** (-24.0 / 20)  # ~0.0631
         self.register_buffer("wav_std", torch.tensor(wav_std, dtype=torch.float32))
-
-        # Internal mel for the codec-agnostic monitoring metric. hop_length is
-        # tied to patch_size so to_logmel preserves the acoustic-time axis and
-        # the trainer's v_mask aligns frame-for-frame.
-        self._monitor_mel = MelSpectrogram(
-            n_fft=4 * patch_size,
-            hop_length=patch_size,
-            n_mels=80,
-            sample_rate=sample_rate,
-            window="hann",
-            center=False,
-            log_eps=1e-5,
-            mel_scale="slaney",
-        )
 
     @torch.no_grad()
     def encode(self, waveform: torch.Tensor) -> torch.Tensor:
@@ -227,8 +224,9 @@ class RawAudioPatcher(nn.Module):
             waveform = F.pad(waveform, (0, pad))
         return rearrange(waveform, "b (t p) -> b p t", p=self.patch_size)
 
-    @torch.no_grad()
     def decode(self, z: torch.Tensor) -> torch.Tensor:
+        # Not @torch.no_grad: the auxiliary mel loss decodes predicted features
+        # to a waveform and backprops through this rearrange.
         return rearrange(z, "b p t -> b (t p)")
 
     def reconstruct(self, waveform: torch.Tensor) -> torch.Tensor:
@@ -239,14 +237,6 @@ class RawAudioPatcher(nn.Module):
 
     def unnormalize(self, x: torch.Tensor) -> torch.Tensor:
         return x * self.wav_std
-
-    def to_logmel(self, features: torch.Tensor) -> torch.Tensor:
-        # Inline the rearrange (instead of calling self.decode, which is
-        # @torch.no_grad) so to_logmel stays differentiable — used as the
-        # auxiliary log-mel loss in the trainer. STFT(center=False) with
-        # hop=patch_size gives T_mel == T_acoustic, so v_mask carries over.
-        wav = rearrange(features, "b p t -> b (t p)")
-        return self._monitor_mel(wav)
 
     def eos_frames(
         self,

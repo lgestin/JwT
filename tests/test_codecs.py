@@ -8,6 +8,7 @@ from tts.data.audio.codecs import (
     Codec,
     Codecs,
     RawAudioPatcher,
+    check_sample_rate,
 )
 
 
@@ -103,16 +104,26 @@ def test_rawaudio_normalize_scales_by_wav_std() -> None:
     assert torch.allclose(codec.unnormalize(codec.normalize(x)), x)
 
 
-def test_rawaudio_to_logmel_preserves_time_axis() -> None:
-    """to_logmel's time axis must align with the acoustic time axis so the
-    trainer can reuse v_mask without resampling."""
+def test_rawaudio_decode_is_differentiable() -> None:
+    """decode must propagate gradients so the auxiliary mel loss, which decodes
+    predicted features to a waveform, can backprop through it."""
     codec = RawAudioPatcher(patch_size=256)
-    T_acoustic = 12
-    features = torch.randn(2, codec.acoustic_dim, T_acoustic)
-    lm = codec.to_logmel(features)
-    assert lm.shape[0] == 2
-    assert lm.shape[-1] == T_acoustic, (lm.shape, T_acoustic)
-    assert torch.isfinite(lm).all()
+    z = torch.randn(2, 256, 8, requires_grad=True)
+    out = codec.decode(z)
+    assert out.requires_grad
+    out.sum().backward()
+    assert z.grad is not None
+
+
+def test_rawaudio_required_sample_rate_is_none() -> None:
+    """RawAudioPatcher patches raw samples, so it works at any sample rate."""
+    assert RawAudioPatcher.required_sample_rate is None
+    assert RawAudioPatcher().required_sample_rate is None
+
+
+def test_check_sample_rate_accepts_any_rate_for_unconstrained_codec() -> None:
+    check_sample_rate(RawAudioPatcher(), 16000)
+    check_sample_rate(RawAudioPatcher(), 44100)
 
 
 # --- Codecs enum: RawAudio variants -----------------------------------------
@@ -142,7 +153,22 @@ def test_bigvgan_codec_class() -> None:
     assert Codecs.BIGVGAN.codec_class is BigVGAN
 
 
+def test_bigvgan_required_sample_rate_is_24khz() -> None:
+    """BigVGAN's vocoder is locked to 24 kHz, exposed as a class attribute so
+    it can be checked without downloading the model."""
+    assert BigVGAN.required_sample_rate == 24000
+
+
 # --- BigVGAN (requires HF download) -----------------------------------------
+
+
+def test_check_sample_rate_rejects_mismatch_for_bigvgan(codec: BigVGAN) -> None:
+    with pytest.raises(ValueError, match="24000"):
+        check_sample_rate(codec, 16000)
+
+
+def test_check_sample_rate_accepts_match_for_bigvgan(codec: BigVGAN) -> None:
+    check_sample_rate(codec, 24000)
 
 
 def test_bigvgan_encode_matches_reference_mel(

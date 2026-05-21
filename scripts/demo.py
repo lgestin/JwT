@@ -94,7 +94,8 @@ def _build_synth_fn(
     tokenizer: Tokenizer,
     device: torch.device,
 ):
-    sr = codec.sample_rate
+    sr = codec.required_sample_rate
+    assert sr is not None  # BigVGAN's vocoder is locked to 24 kHz
     hop = codec.hop_length
 
     @torch.inference_mode()
@@ -173,7 +174,7 @@ def main() -> None:
         gr.Markdown("# RollingFlowSpeaker demo")
         gr.Markdown(
             f"Checkpoint: `{args.checkpoint}` (step {ckpt.get('step', '?')}) &middot; "
-            f"sample rate: {codec.sample_rate} Hz &middot; "
+            f"sample rate: {codec.required_sample_rate} Hz &middot; "
             f"n_denoising_steps: {model.cfg.n_denoising_steps}"
         )
         with gr.Row():

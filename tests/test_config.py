@@ -12,6 +12,7 @@ from tts.training.config import (
     dump_config,
     parse_args,
 )
+from tts.training.trainer import TrainerConfig
 
 
 def test_args_defaults_survive_the_move() -> None:
@@ -105,3 +106,18 @@ def test_example_config_round_trips() -> None:
     example_yaml = repo_root / "configs" / "example.yaml"
     assert example_yaml.exists()
     assert load(Args, example_yaml) == Args()
+
+
+def test_bigvgan_rejects_nonzero_aux_mel_weight() -> None:
+    """BigVGAN's flow-matching loss is already in mel space, so the auxiliary
+    mel loss is redundant and not allowed for it."""
+    with pytest.raises(ValueError, match="aux_mel_weight"):
+        Args(codec=Codecs.BIGVGAN, trainer=TrainerConfig(aux_mel_weight=0.1))
+
+
+def test_bigvgan_allows_zero_aux_mel_weight() -> None:
+    Args(codec=Codecs.BIGVGAN, trainer=TrainerConfig(aux_mel_weight=0.0))
+
+
+def test_rawaudio_allows_nonzero_aux_mel_weight() -> None:
+    Args(codec=Codecs.RAWAUDIO_256, trainer=TrainerConfig(aux_mel_weight=0.1))

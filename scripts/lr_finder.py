@@ -21,7 +21,7 @@ from simple_parsing import ArgumentParser
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
-from tts.data.audio.codecs import Codec, Codecs
+from tts.data.audio.codecs import Codec, Codecs, check_sample_rate
 from tts.data.collate import collate
 from tts.data.dataset import AudioDataset
 from tts.data.source import ArrowTTSSource
@@ -101,7 +101,9 @@ def main() -> None:
     codec_name = str(args.codec).lower()
     source = ArrowTTSSource(args.arrow_path, tokenizer=tokenizer, codec_name=codec_name)
     print(f"Source size: {len(source)}")
-    dataset = AudioDataset(tts_source=source, sample_rate=codec.sample_rate)
+    sample_rate = source.sample_rate
+    check_sample_rate(codec, sample_rate)
+    dataset = AudioDataset(tts_source=source, sample_rate=sample_rate)
 
     pin = device.type == "cuda"
     train_dl = DataLoader(

@@ -15,7 +15,7 @@ import torch
 from rich.progress import track
 from simple_parsing import ArgumentParser
 
-from tts.data.audio.codecs import Codecs
+from tts.data.audio.codecs import Codecs, check_sample_rate
 from tts.data.source import LJTTSSource
 from tts.data.text import Tokenizer, Vocabulary
 
@@ -25,6 +25,7 @@ class Args:
     lj_folder: Path  # Root folder of the LJSpeech-1.1 dataset.
     vocab_path: Path  # JSON vocabulary produced by create_vocabulary.py.
     output_path: Path  # Destination .arrow file (suggest including the codec name).
+    sample_rate: int  # Target rate to resample every clip to (Hz).
     codec: Codecs = Codecs.BIGVGAN
     device: str = "cuda"
     n_workers: int = 8
@@ -76,7 +77,8 @@ def main(args: Args) -> None:
     device = torch.device(args.device)
     codec = args.codec.codec
     codec = codec.eval().to(device)
-    target_sr = codec.sample_rate
+    check_sample_rate(codec, args.sample_rate)
+    target_sr = args.sample_rate
     codec_name = str(args.codec).lower()
     acoustic_field = f"acoustic_{codec_name}"
 

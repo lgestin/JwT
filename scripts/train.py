@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader, Subset
 
+from tts.data.audio.codecs import check_sample_rate
 from tts.data.collate import collate
 from tts.data.dataset import AudioDataset
 from tts.data.source import ArrowTTSSource
@@ -40,8 +41,12 @@ def main() -> None:
     print(f"Source size: {len(source)}")
 
     codec = args.codec.codec.to(device)
+    # Sample rate comes from the datafile; the codec only constrains it.
+    sample_rate = source.sample_rate
+    check_sample_rate(codec, sample_rate)
+    print(f"Sample rate: {sample_rate} Hz")
 
-    full = AudioDataset(tts_source=source, sample_rate=codec.sample_rate)
+    full = AudioDataset(tts_source=source, sample_rate=sample_rate)
     N = len(full)
     n_smp = args.trainer.n_smp
     if args.n_valid + n_smp >= N:
@@ -123,6 +128,7 @@ def main() -> None:
     trainer = TTSRollingFlowMatchingTrainer(
         config=args.trainer,
         codec=codec,
+        sample_rate=sample_rate,
         model=model,
         optimizer=optimizer,
         scaler=None,

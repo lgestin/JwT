@@ -62,6 +62,12 @@ class ArrowTTSSource(TTSSource):
     def __len__(self) -> int:
         return self._table.num_rows
 
+    @property
+    def sample_rate(self) -> int:
+        """Sample rate of the stored audio. create_arrow_ljspeech.py resamples
+        every clip to one rate, so the first row's value holds for the file."""
+        return self._table.column("sample_rate")[0].as_py()
+
     def __getitem__(self, idx: int) -> tuple[Audio, Text]:
         row = {name: self._table.column(name)[idx] for name in self._table.column_names}
 

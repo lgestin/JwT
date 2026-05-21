@@ -48,6 +48,15 @@ class Args:
     # Trainer
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
 
+    def __post_init__(self) -> None:
+        if self.codec == Codecs.BIGVGAN and self.trainer.aux_mel_weight > 0:
+            raise ValueError(
+                "aux_mel_weight must be 0 for the BigVGAN codec: its "
+                "flow-matching loss is already computed in mel space, so the "
+                "auxiliary mel loss is redundant and not supported "
+                f"(got aux_mel_weight={self.trainer.aux_mel_weight})"
+            )
+
 
 def dump_config(args: Args, path: Path | str) -> None:
     """Serialize a resolved `Args` to a YAML file, creating parent dirs."""

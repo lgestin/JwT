@@ -20,6 +20,7 @@ from tts.model.neural_speaker import (
 from tts.training.checkpoint_manager import CheckpointManager
 from tts.training.ema import EMA
 from tts.training.loggers import Logger, log_mel
+from tts.training.loss import MelAuxLoss
 from tts.training.metrics import binned_loss_stats, masked_mean_std
 
 
@@ -157,6 +158,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self,
         config: TrainerConfig,
         codec: Codec,
+        sample_rate: int,
         model: RollingFlowSpeaker,
         optimizer: Optimizer,
         scaler: GradScaler | None,
@@ -170,6 +172,9 @@ class TTSRollingFlowMatchingTrainer(Trainer):
     ):
         super().__init__(config=config, state=state)
         self.codec = codec
+        # Sample rate is a property of the dataset, not the codec — the training
+        # script reads it from the arrow file and passes it in.
+        self.sample_rate = sample_rate
         self.model = model
         self.optimizer = optimizer
         self.scaler = scaler
@@ -183,12 +188,21 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             n_fft=_VIZ_MEL_N_FFT,
             hop_length=_VIZ_MEL_HOP,
             n_mels=_VIZ_MEL_N_MELS,
-            sample_rate=codec.sample_rate,
+            sample_rate=sample_rate,
             window="hann",
             center=False,
             log_eps=1e-5,
             mel_scale="slaney",
         ).to(self._device)
+        # Auxiliary mel loss, only when weighted in. Config validation forbids
+        # aux_mel_weight > 0 for BigVGAN, so this is always a raw-audio codec.
+        self.mel_aux_loss: MelAuxLoss | None = (
+            MelAuxLoss(
+                sample_rate=sample_rate, hop_length=codec.hop_length
+            ).to(self._device)
+            if config.aux_mel_weight > 0
+            else None
+        )
 
     def _prepare_acoustic(self, batch: Batch) -> MaskedTensor:
         return prepare_acoustic_batch(batch, self.codec, self.model.cfg.eos_n_frames)
@@ -310,41 +324,32 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         ):
             # The parametrization owns the loss form (MSE for RectifiedFlow,
             # reweighted L1 for JWT) — model.training_step returns it masked.
-            # x_pred is x_1 recovered in normalized space, used below for the
-            # codec-agnostic logmel_l1 monitor / optional auxiliary loss.
+            # x_pred is x_1 recovered in normalized space, decoded below to a
+            # waveform for the auxiliary mel loss when it is enabled.
             out = self.model.training_step(text, acoustic)
             fm_loss, x_pred, v_mask = out.loss, out.x_pred, out.v_mask
 
-        # Log-mel L1 — codec-agnostic. Always logged as a monitor; optionally
-        # added to the loss with weight `aux_mel_weight` (perceptual auxiliary
-        # à la gated_dit_block, particularly useful for raw-audio codecs whose
-        # FM-space loss isn't perceptual). Computed in fp32 outside autocast
-        # for STFT stability.
-        aux_w = self.config.aux_mel_weight
-        grad_ctx = torch.enable_grad() if aux_w > 0 else torch.no_grad()
-        with grad_ctx, torch.autocast(device_type=self.device.type, enabled=False):
-            x_1_target_norm = acoustic.values.float()  # (B, acoustic_dim, T_ext)
-            x_1_pred_norm = x_pred.float().transpose(1, 2)  # (B, acoustic_dim, T_ext)
-            logmel_pred = self.codec.to_logmel(self.codec.unnormalize(x_1_pred_norm))
-            logmel_target = self.codec.to_logmel(self.codec.unnormalize(x_1_target_norm))
-            assert logmel_pred.shape == logmel_target.shape, (
-                f"to_logmel produced different shapes for pred/target: "
-                f"{logmel_pred.shape} vs {logmel_target.shape}"
-            )
-            assert logmel_pred.shape[-1] == v_mask.shape[-1], (
-                f"to_logmel time axis ({logmel_pred.shape[-1]}) must match "
-                f"v_mask ({v_mask.shape[-1]}) so the supervision window aligns"
-            )
-            logmel_diff = (logmel_pred - logmel_target).abs().mean(dim=1)  # (B, T)
-            logmel_l1 = (logmel_diff * v_mask).sum() / v_mask.sum().clamp(min=1)
+        loss = fm_loss
+        metrics: dict[str, torch.Tensor] = {"fm_loss": fm_loss.detach()}
 
-        loss = fm_loss + aux_w * logmel_l1 if aux_w > 0 else fm_loss
+        # Auxiliary log-mel L1 — a perceptual loss term for codecs whose
+        # FM-space loss isn't itself perceptual (raw-audio patches). Decodes the
+        # predicted and target features to waveforms and compares them in mel
+        # space. fp32 outside autocast for STFT stability. `mel_aux_loss` is
+        # None for BigVGAN, whose FM loss is already mel-space.
+        if self.mel_aux_loss is not None:
+            with torch.autocast(device_type=self.device.type, enabled=False):
+                x_1_target_norm = acoustic.values.float()
+                x_1_pred_norm = x_pred.float().transpose(1, 2)
+                pred_wav = self.codec.decode(self.codec.unnormalize(x_1_pred_norm))
+                target_wav = self.codec.decode(
+                    self.codec.unnormalize(x_1_target_norm)
+                )
+                logmel_l1 = self.mel_aux_loss(pred_wav, target_wav, v_mask)
+            loss = fm_loss + self.config.aux_mel_weight * logmel_l1
+            metrics["logmel_l1"] = logmel_l1.detach()
 
-        metrics: dict[str, torch.Tensor] = {
-            "loss": loss.detach(),
-            "fm_loss": fm_loss.detach(),
-            "logmel_l1": logmel_l1.detach(),
-        }
+        metrics["loss"] = loss.detach()
         scalars, bins = self._step_diagnostics(out, text, acoustic)
 
         if self.model.training:
@@ -551,7 +556,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             ac_i = acoustic_pred.values[i : i + 1, :, :L]  # (1, acoustic_dim, L), normalized
             wav = self.codec.decode(self.codec.unnormalize(ac_i))[0]
             self.logger.log_audio(
-                f"sampled/{i}", wav, self.step, self.codec.sample_rate
+                f"sampled/{i}", wav, self.step, self.sample_rate
             )
             # The model picks its own length via the EOS sentinel; early in
             # training it can emit a near-empty generation. viz_mel's STFT
@@ -591,7 +596,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                 f"{i}/reconstructed",
                 reconstructed,
                 0,
-                self.codec.sample_rate,
+                self.sample_rate,
             )
             log_mel(self.logger, f"{i}/clean/mel", clean_viz, 0)
             log_mel(self.logger, f"{i}/reconstructed/mel", recon_viz, 0)
