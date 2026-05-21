@@ -313,7 +313,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         are on-GPU diagnostics averaged over the logging window; `bins` are the
         loss-by-t (sum, count) tensors accumulated for the histogram.
         """
-        batch = batch.to(self.device)
+        batch = batch.to(self.device, non_blocking=True)
         text = MaskedTensor(values=batch.tokens.unsqueeze(1), mask=batch.tokens_mask)
         acoustic = self._prepare_acoustic(batch)
 

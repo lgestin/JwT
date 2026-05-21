@@ -63,6 +63,7 @@ def main() -> None:
         num_workers=args.num_workers,
         collate_fn=collate,
         pin_memory=pin,
+        persistent_workers=args.num_workers > 0,
     )
     valid_dl = DataLoader(
         valid_ds,
