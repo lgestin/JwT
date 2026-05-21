@@ -78,7 +78,6 @@ def main() -> None:
 
     args.model.vocabulary_size = len(vocab)
     args.model.codec = args.codec
-    args.model.parametrization = args.parametrization
     args.model.acoustic_dim = codec.acoustic_dim
     model = RollingFlowSpeaker(args.model).to(device)
     if args.compile:

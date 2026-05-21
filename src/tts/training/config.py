@@ -15,7 +15,6 @@ from simple_parsing import ArgumentParser
 from simple_parsing.helpers.serialization import load, save
 
 from tts.data.audio.codecs import Codecs
-from tts.model.flow import FlowParametrizations
 from tts.model.neural_speaker import RollingFlowConfig
 from tts.training.ema import EMAConfig
 from tts.training.optimizer import OptimizerConfig
@@ -37,10 +36,9 @@ class Args:
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     # EMA (exponential moving average of weights)
     ema: EMAConfig = field(default_factory=EMAConfig)
-    # Codec
+    # Codec — selects the arrow acoustic column and the codec object; also
+    # copied into `model.codec`.
     codec: Codecs = Codecs.BIGVGAN
-    # Flow-matching parametrization (locked to the model checkpoint).
-    parametrization: FlowParametrizations = FlowParametrizations.RECTIFIED_FLOW
     # Logging
     use_tensorboard: bool = True
     # Perf

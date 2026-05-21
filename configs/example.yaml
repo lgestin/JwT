@@ -41,7 +41,6 @@ optimizer:
   warmup_steps: 0
   weight_decay: 0.01
 output_dir: outputs/run0
-parametrization: RECTIFIED_FLOW
 resume: false
 trainer:
   amp_dtype: BF16
