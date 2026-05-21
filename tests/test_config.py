@@ -6,7 +6,12 @@ from simple_parsing.helpers.serialization import load
 from tts.data.audio.codecs import Codecs
 from tts.model.flow import FlowParametrizations
 from tts.model.neural_speaker import RollingFlowConfig
-from tts.training.config import Args, check_model_config_consistency, dump_config
+from tts.training.config import (
+    Args,
+    check_model_config_consistency,
+    dump_config,
+    parse_args,
+)
 
 
 def test_args_defaults_survive_the_move() -> None:
@@ -51,3 +56,67 @@ def test_consistency_raises_on_mismatch() -> None:
     checkpoint = RollingFlowConfig(acoustic_dim=80)
     with pytest.raises(ValueError, match="acoustic_dim"):
         check_model_config_consistency(runtime, checkpoint)
+
+
+def test_parse_args_loads_values_from_config_file(tmp_path: Path) -> None:
+    """parse_args reads field values from the --config_path file."""
+    cfg = tmp_path / "default.yaml"
+    args = Args(batch_size=7)
+    args.trainer.max_steps = 321
+    dump_config(args, cfg)
+
+    parsed = parse_args(["--config_path", str(cfg)])
+
+    assert parsed.batch_size == 7
+    assert parsed.trainer.max_steps == 321
+
+
+def test_cli_flag_overrides_config_file(tmp_path: Path) -> None:
+    """An explicit CLI flag wins over the config file value."""
+    cfg = tmp_path / "default.yaml"
+    dump_config(Args(batch_size=7), cfg)
+
+    parsed = parse_args(["--config_path", str(cfg), "--batch_size", "99"])
+
+    assert parsed.batch_size == 99
+
+
+def test_resume_prefers_saved_config(tmp_path: Path) -> None:
+    """With --resume, the saved output_dir/config.yaml wins over --config_path."""
+    default_cfg = tmp_path / "default.yaml"
+    dump_config(Args(batch_size=7), default_cfg)
+
+    output_dir = tmp_path / "run"
+    output_dir.mkdir()
+    dump_config(Args(batch_size=555), output_dir / "config.yaml")
+
+    parsed = parse_args(
+        [
+            "--config_path", str(default_cfg),
+            "--resume",
+            "--output_dir", str(output_dir),
+        ]
+    )
+
+    assert parsed.batch_size == 555
+    assert parsed.resume is True
+
+
+def test_resume_without_saved_config_warns(tmp_path: Path) -> None:
+    """--resume with no saved config.yaml falls back to --config_path and warns."""
+    default_cfg = tmp_path / "default.yaml"
+    dump_config(Args(batch_size=7), default_cfg)
+
+    output_dir = tmp_path / "run"
+    output_dir.mkdir()  # no config.yaml inside
+
+    with pytest.warns(UserWarning, match="no saved config"):
+        parsed = parse_args(
+            [
+                "--config_path", str(default_cfg),
+                "--resume",
+                "--output_dir", str(output_dir),
+            ]
+        )
+
+    assert parsed.batch_size == 7

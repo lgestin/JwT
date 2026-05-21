@@ -6,10 +6,13 @@ with individual CLI flags overriding any value. The resolved config a run used
 is dumped to `output_dir/config.yaml` so the run can be resumed faithfully.
 """
 
+import argparse
+import warnings
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
-from simple_parsing.helpers.serialization import save
+from simple_parsing import ArgumentParser
+from simple_parsing.helpers.serialization import load, save
 
 from tts.data.audio.codecs import Codecs
 from tts.model.flow import FlowParametrizations
@@ -55,6 +58,51 @@ def dump_config(args: Args, path: Path | str) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     save(args, path)
+
+
+def _select_config_path(argv: list[str] | None) -> str:
+    """Pick which config file to load from a lightweight pre-parse of the CLI.
+
+    Defaults to `configs/default.yaml`, or `--config_path` if given. When
+    `--resume` is set and `output_dir/config.yaml` exists, that saved config
+    is used instead so a resumed run reuses its original config.
+    """
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config_path", default=DEFAULT_CONFIG_PATH)
+    pre.add_argument("--resume", action="store_true")
+    pre.add_argument("--output_dir", default=None)
+    known, _ = pre.parse_known_args(argv)
+
+    config_path = known.config_path
+    if known.resume:
+        output_dir = known.output_dir
+        if output_dir is None:
+            output_dir = load(Args, config_path).output_dir
+        saved = Path(output_dir) / "config.yaml"
+        if saved.exists():
+            config_path = str(saved)
+        else:
+            warnings.warn(
+                f"--resume set but no saved config at {saved}; "
+                f"falling back to {config_path}",
+                stacklevel=2,
+            )
+    return config_path
+
+
+def parse_args(argv: list[str] | None = None) -> Args:
+    """Parse training `Args` from a config file with CLI overrides.
+
+    Precedence, lowest to highest: `Args` defaults < config file < CLI flags.
+    On `--resume`, the config saved next to the checkpoints is preferred over
+    `configs/default.yaml`.
+    """
+    config_path = _select_config_path(argv)
+    defaults = load(Args, config_path)
+
+    parser = ArgumentParser(add_config_path_arg=True)
+    parser.add_arguments(Args, dest="args", default=defaults)
+    return parser.parse_args(argv).args
 
 
 def check_model_config_consistency(
