@@ -94,12 +94,6 @@ class AdaLN(nn.Module):
         return self.linear(F.silu(t_emb)).chunk(6, dim=-1)
 
 
-def modulate(
-    x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor
-) -> torch.Tensor:
-    return x * (1 + scale) + shift
-
-
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6, affine: bool = True):
         super().__init__()
@@ -180,9 +174,9 @@ class TransformerBlock(nn.Module):
     ) -> torch.Tensor:
         shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = self.adaLN(t_emb)
         x = x + gate_a * self.attn(
-            modulate(self.norm1(x), shift_a, scale_a), freqs_cis, mask
+            self.norm1(x) * (1 + scale_a) + shift_a, freqs_cis, mask
         )
-        x = x + gate_m * self.ff(modulate(self.norm2(x), shift_m, scale_m))
+        x = x + gate_m * self.ff(self.norm2(x) * (1 + scale_m) + shift_m)
         return x
 
 
