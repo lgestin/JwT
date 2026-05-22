@@ -264,6 +264,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                                 else None
                             ),
                         )
+                        self.checkpoint_manager.cleanup_old_checkpoints()
 
                 if hasattr(self.optimizer, "train"):
                     self.optimizer.train()
