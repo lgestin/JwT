@@ -7,6 +7,8 @@ import torch.nn.functional as F
 from einops import rearrange
 from simple_parsing import Serializable
 
+from tts.model.attention import AttentionImplementation, SDPAAttention
+
 
 @dataclass
 class TransformerConfig(Serializable):
@@ -134,14 +136,17 @@ class SelfAttention(nn.Module):
         x: torch.Tensor,
         freqs_cis: torch.Tensor,
         mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        attention_implementation: type[AttentionImplementation] = SDPAAttention,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Returns `(out, attn_weights)`. `attn_weights` is the (B, H, T, T)
+        softmax matrix for backends that expose it, else `None`."""
         qkv = self.qkv(x)
         q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
         q, k = self.qk_norm(q, k)
         q, k = apply_rope(q, k, freqs_cis)
-        x = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
-        x = rearrange(x, "B H L D -> B L (H D)")
-        return self.proj(x)
+        out, attn_weights = attention_implementation.attention(q, k, v, mask)
+        out = rearrange(out, "B H L D -> B L (H D)")
+        return self.proj(out), attn_weights
 
 
 class FeedForward(nn.Module):
@@ -171,11 +176,16 @@ class TransformerBlock(nn.Module):
         freqs_cis: torch.Tensor,
         t_emb: torch.Tensor,
         mask: torch.Tensor | None = None,
+        attention_implementation: type[AttentionImplementation] = SDPAAttention,
     ) -> torch.Tensor:
         shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = self.adaLN(t_emb)
-        x = x + gate_a * self.attn(
-            self.norm1(x) * (1 + scale_a) + shift_a, freqs_cis, mask
+        attn_out, _ = self.attn(
+            self.norm1(x) * (1 + scale_a) + shift_a,
+            freqs_cis,
+            mask,
+            attention_implementation,
         )
+        x = x + gate_a * attn_out
         x = x + gate_m * self.ff(self.norm2(x) * (1 + scale_m) + shift_m)
         return x
 
@@ -203,10 +213,11 @@ class Transformer(nn.Module):
         x: torch.Tensor,
         t: torch.Tensor,
         mask: torch.Tensor | None = None,
+        attention_implementation: type[AttentionImplementation] = SDPAAttention,
     ) -> torch.Tensor:
         """x: (B, L, D), t: (B, L) per-position timestep, mask: optional attn mask."""
         freqs_cis = self.freqs_cis[:, :, : x.shape[1]]
         t_emb = self.time_embedder(t)
         for block in self.blocks:
-            x = block(x, freqs_cis, t_emb, mask)
+            x = block(x, freqs_cis, t_emb, mask, attention_implementation)
         return self.norm(x)

@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from tts.data.audio.codecs import Codec, Codecs
+from tts.model.attention import AttentionImplementation, SDPAAttention
 from tts.model.flow import (
     FlowParametrizations,
     JustWaveformTransformersParametrization,
@@ -106,6 +107,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         text: MaskedTensor,
         acoustic: MaskedTensor,
         t: torch.Tensor,
+        attention_implementation: type[AttentionImplementation] = SDPAAttention,
     ) -> torch.Tensor:
         """Run a forward pass and return the raw model output.
 
@@ -168,8 +170,10 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         is_zero_real = (t_packed == 0.0) & in_ac_packed
         keep_first_zero = is_zero_real.cumsum(-1) <= 1
         attn_keys = in_real_packed & keep_first_zero  # (B, T)
-        attn_mask = attn_keys.unsqueeze(1).unsqueeze(2)  # (B, 1, 1, T)
-        out_packed = self.transformer(x_packed, t_packed, attn_mask)
+        attn_mask = attention_implementation.build_mask(attn_keys)  # (B, 1, 1, T)
+        out_packed = self.transformer(
+            x_packed, t_packed, attn_mask, attention_implementation
+        )
         pred_packed = self.acoustic_out(out_packed)  # (B, T, acoustic_dim)
 
         # Unpack: acoustic position i in sample b lives at packed position text_lens[b] + i.
@@ -188,6 +192,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         acoustic_front: torch.LongTensor | None = None,
         x_0: torch.Tensor | None = None,
         n: int | None = None,
+        attention_implementation: type[AttentionImplementation] = SDPAAttention,
     ) -> TrainingStepOutput:
         """Sample a rolling front, run forward, return masked loss + x_pred.
 
@@ -201,6 +206,9 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
           negative values reproduce the inference warm-up distribution
         - x_0: (B, T_ext, acoustic_dim), the noise tensor
         - n: override for cfg.n_denoising_steps
+
+        `attention_implementation` selects the attention backend (default fused
+        SDPA); pass `TorchAttention` to expose attention weights for probing.
 
         Returns a `TrainingStepOutput`:
         - loss:         scalar — masked-mean of the parametrization's per-position loss
@@ -237,7 +245,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         x_t = self.param.prepare_x_t(x_0, x_1, t_b)
 
         noisy = MaskedTensor(values=x_t.transpose(1, 2), mask=acoustic.mask)
-        pred = self.forward(text, noisy, t)
+        pred = self.forward(text, noisy, t, attention_implementation)
 
         v_mask = (
             acoustic.mask

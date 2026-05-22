@@ -12,11 +12,13 @@ from torch.utils.data import DataLoader
 from tts.data.audio.codecs import Codec
 from tts.data.audio.stft import MelSpectrogram
 from tts.data.dataset import Batch
+from tts.model.attention import TorchAttention
 from tts.model.neural_speaker import (
     MaskedTensor,
     RollingFlowSpeaker,
     TrainingStepOutput,
 )
+from tts.training.attention_probe import capture_attention, log_attention_maps
 from tts.training.checkpoint_manager import CheckpointManager
 from tts.training.ema import EMA
 from tts.training.loggers import Logger, log_mel
@@ -361,7 +363,10 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         return metrics, scalars, bins
 
     def _step_diagnostics(
-        self, out: TrainingStepOutput, text: MaskedTensor, acoustic: MaskedTensor
+        self,
+        out: TrainingStepOutput,
+        text: MaskedTensor,
+        acoustic: MaskedTensor,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         """Per-micro-step diagnostics — all kept on-GPU (no host sync).
 
@@ -528,10 +533,47 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             self._reduce_diagnostics(diag_accum, count), self.step, "data/valid"
         )
         self._emit_loss_histogram(bin_accum, self.step, "valid")
+        self._log_attention_maps()
 
         loss_val = val_metrics.get("loss", float("inf"))
         if loss_val < self.best_loss:
             self.state.best_loss = loss_val
+
+    @torch.inference_mode()
+    def _log_attention_maps(self) -> None:
+        """Log per-sample text->audio attention heatmaps for the first `n_smp`
+        validation samples.
+
+        Runs one extra eager forward with the weight-exposing `TorchAttention`
+        backend (the fused SDPA kernel cannot surface attention weights), behind
+        hooks that collect every layer's map. The logged map is averaged over
+        heads and layers — see `tts.training.attention_probe`.
+        """
+        batch = next(iter(self.valid_dloader)).to(self.device, non_blocking=True)
+        n = min(self.config.n_smp, batch.tokens.shape[0])
+        text = MaskedTensor(values=batch.tokens.unsqueeze(1), mask=batch.tokens_mask)
+        acoustic = self._prepare_acoustic(batch)
+        text_n = MaskedTensor(values=text.values[:n], mask=text.mask[:n])
+        acoustic_n = MaskedTensor(
+            values=acoustic.values[:n], mask=acoustic.mask[:n]
+        )
+
+        with torch.autocast(
+            device_type=self.device.type,
+            dtype=self.amp_dtype,
+            enabled=not self.noamp,
+        ), capture_attention(self.model) as collector:
+            self.model.training_step(
+                text_n, acoustic_n, attention_implementation=TorchAttention
+            )
+
+        log_attention_maps(
+            self.logger,
+            collector.map,
+            text_n.mask.sum(-1),
+            acoustic_n.mask.sum(-1),
+            self.step,
+        )
 
     @torch.inference_mode()
     def _log_samples(self):
