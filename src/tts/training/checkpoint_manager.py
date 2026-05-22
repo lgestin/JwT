@@ -248,11 +248,15 @@ class CheckpointManager:
 
         return metadata
 
-    def cleanup_old_checkpoints(self, keep_n: int = 5):
-        """Remove old checkpoints, keeping only the most recent ones.
+    def cleanup_old_checkpoints(self, keep_recent: int = 2) -> None:
+        """Remove checkpoints not worth keeping during a training run.
+
+        Keeps the checkpoints targeted by the ``best`` and ``latest`` symlinks
+        plus the ``keep_recent`` highest-step checkpoints; deletes the rest.
 
         Args:
-            keep_n: Number of recent checkpoints to keep
+            keep_recent: Number of most-recent checkpoints to keep, in addition
+                to the ``best`` and ``latest`` symlink targets.
         """
         # Glob only numeric-stepped checkpoints — "checkpoint.*.pt" would also
         # match the "checkpoint.best.pt" symlink, and int("best") raises.
@@ -261,12 +265,16 @@ class CheckpointManager:
             key=lambda p: int(p.stem.split(".")[-1]),
         )
 
-        # Don't delete the checkpoint that best.pt points to
-        best_target = None
-        if self.best_checkpoint_path.is_symlink():
-            best_target = self.best_checkpoint_path.resolve()
+        # Protected set: resolved real paths that must survive cleanup.
+        protected: set[Path] = set()
+        for link in (self.best_checkpoint_path, self.latest_checkpoint_path):
+            if link.is_symlink():
+                protected.add(link.resolve())
+        # The "if" guard avoids checkpoints[-0:] returning the whole list.
+        if keep_recent > 0:
+            for checkpoint in checkpoints[-keep_recent:]:
+                protected.add(checkpoint.resolve())
 
-        # Remove old checkpoints
-        for checkpoint in checkpoints[:-keep_n]:
-            if best_target is None or checkpoint.resolve() != best_target:
+        for checkpoint in checkpoints:
+            if checkpoint.resolve() not in protected:
                 checkpoint.unlink()

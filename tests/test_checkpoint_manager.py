@@ -61,3 +61,84 @@ def test_load_without_ema_in_checkpoint_warns(tmp_path) -> None:
     # EMA keeps its from-init shadow (the 4.0-filled fresh model).
     for tensor in fresh_ema._shadow.values():
         assert torch.allclose(tensor, torch.full_like(tensor, 4.0))
+
+
+def test_cleanup_keeps_best_latest_and_recent(tmp_path) -> None:
+    """Cleanup keeps the best target plus the 2 most recent checkpoints."""
+    model = _const_model(1.0)
+    optimizer = torch.optim.AdamW(model.parameters())
+    manager = CheckpointManager(exp_path=tmp_path)
+
+    # Step 10 is the best; later saves pass best_loss=inf so save() leaves
+    # the "best" symlink pinned to step 10 while "latest" advances.
+    manager.save(
+        step=10, model=model, optimizer=optimizer, scaler=None, best_loss=0.5
+    )
+    for step in (20, 30, 40, 50):
+        manager.save(
+            step=step,
+            model=model,
+            optimizer=optimizer,
+            scaler=None,
+            best_loss=float("inf"),
+        )
+
+    manager.cleanup_old_checkpoints(keep_recent=2)
+
+    remaining = sorted(p.name for p in tmp_path.glob("checkpoint.[0-9]*.pt"))
+    assert remaining == [
+        "checkpoint.10.pt",  # best target
+        "checkpoint.40.pt",  # 2nd most recent
+        "checkpoint.50.pt",  # most recent / latest target
+    ]
+
+
+def test_cleanup_keeps_symlinks_resolvable(tmp_path) -> None:
+    """The best and latest symlinks still resolve to real files after cleanup."""
+    model = _const_model(1.0)
+    optimizer = torch.optim.AdamW(model.parameters())
+    manager = CheckpointManager(exp_path=tmp_path)
+
+    manager.save(
+        step=10, model=model, optimizer=optimizer, scaler=None, best_loss=0.5
+    )
+    for step in (20, 30, 40):
+        manager.save(
+            step=step,
+            model=model,
+            optimizer=optimizer,
+            scaler=None,
+            best_loss=float("inf"),
+        )
+
+    manager.cleanup_old_checkpoints(keep_recent=2)
+
+    assert manager.best_checkpoint_path.resolve().exists()
+    assert manager.latest_checkpoint_path.resolve().exists()
+
+
+def test_cleanup_keep_recent_zero_keeps_only_symlink_targets(tmp_path) -> None:
+    """keep_recent=0 keeps only the best and latest targets, without crashing."""
+    model = _const_model(1.0)
+    optimizer = torch.optim.AdamW(model.parameters())
+    manager = CheckpointManager(exp_path=tmp_path)
+
+    manager.save(
+        step=10, model=model, optimizer=optimizer, scaler=None, best_loss=0.5
+    )
+    for step in (20, 30):
+        manager.save(
+            step=step,
+            model=model,
+            optimizer=optimizer,
+            scaler=None,
+            best_loss=float("inf"),
+        )
+
+    manager.cleanup_old_checkpoints(keep_recent=0)
+
+    remaining = sorted(p.name for p in tmp_path.glob("checkpoint.[0-9]*.pt"))
+    assert remaining == [
+        "checkpoint.10.pt",  # best target
+        "checkpoint.30.pt",  # latest target
+    ]
