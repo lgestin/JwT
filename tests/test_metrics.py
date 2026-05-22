@@ -1,6 +1,10 @@
 import torch
 
-from tts.training.metrics import binned_loss_stats, masked_mean_std
+from tts.training.metrics import (
+    binned_loss_stats,
+    masked_mean_std,
+    per_pos_l1_error,
+)
 
 
 def test_binned_loss_stats_clamps_edges() -> None:
@@ -51,6 +55,28 @@ def test_binned_loss_stats_empty_bins_are_nan() -> None:
 
     assert counts.sum().item() == 0.0
     assert torch.isnan(sums / counts).all()
+
+
+def test_per_pos_l1_error_averages_over_feature_dim() -> None:
+    """Returns (B, T) mean-absolute error, averaged over the feature dim."""
+    pred = torch.tensor([[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]])  # (1, 2, 3)
+    target = torch.tensor([[[1.0, 2.0, 3.0], [0.0, 0.0, 0.0]]])
+
+    err = per_pos_l1_error(pred, target)
+
+    assert err.shape == (1, 2)
+    assert err[0, 0].item() == 0.0  # exact match
+    assert err[0, 1].item() == 5.0  # mean(|4|, |5|, |6|)
+
+
+def test_per_pos_l1_error_detaches() -> None:
+    """The diagnostic must not retain the autograd graph in the hot loop."""
+    pred = torch.randn(1, 2, 3, requires_grad=True)
+    target = torch.zeros(1, 2, 3)
+
+    err = per_pos_l1_error(pred, target)
+
+    assert not err.requires_grad
 
 
 def test_masked_mean_std() -> None:

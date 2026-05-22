@@ -38,6 +38,22 @@ def binned_loss_stats(
     return sums, counts
 
 
+def per_pos_l1_error(
+    pred: torch.Tensor,    # (B, T, D)
+    target: torch.Tensor,  # (B, T, D)
+) -> torch.Tensor:
+    """Per-position mean-absolute error, averaged over the feature dim.
+
+    Returns a ``(B, T)`` tensor — the *un-reweighted* x_1-prediction error.
+    Binned by timestep it disentangles genuine denoising difficulty from any
+    parametrization-induced loss reweighting (e.g. JWT's ``1/(1-t)`` factor,
+    which amplifies the FM loss near ``t == 1`` regardless of accuracy).
+
+    Sync-free and detached: a hot-loop diagnostic that never retains the graph.
+    """
+    return (pred.detach().float() - target.detach().float()).abs().mean(-1)
+
+
 def masked_mean_std(
     values: torch.Tensor,      # (B, D, T)
     frame_mask: torch.Tensor,  # (B, T), bool

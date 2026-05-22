@@ -37,8 +37,14 @@ class MelAuxLoss(nn.Module):
         pred_wav: torch.Tensor,
         target_wav: torch.Tensor,
         v_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        """pred_wav/target_wav: (B, S). v_mask: (B, T). Returns a 0-dim tensor."""
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """pred_wav/target_wav: (B, S). v_mask: (B, T).
+
+        Returns ``(loss, per_pos)``: ``loss`` is the 0-dim v_mask-weighted mean
+        used as a training term; ``per_pos`` is the detached ``(B, T)`` per-frame
+        log-mel L1 (already meaned over the mel channels), a hot-loop diagnostic
+        the trainer bins by flow-matching timestep into ``logmel_l1_by_t``.
+        """
         logmel_pred = self.mel(pred_wav).clamp(min=1e-5).log()
         logmel_target = self.mel(target_wav).clamp(min=1e-5).log()
         assert logmel_pred.shape == logmel_target.shape, (
@@ -50,4 +56,5 @@ class MelAuxLoss(nn.Module):
             f"({v_mask.shape[-1]}) so the supervision window aligns"
         )
         logmel_diff = (logmel_pred - logmel_target).abs().mean(dim=1)  # (B, T)
-        return (logmel_diff * v_mask).sum() / v_mask.sum().clamp(min=1)
+        loss = (logmel_diff * v_mask).sum() / v_mask.sum().clamp(min=1)
+        return loss, logmel_diff.detach()

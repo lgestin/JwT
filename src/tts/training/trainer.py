@@ -23,7 +23,11 @@ from tts.training.checkpoint_manager import CheckpointManager
 from tts.training.ema import EMA
 from tts.training.loggers import Logger, log_mel
 from tts.training.loss import MelAuxLoss
-from tts.training.metrics import binned_loss_stats, masked_mean_std
+from tts.training.metrics import (
+    binned_loss_stats,
+    masked_mean_std,
+    per_pos_l1_error,
+)
 
 
 @dataclass
@@ -339,6 +343,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         # predicted and target features to waveforms and compares them in mel
         # space. fp32 outside autocast for STFT stability. `mel_aux_loss` is
         # None for BigVGAN, whose FM loss is already mel-space.
+        logmel_diff: torch.Tensor | None = None
         if self.mel_aux_loss is not None:
             with torch.autocast(device_type=self.device.type, enabled=False):
                 x_1_target_norm = acoustic.values.float()
@@ -347,12 +352,14 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                 target_wav = self.codec.decode(
                     self.codec.unnormalize(x_1_target_norm)
                 )
-                logmel_l1 = self.mel_aux_loss(pred_wav, target_wav, v_mask)
+                logmel_l1, logmel_diff = self.mel_aux_loss(
+                    pred_wav, target_wav, v_mask
+                )
             loss = fm_loss + self.config.aux_mel_weight * logmel_l1
             metrics["logmel_l1"] = logmel_l1.detach()
 
         metrics["loss"] = loss.detach()
-        scalars, bins = self._step_diagnostics(out, text, acoustic)
+        scalars, bins = self._step_diagnostics(out, text, acoustic, logmel_diff)
 
         if self.model.training:
             scaled = loss / self.config.grad_accum_steps
@@ -368,15 +375,27 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         out: TrainingStepOutput,
         text: MaskedTensor,
         acoustic: MaskedTensor,
+        logmel_diff: torch.Tensor | None = None,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         """Per-micro-step diagnostics — all kept on-GPU (no host sync).
 
         Returns `(scalars, bins)`: `scalars` are 0-dim tensors the caller
         averages over the logging window; `bins` holds the loss-by-t
         `(sum, count)` tensors the caller accumulates for the histogram.
+        `logmel_diff` is the `(B, T)` per-frame auxiliary log-mel L1, present
+        only when the aux mel loss is active (raw-audio codecs).
         """
         bin_sums, bin_counts = binned_loss_stats(
             out.per_pos_loss, out.t, out.v_mask, self.config.n_loss_bins
+        )
+        # Un-reweighted x_1-prediction error, binned the same way. Reading it
+        # next to `bin_sums` separates genuine denoising difficulty from the
+        # parametrization's loss reweighting (e.g. JWT's 1/(1-t) factor, which
+        # inflates the FM loss near t=1 regardless of accuracy). Same t/v_mask,
+        # so its bin counts equal `bin_counts` and aren't re-stored.
+        x1_err = per_pos_l1_error(out.x_pred, acoustic.values.transpose(1, 2))
+        x1_err_sums, _ = binned_loss_stats(
+            x1_err, out.t, out.v_mask, self.config.n_loss_bins
         )
         ac_mean, ac_std = masked_mean_std(acoustic.values, out.v_mask)
         scalars = {
@@ -386,7 +405,19 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             "ac_target_mean": ac_mean,
             "ac_target_std": ac_std,
         }
-        bins = {"bin_sums": bin_sums, "bin_counts": bin_counts}
+        bins = {
+            "bin_sums": bin_sums,
+            "bin_counts": bin_counts,
+            "x1_err_sums": x1_err_sums,
+        }
+        # Auxiliary log-mel L1, binned by the same t/v_mask — the *perceptual*
+        # analogue of `x1_err_by_t` (mel space rather than normalized FM space).
+        # Same bins as `bin_counts`, so its counts aren't re-stored.
+        if logmel_diff is not None:
+            logmel_l1_sums, _ = binned_loss_stats(
+                logmel_diff, out.t, out.v_mask, self.config.n_loss_bins
+            )
+            bins["logmel_l1_sums"] = logmel_l1_sums
         return scalars, bins
 
     @staticmethod
@@ -420,16 +451,29 @@ class TTSRollingFlowMatchingTrainer(Trainer):
     def _emit_loss_histogram(
         self, diag_accum: dict[str, torch.Tensor], step: int, prefix: str
     ) -> None:
-        """Emit the FM loss binned by timestep t as a precomputed histogram.
+        """Emit the timestep-binned loss histograms.
 
-        `bin_means = bin_sums / bin_counts` is exact over the window; an empty
-        bin (count 0 -> NaN) is zero-filled. One host transfer.
+        `fm_loss_by_t` is the parametrization's (possibly reweighted) loss;
+        `x1_err_by_t` is the un-reweighted `|x_1 - x_pred|` error. When the
+        auxiliary mel loss is active a third series, `logmel_l1_by_t`, reports
+        that error in perceptual mel space. Comparing them isolates reweighting
+        artefacts from genuine denoising difficulty. Each bin mean is
+        `sum / count`, exact over the window; an empty bin (count 0 -> NaN) is
+        zero-filled. One host transfer covers every series.
         """
-        bin_means = diag_accum["bin_sums"] / diag_accum["bin_counts"]
-        values = torch.nan_to_num(bin_means.detach().float(), nan=0.0).cpu().tolist()
+        series = [
+            ("fm_loss_by_t", diag_accum["bin_sums"]),
+            ("x1_err_by_t", diag_accum["x1_err_sums"]),
+        ]
+        if "logmel_l1_sums" in diag_accum:
+            series.append(("logmel_l1_by_t", diag_accum["logmel_l1_sums"]))
+        counts = diag_accum["bin_counts"]
+        means = torch.stack([sums / counts for _, sums in series])
+        vals = torch.nan_to_num(means.detach().float(), nan=0.0).cpu().tolist()
         n = self.config.n_loss_bins
         edges = [i / n for i in range(n + 1)]
-        self.logger.log_histogram(f"{prefix}/fm_loss_by_t", edges, values, step)
+        for (tag, _), bin_values in zip(series, vals):
+            self.logger.log_histogram(f"{prefix}/{tag}", edges, bin_values, step)
 
     def _log_timestep_schedule(self) -> None:
         """Log the timestep schedule curve — t = schedule.timestep(progress)

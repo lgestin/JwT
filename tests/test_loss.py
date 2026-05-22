@@ -16,7 +16,7 @@ def _wav(batch: int, n_frames: int, *, seed: int) -> torch.Tensor:
 def test_mel_aux_loss_is_zero_for_identical_waveforms() -> None:
     loss = MelAuxLoss(sample_rate=SAMPLE_RATE, hop_length=HOP)
     wav = _wav(2, 16, seed=0)
-    out = loss(wav, wav.clone(), torch.ones(2, 16))
+    out, _ = loss(wav, wav.clone(), torch.ones(2, 16))
     assert out.item() == 0.0
 
 
@@ -25,7 +25,7 @@ def test_mel_aux_loss_time_axis_matches_v_mask() -> None:
     so a v_mask in acoustic time aligns frame-for-frame."""
     loss = MelAuxLoss(sample_rate=SAMPLE_RATE, hop_length=HOP)
     pred, target = _wav(2, 13, seed=1), _wav(2, 13, seed=2)
-    out = loss(pred, target, torch.ones(2, 13))
+    out, _ = loss(pred, target, torch.ones(2, 13))
     assert torch.isfinite(out)
 
 
@@ -40,7 +40,7 @@ def test_mel_aux_loss_gradient_flows_to_prediction() -> None:
     loss = MelAuxLoss(sample_rate=SAMPLE_RATE, hop_length=HOP)
     pred = _wav(2, 16, seed=1).requires_grad_(True)
     target = _wav(2, 16, seed=2)
-    loss(pred, target, torch.ones(2, 16)).backward()
+    loss(pred, target, torch.ones(2, 16))[0].backward()
     assert pred.grad is not None
     assert pred.grad.abs().sum() > 0
 
@@ -53,17 +53,33 @@ def test_mel_aux_loss_excludes_masked_frames() -> None:
     pred = torch.cat([shared, _wav(2, 8, seed=4)], dim=-1)
     target = torch.cat([shared, _wav(2, 8, seed=5)], dim=-1)
 
-    full = loss(pred, target, torch.ones(2, 16))
+    full, _ = loss(pred, target, torch.ones(2, 16))
     assert full.item() > 0  # the second half genuinely differs
 
     first_quarter = torch.zeros(2, 16)
     first_quarter[:, :4] = 1.0
-    assert loss(pred, target, first_quarter).item() == 0.0
+    assert loss(pred, target, first_quarter)[0].item() == 0.0
 
 
 def test_mel_aux_loss_zero_mask_is_zero_without_nan() -> None:
     loss = MelAuxLoss(sample_rate=SAMPLE_RATE, hop_length=HOP)
     pred, target = _wav(2, 16, seed=1), _wav(2, 16, seed=2)
-    out = loss(pred, target, torch.zeros(2, 16))
+    out, _ = loss(pred, target, torch.zeros(2, 16))
     assert out.item() == 0.0
     assert torch.isfinite(out)
+
+
+def test_mel_aux_loss_returns_per_position_diff() -> None:
+    """The second return value is a detached (B, T) per-frame log-mel L1 whose
+    v_mask-weighted mean is the scalar loss — the trainer bins it by timestep
+    into the `logmel_l1_by_t` histogram."""
+    loss = MelAuxLoss(sample_rate=SAMPLE_RATE, hop_length=HOP)
+    pred, target = _wav(2, 13, seed=1), _wav(2, 13, seed=2)
+    v_mask = torch.ones(2, 13)
+
+    scalar, per_pos = loss(pred, target, v_mask)
+
+    assert per_pos.shape == (2, 13)
+    assert not per_pos.requires_grad
+    weighted_mean = (per_pos * v_mask).sum() / v_mask.sum()
+    assert weighted_mean.item() == pytest.approx(scalar.item(), abs=1e-5)
