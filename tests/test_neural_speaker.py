@@ -10,6 +10,7 @@ from tts.model.neural_speaker import (
     RollingFlowSpeaker,
 )
 from tts.model.transformer import AdaLN, TransformerConfig
+from tts.training.timestep_schedules import TimestepSchedules
 
 B = 2
 T_TEXT = 4
@@ -378,3 +379,38 @@ def test_speak_finite_for_both_parametrizations(
     )
     out = m.speak(txt, codec=codec_)
     assert torch.isfinite(out.values).all(), f"{parametrization}: speak() produced NaN/Inf"
+
+
+def test_lognorm_schedule_runs_end_to_end() -> None:
+    """A non-linear (logit-normal) schedule must drive both training_step and
+    speak to finite outputs — exercises the warped t-ramp and per-position dt."""
+    torch.manual_seed(0)
+    codec_ = StubCodec()
+    cfg = RollingFlowConfig(
+        transformer_config=TransformerConfig(dim=32, num_heads=4, num_layers=2),
+        vocabulary_size=20,
+        codec=Codecs.BIGVGAN,
+        parametrization=FlowParametrizations.JWT,  # JWT.step divides by (1-t)
+        timestep_schedule=TimestepSchedules.LOG_NORM,
+        acoustic_dim=N_MELS,
+        n_denoising_steps=4,
+        max_acoustic_len=MAX_AC_LEN,
+        eos_n_frames=2,
+    )
+    m = RollingFlowSpeaker(cfg).eval()
+    txt = MaskedTensor(
+        values=torch.randint(0, m.cfg.vocabulary_size, (B, 1, T_TEXT)),
+        mask=torch.ones(B, T_TEXT, dtype=torch.bool),
+    )
+    eos_n = m.cfg.eos_n_frames
+    real = torch.randn(B, m.cfg.acoustic_dim, T_MEL_MAX) * 2 - 5
+    eos_frames = codec_.eos_frames(eos_n).unsqueeze(0).expand(B, m.cfg.acoustic_dim, eos_n)
+    ext = codec_.normalize(torch.cat([real, eos_frames], dim=-1))
+    ac = MaskedTensor(values=ext, mask=torch.ones(B, T_MEL_MAX + eos_n, dtype=torch.bool))
+
+    out = m.training_step(txt, ac)
+    assert torch.isfinite(out.loss), "lognorm: training loss not finite"
+    assert torch.isfinite(out.x_pred).all(), "lognorm: x_pred not finite"
+
+    spoken = m.speak(txt, codec=codec_)
+    assert torch.isfinite(spoken.values).all(), "lognorm: speak produced NaN/Inf"

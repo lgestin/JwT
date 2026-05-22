@@ -218,6 +218,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
 
     def train(self):
         self._log_initial_samples()
+        self._log_timestep_schedule()
         self.optimizer.zero_grad()
         # Reflect the resumed step on the progress bar (no-op on a fresh run).
         self.logger.set_progress(self.step)
@@ -429,6 +430,15 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         n = self.config.n_loss_bins
         edges = [i / n for i in range(n + 1)]
         self.logger.log_histogram(f"{prefix}/fm_loss_by_t", edges, values, step)
+
+    def _log_timestep_schedule(self) -> None:
+        """Log the timestep schedule curve — t = schedule.timestep(progress)
+        sampled on the n-step denoising grid. Config-fixed (a pure function of
+        progress), so it is logged once at startup rather than per window."""
+        n = self.model.cfg.n_denoising_steps
+        timesteps = self.model.schedule.timesteps(n).detach().float().tolist()
+        edges = [i / n for i in range(n + 1)]
+        self.logger.log_histogram("schedule/timesteps", edges, timesteps, self.step)
 
     def _emit_diagnostics(
         self,

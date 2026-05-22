@@ -16,6 +16,7 @@ from tts.model.transformer import (
     Transformer,
     TransformerConfig,
 )
+from tts.training.timestep_schedules import TimestepSchedules
 
 
 class NeuralSpeaker(Protocol):
@@ -28,6 +29,7 @@ class RollingFlowConfig:
     vocabulary_size: int = 0
     codec: Codecs = Codecs.BIGVGAN
     parametrization: FlowParametrizations = FlowParametrizations.RECTIFIED_FLOW
+    timestep_schedule: TimestepSchedules = TimestepSchedules.LINEAR
     acoustic_dim: int = 100
     n_denoising_steps: int = 32
     max_acoustic_len: int = 2048
@@ -94,6 +96,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         # not an instance, so this stays free of training state.
         self.param = cfg.parametrization.parametrization
         self._per_pos_loss_fn = _PER_POS_LOSS_FN[self.param]
+        self.schedule = cfg.timestep_schedule.schedule
         dim = cfg.transformer_config.dim
         self.text_in = nn.Embedding(cfg.vocabulary_size, dim)
         self.acoustic_in = nn.Linear(cfg.acoustic_dim, dim)
@@ -235,11 +238,12 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             x_0 = torch.randn_like(x_1)
 
         ac_idx = torch.arange(T_ext, device=device).expand(B, T_ext)
-        t = torch.clamp(
+        progress = torch.clamp(
             1.0 - (ac_idx - acoustic_front.unsqueeze(1)).float() / (n - 1),
             0.0,
             1.0,
-        )  # (B, T_ext)
+        )  # (B, T_ext) — fraction of the n-step denoising trajectory completed
+        t = self.schedule.timestep(progress)  # (B, T_ext) — warped timestep
         t_b = t.unsqueeze(-1)  # (B, T_ext, 1) for broadcasting along acoustic_dim
 
         x_t = self.param.prepare_x_t(x_0, x_1, t_b)
@@ -306,7 +310,6 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         B = text.values.shape[0]
         device = text.values.device
         n = self.cfg.n_denoising_steps
-        dt = 1.0 / (n - 1)
         acoustic_dim = self.cfg.acoustic_dim
         max_T = self.cfg.max_acoustic_len
 
@@ -330,7 +333,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             ac_idx = torch.arange(L, device=device).expand(B, L)
             buffer_mask = torch.ones(B, L, dtype=torch.bool, device=device)
 
-            t = torch.clamp((k - ac_idx).float() / (n - 1), 0.0, 1.0)
+            progress = torch.clamp((k - ac_idx).float() / (n - 1), 0.0, 1.0)
+            t = self.schedule.timestep(progress)
 
             mt = MaskedTensor(values=values, mask=buffer_mask)
             pred = self.forward(text, mt, t)
@@ -340,7 +344,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             # contain inf/nan — torch.where below zeroes those positions before
             # they touch `values`.
             x_t_BLD = values.transpose(1, 2)  # (B, L, dim)
-            x_t_new = self.param.step(x_t_BLD, t.unsqueeze(-1), pred, dt)
+            dt = self.schedule.dt(progress, n)  # (B, L) — per-position step size
+            x_t_new = self.param.step(x_t_BLD, t.unsqueeze(-1), pred, dt.unsqueeze(-1))
 
             in_window = (t < 1.0) & buffer_mask
             update = torch.where(
