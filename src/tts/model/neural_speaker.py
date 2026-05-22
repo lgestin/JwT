@@ -34,6 +34,7 @@ class RollingFlowConfig:
     n_denoising_steps: int = 32
     max_acoustic_len: int = 2048
     eos_n_frames: int = 3
+    noise_scale: float = 1.0
 
 
 def _per_pos_mse(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -187,6 +188,20 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         )
         return pred
 
+    def _sample_noise(
+        self,
+        shape: tuple[int, ...] | torch.Size,
+        *,
+        device: torch.device | str,
+        dtype: torch.dtype = torch.float32,
+    ) -> torch.Tensor:
+        """Draw the x_0 prior — a Gaussian scaled by `cfg.noise_scale`.
+
+        Shared by `training_step` and `speak` so the corrupting noise has the
+        same distribution at train and inference time.
+        """
+        return self.cfg.noise_scale * torch.randn(shape, device=device, dtype=dtype)
+
     def training_step(
         self,
         text: MaskedTensor,
@@ -235,7 +250,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
 
         x_1 = acoustic.values.transpose(1, 2)  # (B, T_ext, acoustic_dim), normalized
         if x_0 is None:
-            x_0 = torch.randn_like(x_1)
+            x_0 = self._sample_noise(x_1.shape, device=x_1.device, dtype=x_1.dtype)
 
         ac_idx = torch.arange(T_ext, device=device).expand(B, T_ext)
         progress = torch.clamp(
@@ -314,7 +329,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         max_T = self.cfg.max_acoustic_len
 
         if x_0 is None:
-            x_0 = torch.randn(B, acoustic_dim, max_T, device=device)
+            x_0 = self._sample_noise((B, acoustic_dim, max_T), device=device)
         else:
             assert x_0.shape[-1] >= max_T, (
                 f"x_0 must have at least cfg.max_acoustic_len ({max_T}) frames, "

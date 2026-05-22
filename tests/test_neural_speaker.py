@@ -381,6 +381,11 @@ def test_speak_finite_for_both_parametrizations(
     assert torch.isfinite(out.values).all(), f"{parametrization}: speak() produced NaN/Inf"
 
 
+def test_noise_scale_field_defaults_to_one() -> None:
+    """noise_scale defaults to 1.0 — existing configs keep unit-Gaussian noise."""
+    assert RollingFlowConfig().noise_scale == 1.0
+
+
 def test_lognorm_schedule_runs_end_to_end() -> None:
     """A non-linear (logit-normal) schedule must drive both training_step and
     speak to finite outputs — exercises the warped t-ramp and per-position dt."""
@@ -414,3 +419,24 @@ def test_lognorm_schedule_runs_end_to_end() -> None:
 
     spoken = m.speak(txt, codec=codec_)
     assert torch.isfinite(spoken.values).all(), "lognorm: speak produced NaN/Inf"
+
+
+def test_sample_noise_applies_cfg_noise_scale() -> None:
+    """_sample_noise draws a zero-mean Gaussian with std == cfg.noise_scale, so
+    training and inference share the same scaled prior."""
+    cfg = RollingFlowConfig(
+        transformer_config=TransformerConfig(dim=32, num_heads=4, num_layers=2),
+        vocabulary_size=20,
+        codec=Codecs.BIGVGAN,
+        acoustic_dim=N_MELS,
+        n_denoising_steps=4,
+        max_acoustic_len=MAX_AC_LEN,
+        eos_n_frames=2,
+        noise_scale=0.3,
+    )
+    speaker = RollingFlowSpeaker(cfg).eval()
+    torch.manual_seed(0)
+    noise = speaker._sample_noise((40000,), device=torch.device("cpu"))
+
+    assert abs(noise.std().item() - 0.3) < 0.01
+    assert abs(noise.mean().item()) < 0.01
