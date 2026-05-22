@@ -53,7 +53,10 @@ def main() -> None:
         raise ValueError("dataset too small for the requested splits")
     smp_ds = Subset(full, list(range(n_smp)))
     valid_ds = Subset(full, list(range(N - args.n_valid, N)))
-    train_ds = Subset(full, list(range(n_smp, N - args.n_valid)))
+    train_idx = list(range(n_smp, N - args.n_valid))
+    if args.n_train is not None:
+        train_idx = train_idx[: args.n_train]
+    train_ds = Subset(full, train_idx)
 
     pin = device.type == "cuda"
     train_dl = DataLoader(

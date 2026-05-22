@@ -26,6 +26,18 @@ def test_args_defaults_survive_the_move() -> None:
     assert args.ema.enabled is True
 
 
+def test_n_train_defaults_to_none() -> None:
+    """n_train defaults to None — runs use the full training split uncapped."""
+    assert Args().n_train is None
+
+
+def test_n_train_round_trips(tmp_path: Path) -> None:
+    """A capped n_train survives a dump/load round trip."""
+    cfg = tmp_path / "run.yaml"
+    dump_config(Args(n_train=1024), cfg)
+    assert load(Args, cfg).n_train == 1024
+
+
 def test_dump_config_round_trips(tmp_path: Path) -> None:
     """A dumped Args reloads identically, including nested and enum fields."""
     args = Args(batch_size=13)

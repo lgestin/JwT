@@ -27,6 +27,7 @@ class Args:
     vocab_path: str = "data/vocabulary.json"
     arrow_path: str = "data/ljspeech_24khz_bigvgan.arrow"
     n_valid: int = 64
+    n_train: int | None = None
     # Run
     output_dir: str = "outputs/run0"
     resume: bool = False  # load the latest checkpoint from output_dir/checkpoints
