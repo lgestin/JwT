@@ -152,7 +152,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         is_zero_real = (t_packed == 0.0) & in_ac_packed
         keep_first_zero = is_zero_real.cumsum(-1) <= 1
         attn_keys = in_real_packed & keep_first_zero  # (B, T)
-        attn_mask = attention_implementation.build_mask(attn_keys)  # (B, 1, 1, T)
+        attn_mask = attention_implementation.build_mask(attn_keys)
         out_packed = self.transformer(
             x_packed, t_packed, attn_mask, attention_implementation
         )

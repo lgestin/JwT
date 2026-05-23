@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from tts.data.audio.codecs import Codec
 from tts.data.audio.stft import MelSpectrogram
 from tts.data.dataset import Batch
-from tts.model.attention import TorchAttention
+from tts.model.attention import AttentionImplementations, TorchAttention
 from tts.model.loss import LossFns
 from tts.model.neural_speaker import (
     MaskedTensor,
@@ -64,6 +64,7 @@ class TrainerConfig:
     n_smp: int = 16
     grad_accum_steps: int = 1
     loss_fn: LossFns = LossFns.L1
+    attention_implementation: AttentionImplementations = AttentionImplementations.FLASH_VARLEN
     # Auxiliary log-mel L1 loss weight. 0 = monitor only (no gradient signal);
     aux_mel_weight: float = 0.0
     # Scalar diagnostics (throughput, memory, normalization stats) and the
@@ -324,7 +325,10 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             # x_pred is x_1 recovered in normalized space, decoded below to a
             # waveform for the auxiliary mel loss when it is enabled.
             out = self.model.training_step(
-                text, acoustic, loss_fn=self.config.loss_fn.fn
+                text,
+                acoustic,
+                loss_fn=self.config.loss_fn.fn,
+                attention_implementation=self.config.attention_implementation.implementation,
             )
             fm_loss, x_pred, v_mask = out.loss, out.x_pred, out.v_mask
 

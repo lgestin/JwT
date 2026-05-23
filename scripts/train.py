@@ -89,6 +89,7 @@ def main() -> None:
     args.model.codec = args.codec
     args.model.acoustic_dim = codec.acoustic_dim
     model = RollingFlowSpeaker(args.model).to(device)
+    print(f"Attention: {args.trainer.attention_implementation.name}")
     if args.compile:
         # Disable inductor's split_reductions pass — its mix_order_reduction
         # codegen can't factor expressions like s13*(s23 + s79) and crashes
@@ -96,6 +97,9 @@ def main() -> None:
         import torch._inductor.config as inductor_config
 
         inductor_config.split_reductions = False
+        # Let dynamo trace through `.item()` calls (e.g. `max_seqlen` for
+        # FlashVarlenAttention) symbolically rather than graph-breaking.
+        torch._dynamo.config.capture_scalar_outputs = True
         model.forward = torch.compile(model.forward, dynamic=True)
 
     optimizer = AdamW(
@@ -115,6 +119,7 @@ def main() -> None:
 
         sub_loggers.append(TensorBoardLogger(log_dir=output_dir / "tb"))
     logger: Logger = MultiLogger(*sub_loggers)
+    logger.log_config(args)
 
     checkpoint_manager = CheckpointManager(exp_path=output_dir / "checkpoints")
 
