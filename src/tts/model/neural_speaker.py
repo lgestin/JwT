@@ -7,11 +7,8 @@ import torch.nn.functional as F
 
 from tts.data.audio.codecs import Codec, Codecs
 from tts.model.attention import AttentionImplementation, SDPAAttention
-from tts.model.flow import (
-    FlowParametrizations,
-    JustWaveformTransformersParametrization,
-    RectifiedFlowParametrization,
-)
+from tts.model.flow import FlowParametrizations
+from tts.model.loss import LossFn, LossFns
 from tts.model.transformer import (
     Transformer,
     TransformerConfig,
@@ -28,31 +25,13 @@ class RollingFlowConfig:
     transformer_config: TransformerConfig = field(default_factory=TransformerConfig)
     vocabulary_size: int = 0
     codec: Codecs = Codecs.RAWAUDIO_128
-    parametrization: FlowParametrizations = FlowParametrizations.RECTIFIED_FLOW
-    timestep_schedule: TimestepSchedules = TimestepSchedules.LINEAR
+    parametrization: FlowParametrizations = FlowParametrizations.JWT
+    timestep_schedule: TimestepSchedules = TimestepSchedules.LOG_NORM
     acoustic_dim: int = 100
     n_denoising_steps: int = 32
     max_acoustic_len: int = 2048
     eos_n_frames: int = 3
     noise_scale: float = 1.0
-
-
-def _per_pos_mse(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """Per-position MSE: reduces only over the last (acoustic_dim) axis."""
-    return (a - b).pow(2).mean(-1)
-
-
-def _per_pos_l1(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """Per-position L1: reduces only over the last (acoustic_dim) axis."""
-    return (a - b).abs().mean(-1)
-
-
-# Mirror flow.py's default loss_fn per parametrization, but per-position so the
-# trainer can apply the rolling-window v_mask before reducing.
-_PER_POS_LOSS_FN = {
-    RectifiedFlowParametrization: _per_pos_mse,
-    JustWaveformTransformersParametrization: _per_pos_l1,
-}
 
 
 @dataclass
@@ -96,7 +75,6 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         # Resolve the parametrization class once — it's a static dispatch table,
         # not an instance, so this stays free of training state.
         self.param = cfg.parametrization.parametrization
-        self._per_pos_loss_fn = _PER_POS_LOSS_FN[self.param]
         self.schedule = cfg.timestep_schedule.schedule
         dim = cfg.transformer_config.dim
         self.text_in = nn.Embedding(cfg.vocabulary_size, dim)
@@ -210,6 +188,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         acoustic_front: torch.LongTensor | None = None,
         x_0: torch.Tensor | None = None,
         n: int | None = None,
+        loss_fn: LossFn | None = None,
         attention_implementation: type[AttentionImplementation] = SDPAAttention,
     ) -> TrainingStepOutput:
         """Sample a rolling front, run forward, return masked loss + x_pred.
@@ -224,6 +203,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
           negative values reproduce the inference warm-up distribution
         - x_0: (B, T_ext, acoustic_dim), the noise tensor
         - n: override for cfg.n_denoising_steps
+        - loss_fn: override for cfg.loss_fn; must return an un-reduced (B, T, D)
+          elementwise loss tensor
 
         `attention_implementation` selects the attention backend (default fused
         SDPA); pass `TorchAttention` to expose attention weights for probing.
@@ -240,6 +221,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         B, acoustic_dim, T_ext = acoustic.values.shape
         device = acoustic.values.device
         n = n if n is not None else self.cfg.n_denoising_steps
+        # Default is MSE; the trainer overrides via TrainerConfig.loss_fn.
+        loss_fn = loss_fn if loss_fn is not None else LossFns.MSE.fn
         acoustic_lens_ext = acoustic.mask.sum(-1)
 
         if acoustic_front is None:
@@ -272,22 +255,23 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             & (ac_idx < acoustic_front.unsqueeze(1) + n)
         )
 
-        # Per-position loss (B, T_ext) + recovered x_1 prediction (B, T_ext, D).
+        # Elementwise loss (B, T_ext, D) + recovered x_1 prediction (B, T_ext, D).
         loss_out = self.param.loss(
             x_t=x_t,
             timestep=t_b,
             pred=pred,
             x_0=x_0,
             x_1=x_1,
-            loss_fn=self._per_pos_loss_fn,
+            loss_fn=loss_fn,
         )
-        loss = (loss_out.loss * v_mask).sum() / v_mask.sum().clamp(min=1)
+        per_pos_loss = loss_out.loss.mean(-1)  # (B, T_ext) — reduce the feature dim
+        loss = (per_pos_loss * v_mask).sum() / v_mask.sum().clamp(min=1)
         return TrainingStepOutput(
             loss=loss,
             x_pred=loss_out.x_pred,
             v_mask=v_mask,
             t=t,
-            per_pos_loss=loss_out.loss,
+            per_pos_loss=per_pos_loss,
         )
 
     @torch.no_grad()
