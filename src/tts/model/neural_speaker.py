@@ -27,7 +27,7 @@ class NeuralSpeaker(Protocol):
 class RollingFlowConfig:
     transformer_config: TransformerConfig = field(default_factory=TransformerConfig)
     vocabulary_size: int = 0
-    codec: Codecs = Codecs.BIGVGAN
+    codec: Codecs = Codecs.RAWAUDIO_128
     parametrization: FlowParametrizations = FlowParametrizations.RECTIFIED_FLOW
     timestep_schedule: TimestepSchedules = TimestepSchedules.LINEAR
     acoustic_dim: int = 100
@@ -82,10 +82,10 @@ class TrainingStepOutput:
     timestep without recomputing anything.
     """
 
-    loss: torch.Tensor          # scalar, masked-mean of per_pos_loss
-    x_pred: torch.Tensor        # (B, T_ext, acoustic_dim) — recovered x_1
-    v_mask: torch.Tensor        # (B, T_ext) bool — rolling-window supervision mask
-    t: torch.Tensor             # (B, T_ext) — per-position timestep in [0, 1]
+    loss: torch.Tensor  # scalar, masked-mean of per_pos_loss
+    x_pred: torch.Tensor  # (B, T_ext, acoustic_dim) — recovered x_1
+    v_mask: torch.Tensor  # (B, T_ext) bool — rolling-window supervision mask
+    t: torch.Tensor  # (B, T_ext) — per-position timestep in [0, 1]
     per_pos_loss: torch.Tensor  # (B, T_ext) — per-position loss before masking
 
 
@@ -274,7 +274,11 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
 
         # Per-position loss (B, T_ext) + recovered x_1 prediction (B, T_ext, D).
         loss_out = self.param.loss(
-            x_t=x_t, timestep=t_b, pred=pred, x_0=x_0, x_1=x_1,
+            x_t=x_t,
+            timestep=t_b,
+            pred=pred,
+            x_0=x_0,
+            x_1=x_1,
             loss_fn=self._per_pos_loss_fn,
         )
         loss = (loss_out.loss * v_mask).sum() / v_mask.sum().clamp(min=1)

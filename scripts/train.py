@@ -122,8 +122,7 @@ def main() -> None:
             check_model_config_consistency(args.model, meta["config"])
         else:
             warnings.warn(
-                "checkpoint has no stored model config; "
-                "skipping the consistency check",
+                "checkpoint has no stored model config; skipping the consistency check",
                 stacklevel=2,
             )
         state = TrainerState(step=meta["step"], best_loss=meta["best_loss"])
