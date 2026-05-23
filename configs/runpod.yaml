@@ -1,0 +1,60 @@
+# Example training config for scripts/train.py — copy this file and edit it.
+#
+# --config_path is required; there is no default config.
+#
+# Launch:              uv run python scripts/train.py --config_path configs/example.yaml
+# Override one value:  uv run python scripts/train.py --config_path configs/example.yaml --batch_size 32
+#
+# The resolved config of each run is written to <output_dir>/config.yaml.
+# To resume a run, point --config_path at that run's saved config.yaml.
+
+arrow_path: data/ljspeech_11.025khz.raw128.arrow
+batch_size: 128
+codec: RAWAUDIO_128
+compile: true
+ema:
+  decay: 0.9995
+  enabled: false
+model:
+  acoustic_dim: 128
+  eos_n_frames: 8
+  max_acoustic_len: 2048
+  n_denoising_steps: 128
+  parametrization: JWT
+  timestep_schedule: LOG_NORM
+  transformer_config:
+    dim: 512
+    max_seq_len: 8192
+    mlp_ratio: 4.0
+    num_heads: 8
+    num_layers: 12
+    rope_theta: 10000.0
+    time_freq_embed_dim: 128
+  vocabulary_size: 0
+n_train: null
+n_valid: 64
+num_workers: 6
+optimizer:
+  betas:
+    - 0.9
+    - 0.998
+  lr: 0.002
+  warmup_steps: 2500
+  weight_decay: 0.0
+output_dir: outputs/run_small_11khz_raw128
+resume: false
+trainer:
+  amp_dtype: BF16
+  aux_mel_weight: 0.1
+  checkpoint_steps: 5000
+  clip_grad_norm: 1.0
+  device: cuda
+  grad_accum_steps: 1
+  log_steps: 500
+  max_steps: 1000001
+  n_loss_bins: 128
+  n_smp: 16
+  smp_steps: 5000
+  valid_steps: 2500
+use_tensorboard: true
+vocab_path: data/vocabulary.json
