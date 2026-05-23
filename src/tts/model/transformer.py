@@ -84,7 +84,11 @@ class TimestepEmbedder(nn.Module):
 
 
 class AdaLN(nn.Module):
-    """DiT-style modulation: silu -> linear producing (shift, scale, gate) x 2."""
+    """DiT-style modulation: silu -> linear producing (shift, scale, gate) x 2.
+
+    Gates are tanh-clamped to [-1, 1] so a single block's contribution can never
+    dominate the residual stream.
+    """
 
     def __init__(self, dim: int):
         super().__init__()
@@ -93,7 +97,10 @@ class AdaLN(nn.Module):
         nn.init.zeros_(self.linear.bias)
 
     def forward(self, t_emb: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        return self.linear(F.silu(t_emb)).chunk(6, dim=-1)
+        shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = self.linear(
+            F.silu(t_emb)
+        ).chunk(6, dim=-1)
+        return shift_a, scale_a, gate_a.tanh(), shift_m, scale_m, gate_m.tanh()
 
 
 class RMSNorm(nn.Module):

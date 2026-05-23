@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from tts.model.transformer import (
+    AdaLN,
     Transformer,
     TransformerBlock,
     TransformerConfig,
@@ -64,6 +65,31 @@ def test_zero_init_adaLN_is_identity_path() -> None:
     t = torch.rand(1, 8)
     y = model(x, t)
     assert torch.allclose(y, model.norm(x), atol=1e-5)
+
+
+def test_adaln_gates_are_tanh_clamped() -> None:
+    """Even when AdaLN's linear produces large pre-activations, the two gate
+    chunks must come out in [-1, 1]. Shift/scale are intentionally not clamped."""
+    torch.manual_seed(0)
+    dim = 32
+    adaln = AdaLN(dim)
+    # Blow the linear weights up so the raw chunks land well outside [-1, 1].
+    nn.init.normal_(adaln.linear.weight, std=10.0)
+    nn.init.normal_(adaln.linear.bias, std=10.0)
+
+    t_emb = torch.randn(4, dim) * 5.0
+    shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = adaln(t_emb)
+
+    assert torch.all(gate_a.abs() <= 1.0)
+    assert torch.all(gate_m.abs() <= 1.0)
+    # Sanity-check: with such large weights the raw chunks would be massive,
+    # so this asserts the clamp is actually doing work (and isn't a no-op via
+    # everything being small to start with).
+    assert gate_a.abs().max() > 0.5
+    assert gate_m.abs().max() > 0.5
+    # Shift/scale stay free.
+    assert shift_a.abs().max() > 1.0 or scale_a.abs().max() > 1.0
+    assert shift_m.abs().max() > 1.0 or scale_m.abs().max() > 1.0
 
 
 def test_timesteps_change_output() -> None:
