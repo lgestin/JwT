@@ -50,32 +50,23 @@ class STFT(nn.Module):
 
     def istft(self, stft: torch.Tensor, length: int | None = None) -> torch.Tensor:
         self.window = self.window.to(stft.device)
-        if self.center:
-            waveform = torch.istft(
-                stft,
-                n_fft=self.n_fft,
-                hop_length=self.hop_length,
-                win_length=self.n_fft,
-                window=self.window,
-                normalized=False,
-                center=True,
-                return_complex=False,
-                length=length,
-            )
-        else:
+        if not self.center:
             p = (self.n_fft - self.hop_length) // 2
-            target_length = None if length is None else length + 2 * p
-            waveform = torch.istft(
-                stft,
-                n_fft=self.n_fft,
-                hop_length=self.hop_length,
-                win_length=self.n_fft,
-                window=self.window,
-                normalized=False,
-                center=False,
-                return_complex=False,
-                length=target_length,
-            )[..., p:-p]
+            if length is not None:
+                length = length + 2 * p
+        waveform = torch.istft(
+            stft,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            win_length=self.n_fft,
+            window=self.window,
+            normalized=False,
+            center=self.center,
+            return_complex=False,
+            length=length,
+        )
+        if not self.center and p > 0:
+            waveform = waveform[..., p:-p]
         return waveform
 
     def magnitudes(self, x: torch.Tensor) -> torch.Tensor:
