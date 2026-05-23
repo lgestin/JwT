@@ -33,6 +33,12 @@ class Logger(Protocol):
         """
         ...
 
+    def log_config(self, config: object, step: int = 0):
+        """Log the resolved run config as hparams. Human-facing loggers no-op
+        it; TensorBoard sends it through `add_hparams`.
+        """
+        ...
+
     @abstractmethod
     def set_description(self, description: str):
         """Set current status description (for progress bars)."""
@@ -107,6 +113,10 @@ class MultiLogger:
     ) -> None:
         for lg in self.loggers:
             lg.log_histogram(tag, bin_edges, bin_values, step)
+
+    def log_config(self, config: object, step: int = 0) -> None:
+        for lg in self.loggers:
+            lg.log_config(config, step)
 
     def set_description(self, description: str) -> None:
         for lg in self.loggers:

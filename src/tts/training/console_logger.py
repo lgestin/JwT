@@ -103,6 +103,11 @@ class ConsoleLogger:
         # Histograms are a TensorBoard-only artifact.
         pass
 
+    def log_config(self, config: object, step: int = 0) -> None:
+        # The resolved config is also dumped to output_dir/config.yaml — no
+        # need to flood the console with it.
+        pass
+
     def set_description(self, description: str) -> None:
         self.progress.update(self.task, description=description)
 
