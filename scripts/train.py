@@ -4,6 +4,7 @@ import warnings
 from pathlib import Path
 
 import torch
+from torch.optim import AdamW
 from torch.utils.data import DataLoader, Subset
 
 from tts.data.audio.codecs import check_sample_rate
@@ -22,7 +23,6 @@ from tts.training.config import (
 from tts.training.console_logger import ConsoleLogger
 from tts.training.ema import EMA
 from tts.training.loggers import Logger, MultiLogger
-from tts.training.optimizer import build_optimizer
 from tts.training.trainer import TrainerState, TTSRollingFlowMatchingTrainer
 
 
@@ -98,7 +98,12 @@ def main() -> None:
         inductor_config.split_reductions = False
         model.forward = torch.compile(model.forward, dynamic=True)
 
-    optimizer = build_optimizer(model, args.optimizer)
+    optimizer = AdamW(
+        model.parameters(),
+        lr=args.optimizer.lr,
+        betas=args.optimizer.betas,
+        weight_decay=args.optimizer.weight_decay,
+    )
 
     ema = EMA(model, decay=args.ema.decay) if args.ema.enabled else None
 

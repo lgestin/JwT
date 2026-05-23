@@ -1,9 +1,8 @@
-"""Optimizer config, builder, and LR warmup for the TTS trainer."""
+"""Optimizer config and LR warmup for the TTS trainer."""
 
 from dataclasses import dataclass
 
-from torch.nn import Module
-from torch.optim import AdamW, Optimizer
+from torch.optim import Optimizer
 
 
 @dataclass
@@ -13,16 +12,6 @@ class OptimizerConfig:
     betas: tuple[float, float] = (0.9, 0.999)
     # Linear LR warmup over this many steps, then constant. 0 disables it.
     warmup_steps: int = 0
-
-
-def build_optimizer(model: Module, config: OptimizerConfig) -> AdamW:
-    """Build an AdamW optimizer from `config`."""
-    return AdamW(
-        model.parameters(),
-        lr=config.lr,
-        betas=config.betas,
-        weight_decay=config.weight_decay,
-    )
 
 
 class LinearWarmup:
