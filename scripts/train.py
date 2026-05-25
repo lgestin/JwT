@@ -7,23 +7,23 @@ import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Subset
 
-from tts.data.audio.codecs import check_sample_rate
-from tts.data.collate import collate
-from tts.data.dataset import AudioDataset
-from tts.data.source import ArrowTTSSource
-from tts.data.text import Tokenizer, Vocabulary
-from tts.model.neural_speaker import RollingFlowSpeaker
-from tts.training.checkpoint_manager import CheckpointManager
-from tts.training.config import (
+from jwt.data.audio.codecs import check_sample_rate
+from jwt.data.collate import collate
+from jwt.data.dataset import AudioDataset
+from jwt.data.source import ArrowTTSSource
+from jwt.data.text import Tokenizer, Vocabulary
+from jwt.model.neural_speaker import RollingFlowSpeaker
+from jwt.training.checkpoint_manager import CheckpointManager
+from jwt.training.config import (
     Args,
     check_model_config_consistency,
     dump_config,
     parse_args,
 )
-from tts.training.console_logger import ConsoleLogger
-from tts.training.ema import EMA
-from tts.training.loggers import Logger, MultiLogger
-from tts.training.trainer import TrainerState, TTSRollingFlowMatchingTrainer
+from jwt.training.console_logger import ConsoleLogger
+from jwt.training.ema import EMA
+from jwt.training.loggers import Logger, MultiLogger
+from jwt.training.trainer import TrainerState, TTSRollingFlowMatchingTrainer
 
 
 def main() -> None:
@@ -115,7 +115,7 @@ def main() -> None:
         ConsoleLogger(total=args.trainer.max_steps, audio_dir=output_dir / "audio")
     ]
     if args.use_tensorboard:
-        from tts.training.tensorboard_logger import TensorBoardLogger
+        from jwt.training.tensorboard_logger import TensorBoardLogger
 
         sub_loggers.append(TensorBoardLogger(log_dir=output_dir / "tb"))
     logger: Logger = MultiLogger(*sub_loggers)
@@ -125,9 +125,7 @@ def main() -> None:
 
     state = TrainerState(step=0)
     if args.resume:
-        meta = checkpoint_manager.load_latest(
-            model, optimizer, ema=ema, map_location=device
-        )
+        meta = checkpoint_manager.load_latest(model, optimizer, ema=ema, map_location=device)
         if "config" in meta:
             check_model_config_consistency(args.model, meta["config"])
         else:

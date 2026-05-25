@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "tts"
-description = "Text-to-speech library"
+name = "jwt"
+description = "Just Waveform Transformers — streaming TTS via rolling flow matching on raw-waveform patches"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.13"
@@ -49,6 +49,11 @@ demo = [
     "matplotlib>=3.8",
 ]
 
+[tool.uv]
+# Our local package is named `jwt`, which collides with PyJWT.
+# Force a resolution failure if anything ever transitively requires PyJWT.
+constraint-dependencies = ["pyjwt<0"]
+
 [tool.uv.extra-build-dependencies]
 flash-attn = ["torch", "setuptools", "wheel", "packaging", "psutil", "ninja"]
 
@@ -56,10 +61,10 @@ flash-attn = ["torch", "setuptools", "wheel", "packaging", "psutil", "ninja"]
 flash-attn = { url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl" }
 
 [tool.hatch.version]
-path = "src/tts/__init__.py"
+path = "src/jwt/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/tts"]
+packages = ["src/jwt"]
 
 [tool.ruff]
 target-version = "py313"

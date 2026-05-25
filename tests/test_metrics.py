@@ -1,6 +1,6 @@
 import torch
 
-from tts.training.metrics import (
+from jwt.training.metrics import (
     binned_loss_stats,
     masked_mean_std,
     per_pos_l1_error,

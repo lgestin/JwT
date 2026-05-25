@@ -1,22 +1,20 @@
 import pytest
 import torch
 
-from tts.model.attention import SDPAAttention, TorchAttention
-from tts.model.neural_speaker import (
+from jwt.model.attention import SDPAAttention, TorchAttention
+from jwt.model.neural_speaker import (
     MaskedTensor,
     RollingFlowConfig,
     RollingFlowSpeaker,
 )
-from tts.model.transformer import TransformerConfig
-from tts.training.attention_probe import capture_attention, log_attention_maps
+from jwt.model.transformer import TransformerConfig
+from jwt.training.attention_probe import capture_attention, log_attention_maps
 
 
 def _model(num_layers: int = 3) -> RollingFlowSpeaker:
     torch.manual_seed(0)
     cfg = RollingFlowConfig(
-        transformer_config=TransformerConfig(
-            dim=32, num_heads=4, num_layers=num_layers
-        ),
+        transformer_config=TransformerConfig(dim=32, num_heads=4, num_layers=num_layers),
         vocabulary_size=20,
         acoustic_dim=8,
         n_denoising_steps=4,
@@ -43,9 +41,7 @@ def test_capture_attention_collects_layer_averaged_map() -> None:
     model = _model(num_layers=3)
     text, acoustic = _inputs(model, B=2, t_text=4, t_ac=6)
     with capture_attention(model) as collector:
-        model.training_step(
-            text, acoustic, attention_implementation=TorchAttention
-        )
+        model.training_step(text, acoustic, attention_implementation=TorchAttention)
     attn = collector.map
     assert attn.shape == (2, 4 + 6, 4 + 6)
     # Averaging head-/layer-wise over softmax rows keeps each query a
@@ -59,9 +55,7 @@ def test_capture_attention_records_nothing_for_sdpa() -> None:
     model = _model(num_layers=2)
     text, acoustic = _inputs(model)
     with capture_attention(model) as collector:
-        model.training_step(
-            text, acoustic, attention_implementation=SDPAAttention
-        )
+        model.training_step(text, acoustic, attention_implementation=SDPAAttention)
     with pytest.raises(RuntimeError):
         _ = collector.map
 
@@ -70,16 +64,12 @@ def test_capture_attention_removes_hooks_on_exit() -> None:
     model = _model(num_layers=2)
     text, acoustic = _inputs(model)
     with capture_attention(model) as collector:
-        model.training_step(
-            text, acoustic, attention_implementation=TorchAttention
-        )
+        model.training_step(text, acoustic, attention_implementation=TorchAttention)
     for block in model.transformer.blocks:
         assert len(block.attn._forward_hooks) == 0
     # A second probe still works — hooks were cleanly re-registered.
     with capture_attention(model) as collector2:
-        model.training_step(
-            text, acoustic, attention_implementation=TorchAttention
-        )
+        model.training_step(text, acoustic, attention_implementation=TorchAttention)
     assert collector2.map.shape == collector.map.shape
 
 

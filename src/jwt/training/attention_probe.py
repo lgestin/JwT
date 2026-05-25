@@ -12,13 +12,13 @@ self-attention layer's attention matrix. It is a validation-only tool:
   attribute, so adding/removing hooks never invalidates the compiled graph.
 """
 
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 import torch
 
-from tts.model.transformer import SelfAttention
-from tts.training.loggers import Logger
+from jwt.model.transformer import SelfAttention
+from jwt.training.loggers import Logger
 
 
 class AttentionCollector:
@@ -65,9 +65,7 @@ def capture_attention(model: torch.nn.Module) -> Iterator[AttentionCollector]:
             collector.record(attn_weights.detach())
 
     handles = [
-        m.register_forward_hook(hook)
-        for m in model.modules()
-        if isinstance(m, SelfAttention)
+        m.register_forward_hook(hook) for m in model.modules() if isinstance(m, SelfAttention)
     ]
     # Drop the compiled `forward` instance attribute so calls fall through to the
     # eager class method; restore it afterwards. A no-op when compile is off.

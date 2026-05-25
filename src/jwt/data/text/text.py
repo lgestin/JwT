@@ -3,8 +3,8 @@ from functools import cached_property
 
 from misaki.token import MToken
 
-from tts.data.text.phonemizer import get_phonemizer
-from tts.data.text.tokenizer import Tokenizer
+from jwt.data.text.phonemizer import get_phonemizer
+from jwt.data.text.tokenizer import Tokenizer
 
 
 @dataclass

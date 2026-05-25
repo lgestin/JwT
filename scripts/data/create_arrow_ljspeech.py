@@ -15,9 +15,9 @@ import torch
 from rich.progress import track
 from simple_parsing import ArgumentParser
 
-from tts.data.audio.codecs import Codecs, check_sample_rate
-from tts.data.source import LJTTSSource
-from tts.data.text import Tokenizer, Vocabulary
+from jwt.data.audio.codecs import Codecs, check_sample_rate
+from jwt.data.source import LJTTSSource
+from jwt.data.text import Tokenizer, Vocabulary
 
 
 @dataclass
@@ -103,24 +103,18 @@ def main(args: Args) -> None:
 
             with torch.inference_mode():
                 wav_f = waveform_i16.to(device, dtype=torch.float32).div_(32678.0)
-                acoustic = (
-                    codec.encode(wav_f[None]).squeeze(0).to(torch.float32).cpu()
-                )
+                acoustic = codec.encode(wav_f[None]).squeeze(0).to(torch.float32).cpu()
 
             acoustic_dim, n_frames = int(acoustic.shape[-2]), int(acoustic.shape[-1])
             buffer["audio_id"].append(item["audio_id"])
             buffer["text"].append(item["text"])
             buffer["phonemes"].append(item["phonemes"])
             buffer["tokens"].append(item["tokens"])
-            buffer["waveform_i16"].append(
-                np.ascontiguousarray(waveform_i16.numpy()).tobytes()
-            )
+            buffer["waveform_i16"].append(np.ascontiguousarray(waveform_i16.numpy()).tobytes())
             buffer["num_samples"].append(int(waveform_i16.numel()))
             buffer["sample_rate"].append(int(target_sr))
             buffer["loudness"].append(item["loudness"])
-            buffer[acoustic_field].append(
-                np.ascontiguousarray(acoustic.numpy()).tobytes()
-            )
+            buffer[acoustic_field].append(np.ascontiguousarray(acoustic.numpy()).tobytes())
             buffer["acoustic_dim"].append(acoustic_dim)
             buffer["n_frames"].append(n_frames)
 

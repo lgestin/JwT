@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from tts.data.audio import AudioFile
-from tts.data.audio.stft import STFT, MelSpectrogram
+from jwt.data.audio import AudioFile
+from jwt.data.audio.stft import STFT, MelSpectrogram
 
 n_ffts = [2**i for i in range(5, 11)]
 hop_length_ratios = [0.1, 0.25, 0.5]

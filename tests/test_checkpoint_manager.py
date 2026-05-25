@@ -2,8 +2,8 @@ import pytest
 import torch
 from torch import nn
 
-from tts.training.checkpoint_manager import CheckpointManager
-from tts.training.ema import EMA
+from jwt.training.checkpoint_manager import CheckpointManager
+from jwt.training.ema import EMA
 
 
 def _const_model(value: float) -> nn.Module:
@@ -49,9 +49,7 @@ def test_load_without_ema_in_checkpoint_warns(tmp_path) -> None:
     optimizer = torch.optim.AdamW(model.parameters())
 
     manager = CheckpointManager(exp_path=tmp_path)
-    manager.save(
-        step=5, model=model, optimizer=optimizer, scaler=None, best_loss=2.0
-    )
+    manager.save(step=5, model=model, optimizer=optimizer, scaler=None, best_loss=2.0)
 
     fresh_model = _const_model(4.0)
     fresh_ema = EMA(fresh_model, decay=0.9999)
@@ -71,9 +69,7 @@ def test_cleanup_keeps_best_latest_and_recent(tmp_path) -> None:
 
     # Step 10 is the best; later saves pass best_loss=inf so save() leaves
     # the "best" symlink pinned to step 10 while "latest" advances.
-    manager.save(
-        step=10, model=model, optimizer=optimizer, scaler=None, best_loss=0.5
-    )
+    manager.save(step=10, model=model, optimizer=optimizer, scaler=None, best_loss=0.5)
     for step in (20, 30, 40, 50):
         manager.save(
             step=step,
@@ -99,9 +95,7 @@ def test_cleanup_keeps_symlinks_resolvable(tmp_path) -> None:
     optimizer = torch.optim.AdamW(model.parameters())
     manager = CheckpointManager(exp_path=tmp_path)
 
-    manager.save(
-        step=10, model=model, optimizer=optimizer, scaler=None, best_loss=0.5
-    )
+    manager.save(step=10, model=model, optimizer=optimizer, scaler=None, best_loss=0.5)
     for step in (20, 30, 40):
         manager.save(
             step=step,
@@ -123,9 +117,7 @@ def test_cleanup_keep_recent_zero_keeps_only_symlink_targets(tmp_path) -> None:
     optimizer = torch.optim.AdamW(model.parameters())
     manager = CheckpointManager(exp_path=tmp_path)
 
-    manager.save(
-        step=10, model=model, optimizer=optimizer, scaler=None, best_loss=0.5
-    )
+    manager.save(step=10, model=model, optimizer=optimizer, scaler=None, best_loss=0.5)
     for step in (20, 30):
         manager.save(
             step=step,

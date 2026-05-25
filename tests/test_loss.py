@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tts.training.loss import MelAuxLoss
+from jwt.training.loss import MelAuxLoss
 
 HOP = 256
 SAMPLE_RATE = 24000

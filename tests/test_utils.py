@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from tts.data.audio.utils import load_waveform, resample
+from jwt.data.audio.utils import load_waveform, resample
 
 TEST_FILE_PATH = Path(__file__).parent / "assets" / "physicsworks.wav"
 
@@ -40,9 +40,7 @@ srs = [4000, 8000, 11025, 16000, 22050, 24000, 44100, 48000]
 def test_resample(orig_sr: int, targ_sr: int) -> None:
     rng = np.random.default_rng(0)
     t_s = 2
-    waveform = rng.integers(
-        -(2**15), 2**15, size=(1, t_s * orig_sr), dtype=np.int16
-    )
+    waveform = rng.integers(-(2**15), 2**15, size=(1, t_s * orig_sr), dtype=np.int16)
     resampled = resample(waveform, orig_sr=orig_sr, targ_sr=targ_sr)
     assert resampled.shape[-1] == t_s * targ_sr
     assert resampled.dtype == waveform.dtype

@@ -19,9 +19,7 @@ def _flatten_for_hparams(config: object) -> dict[str, int | float | str | bool]:
                 walk(f"{prefix}.{k}" if prefix else k, v)
         elif isinstance(value, Enum):
             out[prefix] = str(value.value)
-        elif isinstance(value, bool):
-            out[prefix] = value
-        elif isinstance(value, (int, float, str)):
+        elif isinstance(value, bool) or isinstance(value, (int, float, str)):
             out[prefix] = value
         elif value is None:
             out[prefix] = "None"
@@ -39,9 +37,7 @@ class TensorBoardLogger:
     def log_scalar(self, tag: str, value: float, step: int) -> None:
         self.writer.add_scalar(tag, float(value), step)
 
-    def log_audio(
-        self, tag: str, waveform: torch.Tensor, step: int, sample_rate: int
-    ) -> None:
+    def log_audio(self, tag: str, waveform: torch.Tensor, step: int, sample_rate: int) -> None:
         wav = waveform.detach().cpu().float()
         if wav.ndim == 1:
             wav = wav.unsqueeze(0)
@@ -50,15 +46,11 @@ class TensorBoardLogger:
     def log_image(self, tag: str, image: torch.Tensor, step: int) -> None:
         self.writer.add_image(tag, image, step)
 
-    def log_metrics(
-        self, metrics: dict[str, float], step: int, prefix: str = "train"
-    ) -> None:
+    def log_metrics(self, metrics: dict[str, float], step: int, prefix: str = "train") -> None:
         for k, v in metrics.items():
             self.writer.add_scalar(f"{prefix}/{k}", float(v), step)
 
-    def log_diagnostics(
-        self, metrics: dict[str, float], step: int, prefix: str = "train"
-    ) -> None:
+    def log_diagnostics(self, metrics: dict[str, float], step: int, prefix: str = "train") -> None:
         for k, v in metrics.items():
             fv = float(v)
             if fv == fv:  # skip NaN — e.g. an empty timestep bin

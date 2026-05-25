@@ -88,9 +88,7 @@ class MelSpectrogram(STFT):
         center: bool = False,
         mel_scale: Literal["htk", "slaney"] = "htk",
     ):
-        super().__init__(
-            n_fft=n_fft, hop_length=hop_length, window=window, center=center
-        )
+        super().__init__(n_fft=n_fft, hop_length=hop_length, window=window, center=center)
         melscale_fbanks = torchaudio.functional.melscale_fbanks(
             n_freqs=n_fft // 2 + 1,
             f_min=max(f_min, 0.0),

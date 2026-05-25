@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from tts.model.neural_speaker import MaskedTensor, TrainingStepOutput
-from tts.training.trainer import TrainerConfig, TTSRollingFlowMatchingTrainer
+from jwt.model.neural_speaker import MaskedTensor, TrainingStepOutput
+from jwt.training.trainer import TrainerConfig, TTSRollingFlowMatchingTrainer
 
 
 class _RecordingLogger:
@@ -35,9 +35,7 @@ def test_diagnostics_emit_unreweighted_x1_error_histogram() -> None:
         t=torch.tensor([[0.25, 0.75]]),
         per_pos_loss=torch.tensor([[0.1, 0.9]]),
     )
-    text = MaskedTensor(
-        values=torch.zeros(1, 1, 3), mask=torch.ones(1, 3, dtype=torch.bool)
-    )
+    text = MaskedTensor(values=torch.zeros(1, 1, 3), mask=torch.ones(1, 3, dtype=torch.bool))
     acoustic = MaskedTensor(
         values=torch.tensor([[[5.0, 5.0]]]),  # (B=1, D=1, T=2)
         mask=torch.ones(1, 2, dtype=torch.bool),
@@ -48,9 +46,7 @@ def test_diagnostics_emit_unreweighted_x1_error_histogram() -> None:
 
     assert logger.histograms["train/fm_loss_by_t"] == pytest.approx([0.1, 0.9], abs=1e-4)
     # |2 - 5| = 3.0 in bin 0; |5.05 - 5| = 0.05 in bin 1 — the reverse ranking.
-    assert logger.histograms["train/x1_err_by_t"] == pytest.approx(
-        [3.0, 0.05], abs=1e-4
-    )
+    assert logger.histograms["train/x1_err_by_t"] == pytest.approx([3.0, 0.05], abs=1e-4)
     # No aux mel loss in play, so no perceptual histogram is emitted.
     assert "train/logmel_l1_by_t" not in logger.histograms
 
@@ -64,9 +60,7 @@ def _diag_inputs() -> tuple[TrainingStepOutput, MaskedTensor, MaskedTensor]:
         t=torch.tensor([[0.25, 0.75]]),
         per_pos_loss=torch.tensor([[0.1, 0.9]]),
     )
-    text = MaskedTensor(
-        values=torch.zeros(1, 1, 3), mask=torch.ones(1, 3, dtype=torch.bool)
-    )
+    text = MaskedTensor(values=torch.zeros(1, 1, 3), mask=torch.ones(1, 3, dtype=torch.bool))
     acoustic = MaskedTensor(
         values=torch.tensor([[[5.0, 5.0]]]),  # (B=1, D=1, T=2)
         mask=torch.ones(1, 2, dtype=torch.bool),
@@ -90,9 +84,7 @@ def test_diagnostics_emit_logmel_l1_by_t_when_aux_loss_active() -> None:
     _, bins = trainer._step_diagnostics(out, text, acoustic, logmel_diff)
     trainer._emit_loss_histogram(bins, step=0, prefix="train")
 
-    assert logger.histograms["train/logmel_l1_by_t"] == pytest.approx(
-        [0.4, 0.6], abs=1e-4
-    )
+    assert logger.histograms["train/logmel_l1_by_t"] == pytest.approx([0.4, 0.6], abs=1e-4)
     # The base histograms are still emitted alongside it.
     assert "train/fm_loss_by_t" in logger.histograms
     assert "train/x1_err_by_t" in logger.histograms

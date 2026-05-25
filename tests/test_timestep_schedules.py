@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from tts.model.neural_speaker import RollingFlowConfig, RollingFlowSpeaker
-from tts.training.timestep_schedules import (
+from jwt.model.neural_speaker import RollingFlowConfig, RollingFlowSpeaker
+from jwt.training.timestep_schedules import (
     LinearTimestepSchedule,
     LogNormTimestepSchedule,
     TimestepSchedules,
@@ -67,9 +67,7 @@ def test_lognorm_timestep_monotonic_and_in_unit_range() -> None:
 def test_lognorm_is_symmetric_at_mean_zero() -> None:
     # mean=0: t = sigmoid(std * Phi_inv(progress)); progress 0.5 -> t 0.5.
     sched = LogNormTimestepSchedule(mean=0.0, std=1.0)
-    torch.testing.assert_close(
-        sched.timestep(torch.tensor([0.5])), torch.tensor([0.5])
-    )
+    torch.testing.assert_close(sched.timestep(torch.tensor([0.5])), torch.tensor([0.5]))
 
 
 def test_lognorm_negative_mean_concentrates_toward_small_t() -> None:
@@ -99,9 +97,7 @@ def test_lognorm_dt_is_finite_and_nonnegative() -> None:
 
 def test_linear_timesteps_grid_is_uniform() -> None:
     n = 9
-    torch.testing.assert_close(
-        LinearTimestepSchedule().timesteps(n), torch.linspace(0.0, 1.0, n)
-    )
+    torch.testing.assert_close(LinearTimestepSchedule().timesteps(n), torch.linspace(0.0, 1.0, n))
 
 
 def test_timesteps_grid_is_timestep_on_uniform_progress() -> None:
@@ -142,9 +138,7 @@ def test_config_defaults_to_linear_and_model_resolves_it() -> None:
 
 
 def test_model_resolves_lognorm_schedule_from_config() -> None:
-    cfg = RollingFlowConfig(
-        vocabulary_size=8, timestep_schedule=TimestepSchedules.LOG_NORM
-    )
+    cfg = RollingFlowConfig(vocabulary_size=8, timestep_schedule=TimestepSchedules.LOG_NORM)
     model = RollingFlowSpeaker(cfg)
     assert isinstance(model.schedule, LogNormTimestepSchedule)
 
@@ -199,7 +193,7 @@ def test_lognorm_trimming_keeps_the_early_emphasis_bump() -> None:
     n = 32
     grid = LogNormTimestepSchedule(mean=-0.8, std=0.8, eps=0.025).timesteps(n)
     dt = grid[1:] - grid[:-1]
-    assert dt.min() < dt[0]   # finer than the noisy-end step
+    assert dt.min() < dt[0]  # finer than the noisy-end step
     assert dt.min() < dt[-1]  # finer than the clean-end step
 
 

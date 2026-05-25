@@ -1,16 +1,16 @@
 import pytest
 import torch
 
-from tts.data.audio.codecs import Codec, Codecs
-from tts.data.audio.stft import MelSpectrogram
-from tts.model.flow import FlowParametrizations
-from tts.model.neural_speaker import (
+from jwt.data.audio.codecs import Codec, Codecs
+from jwt.data.audio.stft import MelSpectrogram
+from jwt.model.flow import FlowParametrizations
+from jwt.model.neural_speaker import (
     MaskedTensor,
     RollingFlowConfig,
     RollingFlowSpeaker,
 )
-from tts.model.transformer import AdaLN, TransformerConfig
-from tts.training.timestep_schedules import TimestepSchedules
+from jwt.model.transformer import AdaLN, TransformerConfig
+from jwt.training.timestep_schedules import TimestepSchedules
 
 B = 2
 T_TEXT = 4
@@ -46,9 +46,7 @@ class StubCodec:
     def unnormalize(self, x: torch.Tensor) -> torch.Tensor:
         return x * self.std + self.mean
 
-    def eos_frames(
-        self, n: int, *, device=None, dtype=torch.float32
-    ) -> torch.Tensor:
+    def eos_frames(self, n: int, *, device=None, dtype=torch.float32) -> torch.Tensor:
         return torch.full((self.acoustic_dim, n), self.eos_value, device=device, dtype=dtype)
 
     def is_eos(self, frame: torch.Tensor) -> torch.BoolTensor:
@@ -91,9 +89,7 @@ def text(model: RollingFlowSpeaker) -> MaskedTensor:
 
 
 @pytest.fixture
-def acoustic(
-    model: RollingFlowSpeaker, codec: StubCodec, audio_from_file
-) -> MaskedTensor:
+def acoustic(model: RollingFlowSpeaker, codec: StubCodec, audio_from_file) -> MaskedTensor:
     """Pre-EOS-extended, normalized acoustic features ready for model.training_step.
 
     Produces T_real real frames from a real audio asset, then appends eos_n

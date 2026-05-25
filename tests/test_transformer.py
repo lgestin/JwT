@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from tts.model.transformer import (
+from jwt.model.transformer import (
     AdaLN,
     Transformer,
     TransformerBlock,

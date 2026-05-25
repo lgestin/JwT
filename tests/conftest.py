@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from tts.data.audio import AudioFile
+from jwt.data.audio import AudioFile
 
 TEST_SEED = 42
 ASSETS_FOLDER = Path(__file__).parent / "assets"

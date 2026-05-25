@@ -21,20 +21,20 @@ from simple_parsing import ArgumentParser
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
-from tts.data.audio.codecs import Codec, Codecs, check_sample_rate
-from tts.data.collate import collate
-from tts.data.dataset import AudioDataset
-from tts.data.source import ArrowTTSSource
-from tts.data.text import Tokenizer, Vocabulary
-from tts.model.flow import FlowParametrizations
-from tts.model.neural_speaker import (
+from jwt.data.audio.codecs import Codec, Codecs, check_sample_rate
+from jwt.data.collate import collate
+from jwt.data.dataset import AudioDataset
+from jwt.data.source import ArrowTTSSource
+from jwt.data.text import Tokenizer, Vocabulary
+from jwt.model.flow import FlowParametrizations
+from jwt.model.neural_speaker import (
     MaskedTensor,
     RollingFlowConfig,
     RollingFlowSpeaker,
 )
-from tts.model.transformer import TransformerConfig
-from tts.training.tensorboard_logger import TensorBoardLogger
-from tts.training.trainer import prepare_acoustic_batch
+from jwt.model.transformer import TransformerConfig
+from jwt.training.tensorboard_logger import TensorBoardLogger
+from jwt.training.trainer import prepare_acoustic_batch
 
 
 @dataclass
@@ -161,9 +161,7 @@ def main() -> None:
                 pg["lr"] = lr
 
             optimizer.zero_grad()
-            loss, loss_detached = _training_step(
-                model, codec, batch, device, amp_dtype, noamp
-            )
+            loss, loss_detached = _training_step(model, codec, batch, device, amp_dtype, noamp)
             loss_val = float(loss_detached)
 
             if not math.isfinite(loss_val):
@@ -173,9 +171,7 @@ def main() -> None:
 
             loss.backward()
             grad_norm = float(
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), max_norm=float("inf")
-                )
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float("inf"))
             )
             optimizer.step()
 

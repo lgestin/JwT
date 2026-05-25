@@ -22,7 +22,7 @@ def _(mo):
     mo.md(r"""
     # Explore the LJSpeech Arrow source
 
-    Walk an arrow row through every layer of `tts.data`:
+    Walk an arrow row through every layer of `jwt.data`:
 
     1. open the file with `pyarrow` and look at the row payload
     2. let `ArrowTTSSource` materialise it into `(Audio, Text)`
@@ -128,8 +128,8 @@ def _(mo, raw_row):
 
 @app.cell
 def _(arrow_path, codec_name, vocab_path):
-    from tts.data.source import ArrowTTSSource
-    from tts.data.text import Tokenizer, Vocabulary
+    from jwt.data.source import ArrowTTSSource
+    from jwt.data.text import Tokenizer, Vocabulary
 
     tokenizer = Tokenizer(Vocabulary.from_json(vocab_path.value))
     arrow_source = ArrowTTSSource(
@@ -247,7 +247,7 @@ def _(io, mo, stored_mel):
 
 @app.cell
 def _(arrow_source, mo):
-    from tts.data.dataset import AudioDataset
+    from jwt.data.dataset import AudioDataset
 
     dataset = AudioDataset(tts_source=arrow_source, sample_rate=24000)
     sample = dataset[0]
@@ -271,7 +271,7 @@ def _(arrow_source, mo):
 @app.cell
 def _(device, mo):
     try:
-        from tts.data.audio.codecs import BigVGAN
+        from jwt.data.audio.codecs import BigVGAN
 
         bigvgan = BigVGAN().to(device.value).eval()
         bigvgan_error: str | None = None

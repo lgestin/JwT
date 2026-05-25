@@ -3,9 +3,9 @@ from dataclasses import dataclass, fields
 import torch
 from torch.utils.data import Dataset
 
-from tts.data.audio import Audio, AudioFile
-from tts.data.source import TTSSource
-from tts.data.text import Text
+from jwt.data.audio import Audio, AudioFile
+from jwt.data.source import TTSSource
+from jwt.data.text import Text
 
 
 @dataclass

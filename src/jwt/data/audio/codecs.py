@@ -6,8 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from tts.data.audio.stft import MelSpectrogram
-
+from jwt.data.audio.stft import MelSpectrogram
 
 # Patch sizes for the RawAudio codec variants. Each variant is its own codec
 # identity: str(variant).lower() names the acoustic_{name} arrow column, so the
@@ -64,9 +63,7 @@ class Codec(Protocol):
     def decode(self, z: torch.Tensor) -> torch.Tensor: ...
     def normalize(self, x: torch.Tensor) -> torch.Tensor: ...
     def unnormalize(self, x: torch.Tensor) -> torch.Tensor: ...
-    def eos_frames(
-        self, n: int, *, device: torch.device, dtype: torch.dtype
-    ) -> torch.Tensor:
+    def eos_frames(self, n: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         """Unnormalized sentinel frames, shape (acoustic_dim, n)."""
         ...
 
@@ -114,9 +111,7 @@ class BigVGAN(nn.Module):
 
         model_id = str(version)
         config_file = hf_hub_download(repo_id=model_id, filename="config.json")
-        weights_file = hf_hub_download(
-            repo_id=model_id, filename="bigvgan_generator.pt"
-        )
+        weights_file = hf_hub_download(repo_id=model_id, filename="bigvgan_generator.pt")
 
         h = load_hparams_from_json(config_file)
         self.decoder = _BigVGAN(h, use_cuda_kernel=False)
@@ -144,12 +139,8 @@ class BigVGAN(nn.Module):
         self.acoustic_dim = int(h.num_mels)
         self.hop_length = int(h.hop_size)
 
-        self.register_buffer(
-            "mel_mean", torch.tensor(_LJSPEECH_LOG_MEL_MEAN, dtype=torch.float32)
-        )
-        self.register_buffer(
-            "mel_std", torch.tensor(_LJSPEECH_LOG_MEL_STD, dtype=torch.float32)
-        )
+        self.register_buffer("mel_mean", torch.tensor(_LJSPEECH_LOG_MEL_MEAN, dtype=torch.float32))
+        self.register_buffer("mel_std", torch.tensor(_LJSPEECH_LOG_MEL_STD, dtype=torch.float32))
 
         # Sentinel level chosen well below the noise floor of normalized log-mels
         # so denoising drives unused tail to it.
@@ -181,9 +172,7 @@ class BigVGAN(nn.Module):
         device: torch.device | None = None,
         dtype: torch.dtype = torch.float32,
     ) -> torch.Tensor:
-        return torch.full(
-            (self.acoustic_dim, n), self.eos_value, device=device, dtype=dtype
-        )
+        return torch.full((self.acoustic_dim, n), self.eos_value, device=device, dtype=dtype)
 
     def is_eos(self, frame: torch.Tensor) -> torch.BoolTensor:
         return frame.mean(dim=-1) < self.eos_threshold

@@ -9,22 +9,22 @@ from torch import GradScaler
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 
-from tts.data.audio.codecs import Codec
-from tts.data.audio.stft import MelSpectrogram
-from tts.data.dataset import Batch
-from tts.model.attention import AttentionImplementations, TorchAttention
-from tts.model.loss import LossFns
-from tts.model.neural_speaker import (
+from jwt.data.audio.codecs import Codec
+from jwt.data.audio.stft import MelSpectrogram
+from jwt.data.dataset import Batch
+from jwt.model.attention import AttentionImplementations, TorchAttention
+from jwt.model.loss import LossFns
+from jwt.model.neural_speaker import (
     MaskedTensor,
     RollingFlowSpeaker,
     TrainingStepOutput,
 )
-from tts.training.attention_probe import capture_attention, log_attention_maps
-from tts.training.checkpoint_manager import CheckpointManager
-from tts.training.ema import EMA
-from tts.training.loggers import Logger, log_mel
-from tts.training.loss import MelAuxLoss
-from tts.training.metrics import (
+from jwt.training.attention_probe import capture_attention, log_attention_maps
+from jwt.training.checkpoint_manager import CheckpointManager
+from jwt.training.ema import EMA
+from jwt.training.loggers import Logger, log_mel
+from jwt.training.loss import MelAuxLoss
+from jwt.training.metrics import (
     binned_loss_stats,
     masked_mean_std,
     per_pos_l1_error,
@@ -141,9 +141,7 @@ def prepare_acoustic_batch(batch: Batch, codec: Codec, eos_n: int) -> MaskedTens
 
     values_ext = torch.nn.functional.pad(values, (0, eos_n))
     ac_idx_ext = torch.arange(T_ext, device=values.device).unsqueeze(0)
-    in_sentinel = (ac_idx_ext >= lens.unsqueeze(1)) & (
-        ac_idx_ext < (lens + eos_n).unsqueeze(1)
-    )
+    in_sentinel = (ac_idx_ext >= lens.unsqueeze(1)) & (ac_idx_ext < (lens + eos_n).unsqueeze(1))
     eos = codec.eos_frames(eos_n, device=values.device, dtype=values.dtype)
     eos_grid = eos.unsqueeze(0).expand(B, acoustic_dim, eos_n)
     eos_padded = torch.nn.functional.pad(eos_grid, (T, 0))
@@ -199,9 +197,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         # Auxiliary mel loss, only when weighted in. Config validation forbids
         # aux_mel_weight > 0 for BigVGAN, so this is always a raw-audio codec.
         self.mel_aux_loss: MelAuxLoss | None = (
-            MelAuxLoss(sample_rate=sample_rate, hop_length=codec.hop_length).to(
-                self._device
-            )
+            MelAuxLoss(sample_rate=sample_rate, hop_length=codec.hop_length).to(self._device)
             if config.aux_mel_weight > 0
             else None
         )
@@ -252,9 +248,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                             scaler=self.scaler,
                             best_loss=self.best_loss,
                             additional_state=(
-                                {"ema": self.ema.state_dict()}
-                                if self.ema is not None
-                                else None
+                                {"ema": self.ema.state_dict()} if self.ema is not None else None
                             ),
                         )
                         self.checkpoint_manager.cleanup_old_checkpoints()
@@ -387,9 +381,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         # inflates the FM loss near t=1 regardless of accuracy). Same t/v_mask,
         # so its bin counts equal `bin_counts` and aren't re-stored.
         x1_err = per_pos_l1_error(out.x_pred, acoustic.values.transpose(1, 2))
-        x1_err_sums, _ = binned_loss_stats(
-            x1_err, out.t, out.v_mask, self.config.n_loss_bins
-        )
+        x1_err_sums, _ = binned_loss_stats(x1_err, out.t, out.v_mask, self.config.n_loss_bins)
         ac_mean, ac_std = masked_mean_std(acoustic.values, out.v_mask)
         scalars = {
             "vmask_fill": out.v_mask.float().mean(),
@@ -414,9 +406,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         return scalars, bins
 
     @staticmethod
-    def _accumulate_diagnostics(
-        acc: dict[str, torch.Tensor], new: dict[str, torch.Tensor]
-    ) -> None:
+    def _accumulate_diagnostics(acc: dict[str, torch.Tensor], new: dict[str, torch.Tensor]) -> None:
         """In-place GPU accumulation — no host sync."""
         for k, v in new.items():
             acc[k] = v if k not in acc else acc[k] + v
@@ -486,9 +476,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
     ) -> None:
         """Single batched host transfer, then hand off to the logger."""
         keys = list(gpu_metrics)
-        stacked = torch.stack(
-            [gpu_metrics[k].detach().float().reshape(()) for k in keys]
-        )
+        stacked = torch.stack([gpu_metrics[k].detach().float().reshape(()) for k in keys])
         merged = dict(zip(keys, stacked.cpu().tolist()))  # one D2H transfer
         if host_metrics:
             merged.update(host_metrics)
@@ -507,9 +495,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         # they don't crowd the `train/` loss curves.
         data_metrics = self._reduce_diagnostics(diag_accum, diag_micro)
         system_metrics: dict[str, torch.Tensor] = {
-            "param_norm": torch.stack(
-                [p.detach().norm() for p in self.model.parameters()]
-            ).norm()
+            "param_norm": torch.stack([p.detach().norm() for p in self.model.parameters()]).norm()
         }
 
         now = time.perf_counter()
@@ -518,10 +504,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         batch_size = self.train_dloader.batch_size or 1
         host: dict[str, float] = {
             "steps_per_sec": steps / elapsed,
-            "samples_per_sec": steps
-            * batch_size
-            * self.config.grad_accum_steps
-            / elapsed,
+            "samples_per_sec": steps * batch_size * self.config.grad_accum_steps / elapsed,
         }
         if self.device.type == "cuda":
             host["peak_mem_gb"] = torch.cuda.max_memory_allocated(self.device) / 1e9
@@ -575,9 +558,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self.logger.log_metrics(val_metrics, self.step, prefix="valid")
         # Validation emits only data diagnostics — route them to `data/valid`
         # to mirror the `data/train` split.
-        self._emit_diagnostics(
-            self._reduce_diagnostics(diag_accum, count), self.step, "data/valid"
-        )
+        self._emit_diagnostics(self._reduce_diagnostics(diag_accum, count), self.step, "data/valid")
         self._emit_loss_histogram(bin_accum, self.step, "valid")
         self._log_attention_maps()
 
@@ -593,7 +574,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         Runs one extra eager forward with the weight-exposing `TorchAttention`
         backend (the fused SDPA kernel cannot surface attention weights), behind
         hooks that collect every layer's map. The logged map is averaged over
-        heads and layers — see `tts.training.attention_probe`.
+        heads and layers — see `jwt.training.attention_probe`.
         """
         batch = next(iter(self.valid_dloader)).to(self.device, non_blocking=True)
         n = min(self.config.n_smp, batch.tokens.shape[0])
@@ -644,9 +625,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             L = int(acoustic_pred.mask[i].sum().item())
             if L == 0:
                 continue
-            ac_i = acoustic_pred.values[
-                i : i + 1, :, :L
-            ]  # (1, acoustic_dim, L), normalized
+            ac_i = acoustic_pred.values[i : i + 1, :, :L]  # (1, acoustic_dim, L), normalized
             wav = self.codec.decode(self.codec.unnormalize(ac_i))[0]
             self.logger.log_audio(f"sampled/{i}", wav, self.step, self.sample_rate)
             # The model picks its own length via the EOS sentinel; early in
@@ -683,9 +662,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             ):
                 reconstructed = self.codec.reconstruct(waveform[None])[0]
                 clean_viz = self.viz_mel(waveform).clamp(min=1e-5).log()
-                recon_viz = (
-                    self.viz_mel(reconstructed.unsqueeze(0))[0].clamp(min=1e-5).log()
-                )
+                recon_viz = self.viz_mel(reconstructed.unsqueeze(0))[0].clamp(min=1e-5).log()
             self.logger.log_audio(
                 f"{i}/reconstructed",
                 reconstructed,

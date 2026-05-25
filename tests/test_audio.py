@@ -3,7 +3,7 @@ import math
 import pytest
 import torch
 
-from tts.data.audio import AudioFile, AudioInfo
+from jwt.data.audio import AudioFile, AudioInfo
 
 
 def test_audio_from_file_loads_waveform(audio_from_file: AudioFile) -> None:
@@ -81,9 +81,7 @@ def test_random_excerpt_returns_expected_duration() -> None:
 def test_salient_excerpt_returns_expected_duration(audio_from_file: AudioFile) -> None:
     duration_s = min(0.5, audio_from_file.duration_s / 2)
     generator = torch.Generator().manual_seed(0)
-    excerpt = audio_from_file.salient_excerpt(
-        duration_s=duration_s, generator=generator
-    )
+    excerpt = audio_from_file.salient_excerpt(duration_s=duration_s, generator=generator)
     expected = int(duration_s * excerpt.sample_rate)
     assert excerpt.waveform.shape[-1] == expected
 

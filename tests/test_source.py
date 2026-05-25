@@ -1,7 +1,7 @@
 import pyarrow as pa
 import pytest
 
-from tts.data.source import ArrowTTSSource, LJTTSSource
+from jwt.data.source import ArrowTTSSource, LJTTSSource
 
 
 def _write_arrow(path, sample_rate: int, n: int = 3) -> None:

@@ -26,8 +26,8 @@ import torch
 import torchaudio
 from simple_parsing import ArgumentParser
 
-from tts.data.text import Phonemizer, Tokenizer, Vocabulary
-from tts.model.neural_speaker import (
+from jwt.data.text import Phonemizer, Tokenizer, Vocabulary
+from jwt.model.neural_speaker import (
     MaskedTensor,
     RollingFlowConfig,
     RollingFlowSpeaker,
@@ -122,9 +122,7 @@ class Args:
     seed: int = 0
 
 
-def load_model(
-    checkpoint_path: str, device: torch.device
-) -> tuple[RollingFlowSpeaker, dict]:
+def load_model(checkpoint_path: str, device: torch.device) -> tuple[RollingFlowSpeaker, dict]:
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if "config" not in ckpt:
         raise RuntimeError(f"Checkpoint {checkpoint_path} has no 'config' entry.")
@@ -269,9 +267,7 @@ def main() -> None:
     index_path = Path(args.index_path)
     text = index_path.read_text()
     for section_name, _ in SECTIONS:
-        text = replace_table_after_h2(
-            text, section_name, rendered_by_section[section_name]
-        )
+        text = replace_table_after_h2(text, section_name, rendered_by_section[section_name])
     index_path.write_text(text)
 
     print(f"\nDone. {counter} wavs written; {index_path} updated.")

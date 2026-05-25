@@ -2,10 +2,10 @@
 
 from torch.utils.data import DataLoader
 
-from tts.data.collate import collate
-from tts.data.dataset import AudioDataset
-from tts.data.source import ArrowTTSSource
-from tts.data.text import Tokenizer, Vocabulary
+from jwt.data.collate import collate
+from jwt.data.dataset import AudioDataset
+from jwt.data.source import ArrowTTSSource
+from jwt.data.text import Tokenizer, Vocabulary
 
 
 def main() -> None:

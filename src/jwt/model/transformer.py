@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from simple_parsing import Serializable
 
-from tts.model.attention import AttentionImplementation, SDPAAttention
+from jwt.model.attention import AttentionImplementation, SDPAAttention
 
 
 @dataclass
@@ -21,9 +21,7 @@ class TransformerConfig(Serializable):
     time_freq_embed_dim: int = 256
 
 
-def precompute_freqs_cis(
-    seq_len: int, head_dim: int, theta: float = 10000.0
-) -> torch.Tensor:
+def precompute_freqs_cis(seq_len: int, head_dim: int, theta: float = 10000.0) -> torch.Tensor:
     """RoPE cos/sin table of shape (1, 1, seq_len, head_dim // 2, 2)."""
     assert head_dim % 2 == 0, "head_dim must be even for RoPE"
     freqs = 1.0 / (theta ** (torch.arange(0, head_dim, 2).float() / head_dim))
@@ -51,15 +49,11 @@ def apply_rope(
     return q_out.flatten(-2).type_as(q), k_out.flatten(-2).type_as(k)
 
 
-def timestep_embedding(
-    t: torch.Tensor, dim: int, max_period: float = 10000.0
-) -> torch.Tensor:
+def timestep_embedding(t: torch.Tensor, dim: int, max_period: float = 10000.0) -> torch.Tensor:
     """Sinusoidal embedding for scalar timesteps. t (..., ) -> (..., dim)."""
     half = dim // 2
     freqs = torch.exp(
-        -math.log(max_period)
-        * torch.arange(half, dtype=torch.float32, device=t.device)
-        / half
+        -math.log(max_period) * torch.arange(half, dtype=torch.float32, device=t.device) / half
     )
     args = t.float().unsqueeze(-1) * freqs
     emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
@@ -97,9 +91,9 @@ class AdaLN(nn.Module):
         nn.init.zeros_(self.linear.bias)
 
     def forward(self, t_emb: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = self.linear(
-            F.silu(t_emb)
-        ).chunk(6, dim=-1)
+        shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = self.linear(F.silu(t_emb)).chunk(
+            6, dim=-1
+        )
         return shift_a, scale_a, gate_a.tanh(), shift_m, scale_m, gate_m.tanh()
 
 
@@ -123,9 +117,7 @@ class QKNorm(nn.Module):
         self.query_norm = RMSNorm(head_dim)
         self.key_norm = RMSNorm(head_dim)
 
-    def forward(
-        self, q: torch.Tensor, k: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, q: torch.Tensor, k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return self.query_norm(q).to(q), self.key_norm(k).to(k)
 
 

@@ -1,6 +1,6 @@
-import tts
+import jwt
 
 
 def test_version_exposed() -> None:
-    assert isinstance(tts.__version__, str)
-    assert tts.__version__
+    assert isinstance(jwt.__version__, str)
+    assert jwt.__version__

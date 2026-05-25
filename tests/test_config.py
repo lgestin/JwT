@@ -3,16 +3,16 @@ from pathlib import Path
 import pytest
 from simple_parsing.helpers.serialization import load
 
-from tts.data.audio.codecs import Codecs
-from tts.model.flow import FlowParametrizations
-from tts.model.neural_speaker import RollingFlowConfig
-from tts.training.config import (
+from jwt.data.audio.codecs import Codecs
+from jwt.model.flow import FlowParametrizations
+from jwt.model.neural_speaker import RollingFlowConfig
+from jwt.training.config import (
     Args,
     check_model_config_consistency,
     dump_config,
     parse_args,
 )
-from tts.training.trainer import TrainerConfig
+from jwt.training.trainer import TrainerConfig
 
 
 def test_args_defaults_survive_the_move() -> None:

@@ -11,8 +11,8 @@ import torch
 
 def binned_loss_stats(
     per_pos_loss: torch.Tensor,  # (B, T)
-    t: torch.Tensor,             # (B, T), values in [0, 1]
-    v_mask: torch.Tensor,        # (B, T), bool supervision mask
+    t: torch.Tensor,  # (B, T), values in [0, 1]
+    v_mask: torch.Tensor,  # (B, T), bool supervision mask
     n_bins: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Per-bin (sum, count) of the flow-matching loss bucketed by timestep ``t``.
@@ -39,7 +39,7 @@ def binned_loss_stats(
 
 
 def per_pos_l1_error(
-    pred: torch.Tensor,    # (B, T, D)
+    pred: torch.Tensor,  # (B, T, D)
     target: torch.Tensor,  # (B, T, D)
 ) -> torch.Tensor:
     """Per-position mean-absolute error, averaged over the feature dim.
@@ -55,7 +55,7 @@ def per_pos_l1_error(
 
 
 def masked_mean_std(
-    values: torch.Tensor,      # (B, D, T)
+    values: torch.Tensor,  # (B, D, T)
     frame_mask: torch.Tensor,  # (B, T), bool
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Mean and std of ``values`` over the frames selected by ``frame_mask``.

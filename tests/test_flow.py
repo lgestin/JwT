@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tts.model.flow import (
+from jwt.model.flow import (
     FlowParametrizations,
     JustWaveformTransformersParametrization,
     ParametrizationLossOutput,
@@ -36,14 +36,8 @@ def test_enum_values() -> None:
 
 
 def test_enum_parametrization_mapping() -> None:
-    assert (
-        FlowParametrizations.RECTIFIED_FLOW.parametrization
-        is RectifiedFlowParametrization
-    )
-    assert (
-        FlowParametrizations.JWT.parametrization
-        is JustWaveformTransformersParametrization
-    )
+    assert FlowParametrizations.RECTIFIED_FLOW.parametrization is RectifiedFlowParametrization
+    assert FlowParametrizations.JWT.parametrization is JustWaveformTransformersParametrization
 
 
 def test_loss_output_is_frozen() -> None:

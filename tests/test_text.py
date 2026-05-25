@@ -4,8 +4,8 @@ from dataclasses import fields, is_dataclass
 import pytest
 from misaki.token import MToken
 
-from tts.data import text as text_mod
-from tts.data.text import Phonemizer, Text, Tokenizer, Vocabulary, get_phonemizer
+from jwt.data import text as text_mod
+from jwt.data.text import Phonemizer, Text, Tokenizer, Vocabulary, get_phonemizer
 
 
 @pytest.fixture(scope="module")

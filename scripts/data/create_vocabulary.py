@@ -7,8 +7,8 @@ from pathlib import Path
 from rich.progress import track
 from simple_parsing import ArgumentParser
 
-from tts.data.source import LJTTSSource
-from tts.data.text import Vocabulary
+from jwt.data.source import LJTTSSource
+from jwt.data.text import Vocabulary
 
 
 @dataclass

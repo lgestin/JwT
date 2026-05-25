@@ -14,11 +14,11 @@ from pathlib import Path
 from simple_parsing import ArgumentParser
 from simple_parsing.helpers.serialization import load, save
 
-from tts.data.audio.codecs import Codecs
-from tts.model.neural_speaker import RollingFlowConfig
-from tts.training.ema import EMAConfig
-from tts.training.optimizer import OptimizerConfig
-from tts.training.trainer import TrainerConfig
+from jwt.data.audio.codecs import Codecs
+from jwt.model.neural_speaker import RollingFlowConfig
+from jwt.training.ema import EMAConfig
+from jwt.training.optimizer import OptimizerConfig
+from jwt.training.trainer import TrainerConfig
 
 
 @dataclass
@@ -103,13 +103,11 @@ def check_model_config_consistency(
     actionable error), so it is a hard failure.
     """
     diffs = [
-        f"  {f.name}: checkpoint={getattr(checkpoint, f.name)!r} "
-        f"run={getattr(runtime, f.name)!r}"
+        f"  {f.name}: checkpoint={getattr(checkpoint, f.name)!r} run={getattr(runtime, f.name)!r}"
         for f in fields(RollingFlowConfig)
         if getattr(checkpoint, f.name) != getattr(runtime, f.name)
     ]
     if diffs:
         raise ValueError(
-            "resumed run's model config does not match the checkpoint:\n"
-            + "\n".join(diffs)
+            "resumed run's model config does not match the checkpoint:\n" + "\n".join(diffs)
         )

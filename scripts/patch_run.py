@@ -101,8 +101,7 @@ def main() -> None:
     (args.dst / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
 
     print(
-        f"Done. Resume with:\n"
-        f"  uv run python scripts/train.py --config_path {args.dst}/config.yaml"
+        f"Done. Resume with:\n  uv run python scripts/train.py --config_path {args.dst}/config.yaml"
     )
 
 

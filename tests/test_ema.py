@@ -2,7 +2,7 @@ import pytest
 import torch
 from torch import nn
 
-from tts.training.ema import EMA, EMAConfig
+from jwt.training.ema import EMA, EMAConfig
 
 
 def _const_model(value: float) -> nn.Module:
@@ -69,9 +69,8 @@ def test_swapped_restores_on_exception() -> None:
         for tensor in ema._shadow.values():
             tensor.fill_(2.0)
 
-    with pytest.raises(RuntimeError, match="boom"):
-        with ema.swapped(model):
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError, match="boom"), ema.swapped(model):
+        raise RuntimeError("boom")
 
     for param in model.parameters():
         assert torch.allclose(param, torch.full_like(param, 3.0))

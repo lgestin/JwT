@@ -13,9 +13,9 @@ import matplotlib
 import torch
 from simple_parsing import ArgumentParser
 
-from tts.data.audio.codecs import BigVGAN
-from tts.data.text import Phonemizer, Tokenizer, Vocabulary
-from tts.model.neural_speaker import (
+from jwt.data.audio.codecs import BigVGAN
+from jwt.data.text import Phonemizer, Tokenizer, Vocabulary
+from jwt.model.neural_speaker import (
     MaskedTensor,
     RollingFlowConfig,
     RollingFlowSpeaker,
@@ -36,9 +36,7 @@ class Args:
     share: bool = False
 
 
-def _load_model(
-    checkpoint_path: str, device: torch.device
-) -> tuple[RollingFlowSpeaker, dict]:
+def _load_model(checkpoint_path: str, device: torch.device) -> tuple[RollingFlowSpeaker, dict]:
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if "config" not in ckpt:
         raise RuntimeError(
@@ -187,9 +185,7 @@ def main() -> None:
                 seed = gr.Number(label="Seed", value=0, precision=0)
                 go = gr.Button("Synthesize", variant="primary")
                 phonemes_out = gr.Textbox(label="Phonemes", interactive=False)
-                length_out = gr.Textbox(
-                    label="Length predictor", interactive=False, lines=3
-                )
+                length_out = gr.Textbox(label="Length predictor", interactive=False, lines=3)
             with gr.Column(scale=3):
                 audio_out = gr.Audio(label="Synthesized audio", type="numpy")
                 mel_out = gr.Plot(label="log-mel spectrogram")

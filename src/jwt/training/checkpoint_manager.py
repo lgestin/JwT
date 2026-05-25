@@ -6,7 +6,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from tts.training.ema import EMA
+from jwt.training.ema import EMA
 
 
 @dataclass
@@ -163,9 +163,7 @@ class CheckpointManager:
             Dictionary with checkpoint metadata
         """
         if not self.best_checkpoint_path.exists():
-            raise FileNotFoundError(
-                f"Best checkpoint not found at {self.best_checkpoint_path}"
-            )
+            raise FileNotFoundError(f"Best checkpoint not found at {self.best_checkpoint_path}")
 
         return self.load(
             self.best_checkpoint_path,
@@ -200,9 +198,7 @@ class CheckpointManager:
 
         # Load checkpoint data. weights_only=False is required because we
         # persist the model config (a dataclass) alongside the state dict.
-        checkpoint_data = torch.load(
-            checkpoint_path, map_location=map_location, weights_only=False
-        )
+        checkpoint_data = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
 
         # Load model state - handle ConditionalFlowMatcher or direct model
         if hasattr(model, "denoiser"):
@@ -227,8 +223,7 @@ class CheckpointManager:
                 ema.load_state_dict(checkpoint_data["ema"])
             else:
                 warnings.warn(
-                    "checkpoint has no EMA state; EMA initialized from the "
-                    "loaded model weights",
+                    "checkpoint has no EMA state; EMA initialized from the loaded model weights",
                     stacklevel=2,
                 )
 

@@ -5,15 +5,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from tts.data.audio.codecs import Codec, Codecs
-from tts.model.attention import AttentionImplementation, SDPAAttention
-from tts.model.flow import FlowParametrizations
-from tts.model.loss import LossFn, LossFns
-from tts.model.transformer import (
+from jwt.data.audio.codecs import Codec, Codecs
+from jwt.model.attention import AttentionImplementation, SDPAAttention
+from jwt.model.flow import FlowParametrizations
+from jwt.model.loss import LossFn, LossFns
+from jwt.model.transformer import (
     Transformer,
     TransformerConfig,
 )
-from tts.training.timestep_schedules import TimestepSchedules
+from jwt.training.timestep_schedules import TimestepSchedules
 
 
 class NeuralSpeaker(Protocol):
@@ -117,9 +117,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
 
         # Project both modalities into the transformer's hidden dim and tag them.
         text_lat = self.text_in(text_ids) + self.text_modality
-        acoustic_lat = (
-            self.acoustic_in(acoustic.values.transpose(1, 2)) + self.acoustic_modality
-        )
+        acoustic_lat = self.acoustic_in(acoustic.values.transpose(1, 2)) + self.acoustic_modality
         dim = text_lat.shape[-1]
 
         # Pack [real text | real acoustic | trailing pad] per sample.
@@ -136,9 +134,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         x_packed = torch.gather(x_concat, 1, pack_idx.unsqueeze(-1).expand(B, T, dim))
 
         # Pack per-position t: text positions are always clean (t=1).
-        t_concat = torch.cat(
-            [torch.ones(B, T_text, device=device, dtype=t.dtype), t], dim=1
-        )
+        t_concat = torch.cat([torch.ones(B, T_text, device=device, dtype=t.dtype), t], dim=1)
         t_packed = torch.gather(t_concat, 1, pack_idx)
 
         # Keep masks in packed coords. in_text/in_ac above are in original
@@ -153,17 +149,13 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         keep_first_zero = is_zero_real.cumsum(-1) <= 1
         attn_keys = in_real_packed & keep_first_zero  # (B, T)
         attn_mask = attention_implementation.build_mask(attn_keys)
-        out_packed = self.transformer(
-            x_packed, t_packed, attn_mask, attention_implementation
-        )
+        out_packed = self.transformer(x_packed, t_packed, attn_mask, attention_implementation)
         pred_packed = self.acoustic_out(out_packed)  # (B, T, acoustic_dim)
 
         # Unpack: acoustic position i in sample b lives at packed position text_lens[b] + i.
         ac_idx = torch.arange(T_ac, device=device).expand(B, T_ac)
         unpack_idx = (text_lens.unsqueeze(1) + ac_idx).clamp(max=T - 1)
-        pred = torch.gather(
-            pred_packed, 1, unpack_idx.unsqueeze(-1).expand(B, T_ac, acoustic_dim)
-        )
+        pred = torch.gather(pred_packed, 1, unpack_idx.unsqueeze(-1).expand(B, T_ac, acoustic_dim))
         return pred
 
     def _sample_noise(
@@ -227,9 +219,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
 
         if acoustic_front is None:
             u = torch.rand(B, device=device)
-            acoustic_front = (
-                u * (acoustic_lens_ext.float() + (n - 1)) - (n - 1)
-            ).long()
+            acoustic_front = (u * (acoustic_lens_ext.float() + (n - 1)) - (n - 1)).long()
 
         x_1 = acoustic.values.transpose(1, 2)  # (B, T_ext, acoustic_dim), normalized
         if x_0 is None:
@@ -320,8 +310,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             x_0 = self._sample_noise((B, acoustic_dim, max_T), device=device)
         else:
             assert x_0.shape[-1] >= max_T, (
-                f"x_0 must have at least cfg.max_acoustic_len ({max_T}) frames, "
-                f"got {x_0.shape[-1]}"
+                f"x_0 must have at least cfg.max_acoustic_len ({max_T}) frames, got {x_0.shape[-1]}"
             )
 
         values = torch.empty(B, acoustic_dim, 0, device=device, dtype=x_0.dtype)

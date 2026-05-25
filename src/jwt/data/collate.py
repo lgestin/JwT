@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 
-from tts.data.dataset import Batch, Sample
+from jwt.data.dataset import Batch, Sample
 
 
 def pad_sequences_longest(
@@ -9,9 +9,7 @@ def pad_sequences_longest(
 ) -> tuple[list[torch.Tensor], list[int]]:
     lengths = [seq.size(-1) for seq in sequences]
     max_length = max(lengths)
-    padded_sequences = [
-        F.pad(seq, (0, max_length - seq.size(-1)), mode=mode) for seq in sequences
-    ]
+    padded_sequences = [F.pad(seq, (0, max_length - seq.size(-1)), mode=mode) for seq in sequences]
     return padded_sequences, lengths
 
 

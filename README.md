@@ -1,6 +1,6 @@
-# tts
+# JwT (Just waveform Transformer) — TTS rolling flow matching with x-prediction
 
-Streaming text-to-speech via **rolling flow matching** transformer that predicts **raw waveforms** directly, no codec, no audio tokenizer, no adversarial training.
+A transformer that predicts **raw waveforms** directly via **rolling flow matching** with **x-prediction** — no codec, no audio tokenizer, no adversarial training. Named in the lineage of [JiT — Just image Transformers](https://github.com/LTH14/JiT).
 
 - 🌊 **Streaming, frame by frame** — one clean audio frame per forward pass; constant per-frame latency, no "wait for the whole ODE loop" delay.
 - 🎯 **Waveform → transformer → waveform** — a single transformer predicts raw audio directly. No codec, no tokenizer, no vocoder.
@@ -8,7 +8,7 @@ Streaming text-to-speech via **rolling flow matching** transformer that predicts
 - 🪢 **End-to-end** — text in, raw audio out, gradients flow the whole way. One model, no detached losses.
 
 <p align="center">
-  <a href="https://lgestin.github.io/tts/">
+  <a href="https://lgestin.github.io/JwT/">
     <img src="https://img.shields.io/badge/%F0%9F%94%8A%20Listen%20to%20samples-%E2%86%92-1971c2?style=for-the-badge" alt="Listen to samples">
   </a>
 </p>
@@ -117,7 +117,7 @@ The fm_loss curve descends without plateau or divergence — the manifold argume
 Loss values establish that training is stable but say nothing about perceptual quality; for the real evaluation, hear the samples:
 
 <p align="center">
-  <a href="https://lgestin.github.io/tts/">
+  <a href="https://lgestin.github.io/JwT/">
     <img src="https://img.shields.io/badge/%F0%9F%94%8A%20Listen%20to%20samples-%E2%86%92-1971c2?style=for-the-badge" alt="Listen to samples">
   </a>
 </p>
