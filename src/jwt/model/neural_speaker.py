@@ -123,7 +123,6 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         # Pack [real text | real acoustic | trailing pad] per sample.
         arange = torch.arange(T, device=device).expand(B, T)
         in_text = F.pad(text.mask, (0, T_ac))
-        in_ac = F.pad(acoustic.mask, (T_text, 0))
         pack_idx = torch.where(
             in_text,
             arange,
@@ -137,8 +136,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         t_concat = torch.cat([torch.ones(B, T_text, device=device, dtype=t.dtype), t], dim=1)
         t_packed = torch.gather(t_concat, 1, pack_idx)
 
-        # Keep masks in packed coords. in_text/in_ac above are in original
-        # coords and silently misalign the attention mask when text is padded.
+        # Keep masks in packed coords. in_text above is in original coords
+        # and would silently misalign the attention mask when text is padded.
         in_real_packed = arange < total_lens.unsqueeze(1)
         in_ac_packed = (arange >= text_lens.unsqueeze(1)) & in_real_packed
 
@@ -210,7 +209,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         - t:            (B, T_ext) — per-position rolling timestep
         - per_pos_loss: (B, T_ext) — per-position loss before masking
         """
-        B, acoustic_dim, T_ext = acoustic.values.shape
+        B, _acoustic_dim, T_ext = acoustic.values.shape
         device = acoustic.values.device
         n = n if n is not None else self.cfg.n_denoising_steps
         # Default is MSE; the trainer overrides via TrainerConfig.loss_fn.
@@ -219,7 +218,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
 
         if acoustic_front is None:
             u = torch.rand(B, device=device)
-            acoustic_front = (u * (acoustic_lens_ext.float() + (n - 1)) - (n - 1)).long()
+            acoustic_front = (u * (acoustic_lens_ext.float() + (n - 1)) - (n - 1)).long()  # ty: ignore[invalid-assignment]
 
         x_1 = acoustic.values.transpose(1, 2)  # (B, T_ext, acoustic_dim), normalized
         if x_0 is None:
@@ -227,7 +226,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
 
         ac_idx = torch.arange(T_ext, device=device).expand(B, T_ext)
         progress = torch.clamp(
-            1.0 - (ac_idx - acoustic_front.unsqueeze(1)).float() / (n - 1),
+            1.0 - (ac_idx - acoustic_front.unsqueeze(1)).float() / (n - 1),  # ty: ignore[unresolved-attribute]
             0.0,
             1.0,
         )  # (B, T_ext) — fraction of the n-step denoising trajectory completed
@@ -241,8 +240,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
 
         v_mask = (
             acoustic.mask
-            & (ac_idx > acoustic_front.unsqueeze(1))
-            & (ac_idx < acoustic_front.unsqueeze(1) + n)
+            & (ac_idx > acoustic_front.unsqueeze(1))  # ty: ignore[unresolved-attribute]
+            & (ac_idx < acoustic_front.unsqueeze(1) + n)  # ty: ignore[unresolved-attribute]
         )
 
         # Elementwise loss (B, T_ext, D) + recovered x_1 prediction (B, T_ext, D).
@@ -328,7 +327,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             progress = torch.clamp((k - ac_idx).float() / (n - 1), 0.0, 1.0)
             t = self.schedule.timestep(progress)
 
-            mt = MaskedTensor(values=values, mask=buffer_mask)
+            mt = MaskedTensor(values=values, mask=buffer_mask)  # ty: ignore[invalid-argument-type]
             pred = self.forward(text, mt, t)
 
             # Take a rolling-Euler step through the parametrization. For RF this
@@ -376,4 +375,4 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         out = values[..., :T_out]
         ac_idx_out = torch.arange(T_out, device=device).expand(B, T_out)
         mask = ac_idx_out < trim.unsqueeze(1)
-        return MaskedTensor(values=out, mask=mask)
+        return MaskedTensor(values=out, mask=mask)  # ty: ignore[invalid-argument-type]

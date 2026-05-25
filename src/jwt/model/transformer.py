@@ -190,6 +190,8 @@ class TransformerBlock(nn.Module):
 
 
 class Transformer(nn.Module):
+    freqs_cis: torch.Tensor
+
     def __init__(self, config: TransformerConfig):
         super().__init__()
         assert config.dim % config.num_heads == 0, "dim must be divisible by num_heads"

@@ -13,7 +13,7 @@ def test_binned_loss_stats_clamps_edges() -> None:
     t = torch.tensor([[0.0, 1.0]])
     v_mask = torch.ones(1, 2, dtype=torch.bool)
 
-    sums, counts = binned_loss_stats(per_pos, t, v_mask, n_bins=10)
+    _sums, counts = binned_loss_stats(per_pos, t, v_mask, n_bins=10)
 
     assert counts[0].item() == 1.0
     assert counts[9].item() == 1.0

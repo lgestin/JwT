@@ -278,7 +278,7 @@ def test_training_step_default_acoustic_front_samples_warmup_region(
             if len(ones) > 0:
                 fronts.append(int(ones[0].item()))
             else:
-                fronts.append(int(round((tb[0].item() - 1.0) * (n - 1))))
+                fronts.append(round((tb[0].item() - 1.0) * (n - 1)))
     fronts_t = torch.tensor(fronts)
     assert fronts_t.min().item() >= -(n - 1), fronts_t.min().item()
     assert fronts_t.max().item() < int(lens_ext.max().item())

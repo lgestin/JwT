@@ -8,7 +8,7 @@ import torch.nn.functional as F
 try:
     from flash_attn import flash_attn_varlen_func
 except ImportError:
-    flash_attn_varlen_func = None
+    flash_attn_varlen_func = None  # ty: ignore[invalid-assignment]
 
 
 @dataclass
@@ -154,7 +154,7 @@ class FlashVarlenAttention:
             cu_seqlens_k=mask.cu_seqlens,
             max_seqlen_q=mask.max_seqlen,
             max_seqlen_k=mask.max_seqlen,
-        )  # (total_valid, H, D) # ty: ignore[call-non-callable]
+        )  # (total_valid, H, D)
 
         out_padded = q.new_zeros(B * T, H, D)
         out_padded.index_copy_(0, mask.indices, out)

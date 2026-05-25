@@ -16,10 +16,10 @@ def _flatten_for_hparams(config: object) -> dict[str, int | float | str | bool]:
     def walk(prefix: str, value: object) -> None:
         if isinstance(value, dict):
             for k, v in value.items():
-                walk(f"{prefix}.{k}" if prefix else k, v)
+                walk(f"{prefix}.{k}" if prefix else k, v)  # ty: ignore[invalid-argument-type]
         elif isinstance(value, Enum):
             out[prefix] = str(value.value)
-        elif isinstance(value, bool) or isinstance(value, (int, float, str)):
+        elif isinstance(value, bool | int | float | str):
             out[prefix] = value
         elif value is None:
             out[prefix] = "None"

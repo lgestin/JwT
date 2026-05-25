@@ -79,15 +79,15 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         [
             (
                 "hobbit",
-                "In a hole in the ground there lived a hobbit. Not a nasty, dirty, wet hole, filled with the ends of worms and an oozy smell.",
+                "In a hole in the ground there lived a hobbit. Not a nasty, dirty, wet hole, filled with the ends of worms and an oozy smell.",  # noqa: E501
             ),
             (
                 "atlantic",
-                "The Atlantic Ocean is the second largest of the world's five oceans, covering roughly one-fifth of the Earth's surface.",
+                "The Atlantic Ocean is the second largest of the world's five oceans, covering roughly one-fifth of the Earth's surface.",  # noqa: E501
             ),
             (
                 "forest_dawn",
-                "He had been told by many that the journey would be difficult, but nothing had prepared him for the silence of the forest at dawn.",
+                "He had been told by many that the journey would be difficult, but nothing had prepared him for the silence of the forest at dawn.",  # noqa: E501
             ),
         ],
     ),
@@ -100,11 +100,11 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
             ),
             (
                 "flow_matching",
-                "Flow matching learns to transport noise toward data along a continuous trajectory.",
+                "Flow matching learns to transport noise toward data along a continuous trajectory.",  # noqa: E501
             ),
             (
                 "one_patch",
-                "The model speaking these words predicts raw waveform samples, one patch at a time.",
+                "The model speaking these words predicts raw waveform samples, one patch at a time.",  # noqa: E501
             ),
         ],
     ),
@@ -142,7 +142,7 @@ def normalize_text(text: str) -> str:
     """Map punctuation the tokenizer's vocabulary doesn't cover onto something
     it does. Em/en dashes pass through phonemization unchanged and would crash
     Tokenizer.encode (KeyError on '—'). Treat them as comma-strength breaks."""
-    return text.replace("—", ",").replace("–", ",")
+    return text.replace("—", ",").replace("–", ",")  # noqa: RUF001
 
 
 @torch.inference_mode()
@@ -191,7 +191,7 @@ def render_row(label: str, prompt: str, phonemes: str, slug: str) -> str:
         f'                <td class="prompt">{html.escape(prompt)}</td>\n'
         f'                <td class="phonemes">{html.escape(phonemes)}</td>\n'
         '                <td class="player">\n'
-        f'                    <audio controls preload="none" src="samples/{html.escape(slug)}.wav"></audio>\n'
+        f'                    <audio controls preload="none" src="samples/{html.escape(slug)}.wav"></audio>\n'  # noqa: E501
         "                </td>\n"
         "            </tr>"
     )

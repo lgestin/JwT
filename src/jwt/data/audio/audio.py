@@ -28,6 +28,7 @@ class Audio:
 
 class AudioFile:
     stfter: STFT = STFT(n_fft=1024, hop_length=256)
+    _duration_s: float
 
     def __init__(
         self,
@@ -50,7 +51,7 @@ class AudioFile:
         self.start_s = start_s
         self.end_s = end_s
         self._loudness = loudness
-        self._stft = None
+        self._stft: torch.FloatTensor | None = None
 
     def to(self, device: str | torch.device):
         self.waveform.to(device)
@@ -73,7 +74,7 @@ class AudioFile:
             if self.end_s:
                 end = int(self.end_s * sample_rate)
             waveform, sr = load_waveform(
-                path=self.filepath,
+                path=self.filepath,  # ty: ignore[invalid-argument-type]
                 sample_rate=sample_rate,
                 start=start,
                 end=end,
@@ -88,13 +89,13 @@ class AudioFile:
         stft = self._stft
         if stft is None:
             stft = AudioFile.stfter.stft(self.waveform)
-            self._stft = stft
+            self._stft = stft  # ty: ignore[invalid-assignment]
         return stft
 
     @property
     def info(self):
         info = AudioInfo(
-            filepath=self.filepath,
+            filepath=self.filepath,  # ty: ignore[invalid-argument-type]
             sample_rate=self.sample_rate,
             duration_s=self.duration_s,
             loudness=self.loudness,
@@ -161,7 +162,7 @@ class AudioFile:
         audio._loudness = audioinfo.loudness
         return audio
 
-    def excerpt(self, offset_s: float, duration_s: float = None):
+    def excerpt(self, offset_s: float, duration_s: float | None = None):
         waveform = self._waveform
         if waveform is not None:
             start = int(offset_s * self.sample_rate)
@@ -175,10 +176,10 @@ class AudioFile:
 
         excerpt = AudioFile(
             filepath=self.filepath,
-            waveform=waveform,
+            waveform=waveform,  # ty: ignore[invalid-argument-type]
             sample_rate=sample_rate,
             start_s=offset_s,
-            end_s=offset_s + duration_s,
+            end_s=offset_s + duration_s,  # ty: ignore[unsupported-operator]
         )
         excerpt._loudness = self.loudness
         return excerpt
@@ -186,7 +187,7 @@ class AudioFile:
     def random_excerpt(
         self,
         duration_s: float,
-        generator: torch.Generator = None,
+        generator: torch.Generator | None = None,
     ):
         assert duration_s <= self.duration_s
 
@@ -200,7 +201,7 @@ class AudioFile:
         duration_s: float,
         loudness_threshold: float = -60.0,  # -40, -60
         n_tries: int = 10,
-        generator: torch.Generator = None,
+        generator: torch.Generator | None = None,
     ):
         assert 0.5 <= duration_s <= self.duration_s
         loudness = self.loudness

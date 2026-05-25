@@ -151,7 +151,7 @@ def prepare_acoustic_batch(batch: Batch, codec: Codec, eos_n: int) -> MaskedTens
     mask_ext = in_real | in_sentinel
 
     values_norm = codec.normalize(values_ext)
-    return MaskedTensor(values=values_norm, mask=mask_ext)
+    return MaskedTensor(values=values_norm, mask=mask_ext)  # ty: ignore[invalid-argument-type]
 
 
 class TTSRollingFlowMatchingTrainer(Trainer):
@@ -254,7 +254,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                         self.checkpoint_manager.cleanup_old_checkpoints()
 
                 if hasattr(self.optimizer, "train"):
-                    self.optimizer.train()
+                    self.optimizer.train()  # ty: ignore[call-non-callable]
                 self.model.train()
 
                 metrics, scalars, bins = self.training_step(batch)
@@ -455,7 +455,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         vals = torch.nan_to_num(means.detach().float(), nan=0.0).cpu().tolist()
         n = self.config.n_loss_bins
         edges = [i / n for i in range(n + 1)]
-        for (tag, _), bin_values in zip(series, vals):
+        for (tag, _), bin_values in zip(series, vals, strict=True):
             self.logger.log_histogram(f"{prefix}/{tag}", edges, bin_values, step)
 
     def _log_timestep_schedule(self) -> None:
@@ -477,7 +477,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         """Single batched host transfer, then hand off to the logger."""
         keys = list(gpu_metrics)
         stacked = torch.stack([gpu_metrics[k].detach().float().reshape(()) for k in keys])
-        merged = dict(zip(keys, stacked.cpu().tolist()))  # one D2H transfer
+        merged = dict(zip(keys, stacked.cpu().tolist(), strict=True))  # one D2H transfer
         if host_metrics:
             merged.update(host_metrics)
         self.logger.log_diagnostics(merged, step, prefix=prefix)
@@ -537,7 +537,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
     def validation(self):
         self.model.eval()
         if hasattr(self.optimizer, "eval"):
-            self.optimizer.eval()
+            self.optimizer.eval()  # ty: ignore[call-non-callable]
 
         sums: dict[str, float] = {}
         diag_accum: dict[str, torch.Tensor] = {}
@@ -580,8 +580,8 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         n = min(self.config.n_smp, batch.tokens.shape[0])
         text = MaskedTensor(values=batch.tokens.unsqueeze(1), mask=batch.tokens_mask)
         acoustic = self._prepare_acoustic(batch)
-        text_n = MaskedTensor(values=text.values[:n], mask=text.mask[:n])
-        acoustic_n = MaskedTensor(values=acoustic.values[:n], mask=acoustic.mask[:n])
+        text_n = MaskedTensor(values=text.values[:n], mask=text.mask[:n])  # ty: ignore[invalid-argument-type]
+        acoustic_n = MaskedTensor(values=acoustic.values[:n], mask=acoustic.mask[:n])  # ty: ignore[invalid-argument-type]
 
         with (
             torch.autocast(

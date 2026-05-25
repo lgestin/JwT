@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import torch
 import torch.nn as nn
@@ -101,21 +101,23 @@ _LJSPEECH_LOG_MEL_STD = 2.226763
 class BigVGAN(nn.Module):
     # The bundled vocoder and its mel front-end are trained at 24 kHz.
     required_sample_rate: int | None = 24000
+    mel_mean: torch.Tensor
+    mel_std: torch.Tensor
 
     def __init__(self, version: BigVGANVersions = BigVGANVersions.V2_24KHz_100MEL_256X):
         nn.Module.__init__(self)
         # local: avoid heavy bigvgan import at module load
-        from bigvgan.bigvgan import BigVGAN as _BigVGAN
-        from bigvgan.bigvgan import load_hparams_from_json
-        from huggingface_hub import hf_hub_download
+        from bigvgan.bigvgan import BigVGAN as _BigVGAN  # ty: ignore[unresolved-import]
+        from bigvgan.bigvgan import load_hparams_from_json  # ty: ignore[unresolved-import]
+        from huggingface_hub import hf_hub_download  # ty: ignore[unresolved-import]
 
         model_id = str(version)
         config_file = hf_hub_download(repo_id=model_id, filename="config.json")
         weights_file = hf_hub_download(repo_id=model_id, filename="bigvgan_generator.pt")
 
-        h = load_hparams_from_json(config_file)
+        h: Any = load_hparams_from_json(config_file)
         self.decoder = _BigVGAN(h, use_cuda_kernel=False)
-        # The published checkpoint already has weight norm stripped; load_state_dict succeeds directly.
+        # Published checkpoint has weight norm stripped; load_state_dict succeeds directly.
         checkpoint = torch.load(weights_file, map_location="cpu", weights_only=False)
         self.decoder.load_state_dict(checkpoint["generator"])
         self.decoder.remove_weight_norm()
@@ -175,7 +177,7 @@ class BigVGAN(nn.Module):
         return torch.full((self.acoustic_dim, n), self.eos_value, device=device, dtype=dtype)
 
     def is_eos(self, frame: torch.Tensor) -> torch.BoolTensor:
-        return frame.mean(dim=-1) < self.eos_threshold
+        return frame.mean(dim=-1) < self.eos_threshold  # ty: ignore[invalid-return-type]
 
 
 class RawAudioPatcher(nn.Module):
@@ -188,6 +190,7 @@ class RawAudioPatcher(nn.Module):
 
     # Patching raw samples is sample-rate agnostic.
     required_sample_rate: int | None = None
+    wav_std: torch.Tensor
 
     def __init__(self, patch_size: int = 256):
         nn.Module.__init__(self)
@@ -236,4 +239,4 @@ class RawAudioPatcher(nn.Module):
         return torch.zeros(self.acoustic_dim, n, device=device, dtype=dtype)
 
     def is_eos(self, frame: torch.Tensor) -> torch.BoolTensor:
-        return frame.pow(2).mean(dim=-1).sqrt() < self.eos_threshold
+        return frame.pow(2).mean(dim=-1).sqrt() < self.eos_threshold  # ty: ignore[invalid-return-type]

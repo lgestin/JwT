@@ -83,10 +83,10 @@ class ArrowTTSSource(TTSSource):
         acoustic = acoustic.view(1, acoustic_dim, n_frames).float()
 
         audio = Audio(
-            waveform=waveform,
+            waveform=waveform,  # ty: ignore[invalid-argument-type]
             sample_rate=sample_rate,
             loudness=loudness,
-            acoustic=acoustic,
+            acoustic=acoustic,  # ty: ignore[invalid-argument-type]
         )
         text = Text(text=row["text"].as_py(), tokenizer=self.tokenizer)
         return audio, text

@@ -62,7 +62,7 @@ def capture_attention(model: torch.nn.Module) -> Iterator[AttentionCollector]:
         # populates attn_weights, SDPA leaves it None.
         attn_weights = output[1] if isinstance(output, tuple) else None
         if attn_weights is not None:
-            collector.record(attn_weights.detach())
+            collector.record(attn_weights.detach())  # ty: ignore[unresolved-attribute]
 
     handles = [
         m.register_forward_hook(hook) for m in model.modules() if isinstance(m, SelfAttention)

@@ -17,12 +17,12 @@ class CheckpointManager:
     the best model based on validation loss.
     """
 
-    exp_path: Path | str
+    exp_path: Path
     save_best: bool = True
 
     def __post_init__(self):
-        """Convert exp_path to Path and create directory."""
-        self.exp_path: Path = Path(self.exp_path)
+        """Coerce str inputs and create the directory."""
+        self.exp_path = Path(self.exp_path)
         self.exp_path.mkdir(parents=True, exist_ok=True)
         self.best_checkpoint_path = self.exp_path / "checkpoint.best.pt"
         self.latest_checkpoint_path = self.exp_path / "checkpoint.latest.pt"
@@ -39,7 +39,7 @@ class CheckpointManager:
         step: int,
         model: nn.Module,
         optimizer: torch.optim.Optimizer,
-        scaler: torch.cuda.amp.GradScaler | None,
+        scaler: torch.amp.GradScaler | None,
         best_loss: float,
         additional_state: dict[str, Any] | None = None,
     ) -> Path:
@@ -57,7 +57,7 @@ class CheckpointManager:
             Path to the saved checkpoint
         """
         # Prepare checkpoint data
-        checkpoint_data = {
+        checkpoint_data: dict[str, Any] = {
             "step": step,
             "best_loss": best_loss,
             "opt": optimizer.state_dict(),
@@ -66,7 +66,7 @@ class CheckpointManager:
         # Handle ConditionalFlowMatcher or direct model
         if hasattr(model, "denoiser"):
             # It's a ConditionalFlowMatcher, save the denoiser
-            checkpoint_data["model"] = model.denoiser.state_dict()
+            checkpoint_data["model"] = model.denoiser.state_dict()  # ty: ignore[unresolved-attribute]
             if hasattr(model.denoiser, "dims"):
                 checkpoint_data["dims"] = model.denoiser.dims
             if hasattr(model.denoiser, "cfg"):
@@ -103,7 +103,7 @@ class CheckpointManager:
         self,
         model: nn.Module,
         optimizer: torch.optim.Optimizer | None = None,
-        scaler: torch.cuda.amp.GradScaler | None = None,
+        scaler: torch.amp.GradScaler | None = None,
         ema: EMA | None = None,
         map_location: torch.device | str | None = None,
     ) -> dict[str, Any]:
@@ -148,7 +148,7 @@ class CheckpointManager:
         self,
         model: nn.Module,
         optimizer: torch.optim.Optimizer | None = None,
-        scaler: torch.cuda.amp.GradScaler | None = None,
+        scaler: torch.amp.GradScaler | None = None,
         map_location: torch.device | str | None = None,
     ) -> dict[str, Any]:
         """Load the best checkpoint.
@@ -178,7 +178,7 @@ class CheckpointManager:
         checkpoint_path: Path | str,
         model: nn.Module,
         optimizer: torch.optim.Optimizer | None = None,
-        scaler: torch.cuda.amp.GradScaler | None = None,
+        scaler: torch.amp.GradScaler | None = None,
         ema: EMA | None = None,
         map_location: torch.device | str | None = None,
     ) -> dict[str, Any]:
@@ -203,7 +203,7 @@ class CheckpointManager:
         # Load model state - handle ConditionalFlowMatcher or direct model
         if hasattr(model, "denoiser"):
             # It's a ConditionalFlowMatcher, load into the denoiser
-            model.denoiser.load_state_dict(checkpoint_data["model"])
+            model.denoiser.load_state_dict(checkpoint_data["model"])  # ty: ignore[unresolved-attribute]
         else:
             # It's a direct model
             model.load_state_dict(checkpoint_data["model"])
