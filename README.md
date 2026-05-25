@@ -2,10 +2,10 @@
 
 A transformer that predicts **raw waveforms** directly via **rolling flow matching** with **x-prediction** — no codec, no audio tokenizer, no adversarial training. Named in the lineage of [JiT — Just image Transformers](https://github.com/LTH14/JiT).
 
-- 🌊 **Streaming, frame by frame** — one clean audio frame per forward pass; constant per-frame latency, no "wait for the whole ODE loop" delay.
 - 🎯 **Waveform → transformer → waveform** — a single transformer predicts raw audio directly. No codec, no tokenizer, no vocoder.
 - 🔮 **Future-aware** — unlike autoregressive token models, attention spans noisy upcoming positions, so the model can plan continuity across boundaries instead of committing one token at a time.
 - 🪢 **End-to-end** — text in, raw audio out, gradients flow the whole way. One model, no detached losses.
+- 🌊 **Streaming, frame by frame** — at inference one clean audio frame per forward pass; constant per-frame latency, no "wait for the whole ODE loop" delay.
 
 <p align="center">
   <a href="https://lgestin.github.io/JwT/">
