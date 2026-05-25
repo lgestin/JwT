@@ -8,7 +8,7 @@ description = "Text-to-speech library"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.13"
-authors = [{ name = "Lucas" }]
+authors = [{ name = "Lucas Gestin" }]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",

@@ -22,3 +22,10 @@ htmlcov/
 data/*
 !data/vocabulary.json
 outputs/
+
+# Local agent state and scratch
+.claude/
+docs/superpowers/
+
+# Notebook caches
+notebooks/__marimo__/
