@@ -19,6 +19,7 @@ classifiers = [
 dynamic = ["version"]
 dependencies = [
     "av>=17.0.1",
+    "bigvgan>=2.4.1",
     "einops>=0.8",
     "flash-attn",
     "misaki[en]>=0.9.4",
@@ -40,9 +41,6 @@ dev = [
     "ty",
     "ipython",
     "marimo>=0.9",
-]
-bigvgan = [
-    "bigvgan>=2.4.1",
 ]
 demo = [
     "gradio>=5.0",

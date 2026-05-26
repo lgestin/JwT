@@ -4,8 +4,8 @@ from dataclasses import fields, is_dataclass
 import pytest
 from misaki.token import MToken
 
-from jwt.data import text as text_mod
 from jwt.data.text import Phonemizer, Text, Tokenizer, Vocabulary, get_phonemizer
+from jwt.data.text import text as text_mod
 
 
 @pytest.fixture(scope="module")
@@ -16,7 +16,7 @@ def phonemizer() -> Phonemizer:
 def test_text_is_dataclass_with_expected_fields() -> None:
     assert is_dataclass(Text)
     names = {f.name for f in fields(Text)}
-    assert names == {"text"}
+    assert names == {"text", "tokenizer"}
 
 
 def test_get_phonemizer_is_cached() -> None:
@@ -49,6 +49,8 @@ def test_text_phonemes_returns_non_empty_string(phonemizer: Phonemizer) -> None:
 
 def test_text_tokens_returns_list(phonemizer: Phonemizer) -> None:
     t = Text(text="hello world")
+    vocab = Vocabulary({p: i for i, p in enumerate(set(t.phonemes))})
+    t.tokenizer = Tokenizer(vocab)
     assert isinstance(t.tokens, list)
     assert len(t.tokens) > 0
 
@@ -71,7 +73,7 @@ def test_text_phonemes_tokens_is_cached(monkeypatch: pytest.MonkeyPatch) -> None
 
     t = Text(text="hello")
     assert t.phonemes == "FAKE"
-    assert t.tokens == ["hello"]
+    assert t.word_tokens == ["hello"]
     assert t.phonemes == "FAKE"
     assert calls["n"] == 1
 
@@ -89,8 +91,8 @@ def test_text_instances_have_independent_caches(
     t2 = Text(text="xyz")
     assert t1.phonemes == "ABC"
     assert t2.phonemes == "XYZ"
-    assert t1.tokens == ["a", "b", "c"]
-    assert t2.tokens == ["x", "y", "z"]
+    assert t1.word_tokens == ["a", "b", "c"]
+    assert t2.word_tokens == ["x", "y", "z"]
 
 
 def test_text_word_tokens_returns_list_of_mtokens(phonemizer: Phonemizer) -> None:
@@ -106,7 +108,15 @@ def test_text_word_tokens_matches_phonemizer(phonemizer: Phonemizer) -> None:
     assert t.word_tokens == expected_tokens
 
 
-def test_text_tokens_uses_tokenizer_to_encode_text() -> None:
+def test_text_tokens_uses_tokenizer_to_encode_phonemes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePhonemizer:
+        def phonemize(self, text: str):
+            return (text, [])
+
+    monkeypatch.setattr(text_mod, "get_phonemizer", lambda: FakePhonemizer())
+
     vocab = Vocabulary({"h": 0, "i": 1})
     tokenizer = Tokenizer(vocab)
     t = Text(text="hi", tokenizer=tokenizer)

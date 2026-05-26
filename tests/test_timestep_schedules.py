@@ -130,11 +130,11 @@ def test_lognorm_enum_uses_jit_paper_values() -> None:
     assert sched.std == 0.8
 
 
-def test_config_defaults_to_linear_and_model_resolves_it() -> None:
+def test_config_defaults_to_lognorm_and_model_resolves_it() -> None:
     cfg = RollingFlowConfig(vocabulary_size=8)
-    assert cfg.timestep_schedule is TimestepSchedules.LINEAR
+    assert cfg.timestep_schedule is TimestepSchedules.LOG_NORM
     model = RollingFlowSpeaker(cfg)
-    assert isinstance(model.schedule, LinearTimestepSchedule)
+    assert isinstance(model.schedule, LogNormTimestepSchedule)
 
 
 def test_model_resolves_lognorm_schedule_from_config() -> None:

@@ -107,9 +107,9 @@ class BigVGAN(nn.Module):
     def __init__(self, version: BigVGANVersions = BigVGANVersions.V2_24KHz_100MEL_256X):
         nn.Module.__init__(self)
         # local: avoid heavy bigvgan import at module load
-        from bigvgan.bigvgan import BigVGAN as _BigVGAN  # ty: ignore[unresolved-import]
-        from bigvgan.bigvgan import load_hparams_from_json  # ty: ignore[unresolved-import]
-        from huggingface_hub import hf_hub_download  # ty: ignore[unresolved-import]
+        from bigvgan.bigvgan import BigVGAN as _BigVGAN
+        from bigvgan.bigvgan import load_hparams_from_json
+        from huggingface_hub import hf_hub_download
 
         model_id = str(version)
         config_file = hf_hub_download(repo_id=model_id, filename="config.json")

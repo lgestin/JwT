@@ -17,11 +17,13 @@ ema:
   enabled: true
 model:
   acoustic_dim: 100
-  codec: BIGVGAN
+  codec: RAWAUDIO_128
   eos_n_frames: 3
   max_acoustic_len: 2048
   n_denoising_steps: 32
-  parametrization: RECTIFIED_FLOW
+  noise_scale: 1.0
+  parametrization: JWT
+  timestep_schedule: LOG_NORM
   transformer_config:
     dim: 256
     max_seq_len: 8192
@@ -31,6 +33,7 @@ model:
     rope_theta: 10000.0
     time_freq_embed_dim: 256
   vocabulary_size: 0
+n_train: null
 n_valid: 64
 num_workers: 6
 optimizer:
@@ -44,13 +47,14 @@ output_dir: outputs/run0
 resume: false
 trainer:
   amp_dtype: BF16
+  attention_implementation: FLASH_VARLEN
   aux_mel_weight: 0.0
   checkpoint_steps: 5000
   clip_grad_norm: 1.0
   device: cuda
   grad_accum_steps: 1
-  hist_steps: 500
   log_steps: 100
+  loss_fn: L1
   max_steps: 200001
   n_loss_bins: 10
   n_smp: 16

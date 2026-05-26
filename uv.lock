@@ -1129,6 +1129,7 @@ name = "jwt"
 source = { editable = "." }
 dependencies = [
     { name = "av" },
+    { name = "bigvgan" },
     { name = "einops" },
     { name = "flash-attn", marker = "python_full_version < '3.14'" },
     { name = "misaki", extra = ["en"] },
@@ -1144,9 +1145,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-bigvgan = [
-    { name = "bigvgan" },
-]
 demo = [
     { name = "gradio" },
     { name = "matplotlib" },
@@ -1162,7 +1160,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "av", specifier = ">=17.0.1" },
-    { name = "bigvgan", marker = "extra == 'bigvgan'", specifier = ">=2.4.1" },
+    { name = "bigvgan", specifier = ">=2.4.1" },
     { name = "einops", specifier = ">=0.8" },
     { name = "flash-attn", url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl" },
     { name = "gradio", marker = "extra == 'demo'", specifier = ">=5.0" },
@@ -1183,7 +1181,7 @@ requires-dist = [
     { name = "torchcodec", specifier = ">=0.11.1" },
     { name = "ty", marker = "extra == 'dev'" },
 ]
-provides-extras = ["bigvgan", "demo", "dev"]
+provides-extras = ["demo", "dev"]
 
 [[package]]
 name = "kiwisolver"
