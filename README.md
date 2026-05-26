@@ -21,7 +21,7 @@ The rolling flow matching approach is autoregressive flow matching. A denoising 
 
 Standard flow matching denoises the entire sequence at once — great for fixed-length signals like images, but no output emerges until the whole ODE loop finishes, which rules out streaming. Autoregressive token models have the opposite tradeoff: one token per forward pass, perfect for streaming, but blind to future positions and usually tied to a discrete codec.
 
-**Rolling-window denoising does both.** A window of `n` frames straddles the front, with `t` evenly spaced across it. Each forward pass advances the front by one: the leftmost frame finishes denoising and is emitted; a new noise frame appears on the right.
+**Rolling-window denoising does both.** A window of `n` frames straddles the front, each patch at a different stage along the denoising trajectory. Each forward pass denoises every patch in the window making the front advance by one: the leftmost frame finishes denoising and is emitted; a new noise frame appears on the right.
 
 This gives:
 
@@ -37,7 +37,6 @@ This gives:
 
 ### Training
 
-At training time, for every sequence in the batch we sample a random front position and noise each
 At each training step a denoising front is sampled at a random position in the sequence, the next `n` tokens are included in the denoising window and noised with increasing levels of noise to simulate:
 
 - Positions left of the front (past) are **clean** (`t = 1`).
@@ -50,7 +49,7 @@ An attention mask cuts off visibility past the noise positions — beyond the wi
 
 **Timesteps schedule.** The mapping from uniform progress across the window to actual `t` values is selectable: `linear` (uniform spacing) or `log_norm` (logit-normal warp — JiT's choice, skewed toward small `t`), or `log_norm_trimmed` (same warp with the right tail clipped to avoid an oversized final Euler step near `t = 1`).
 
-**Window size.** Training uses a large rolling window so attention has enough context — past and noisy-future — to learn the denoising dynamics well. Inference can re-use the same window or shrink it via a short finetune for tighter latency.
+**Window size.** Training uses a large rolling window so attention has enough context — past and noisy-future — to learn the text to audio mapping. Inference can re-use the same window or shrink it via a short finetune for tighter latency.
 
 ### Inference
 
@@ -64,7 +63,7 @@ An attention mask cuts off visibility past the noise positions — beyond the wi
 
 ## Just Waveform Transformers (JWT)
 
-JWT is a formulation of the flow matching objective that allows us to predict audio in the waveform domain directly. The audio is embedded with linear input/output projections, no codec, no tokenizer, no separate vocoder, no adversarial components. The 24,000 floats per second the rest of the field preprocesses around become the input layer.
+JWT is a formulation of the flow matching objective that allows us to predict audio in the waveform domain directly. The audio is embedded with linear input/output projections, no codec, no tokenizer, no separate vocoder, no adversarial components. The 24,000 floats per second of the waveform is the input of the model.
 
 This gives:
 
