@@ -71,6 +71,10 @@ class TimestepEmbedder(nn.Module):
             nn.SiLU(),
             nn.Linear(dim, dim),
         )
+        for m in (self.mlp[0], self.mlp[2]):
+            assert isinstance(m, nn.Linear)
+            nn.init.normal_(m.weight, std=0.02)
+            nn.init.zeros_(m.bias)
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         emb = timestep_embedding(t, self.freq_embed_dim)
