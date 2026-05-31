@@ -50,12 +50,12 @@ class Args:
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
 
     def __post_init__(self) -> None:
-        if self.codec == Codecs.BIGVGAN and self.trainer.aux_mel_weight > 0:
+        if self.codec == Codecs.BIGVGAN and self.trainer.aux_stft_weight > 0:
             raise ValueError(
-                "aux_mel_weight must be 0 for the BigVGAN codec: its "
-                "flow-matching loss is already computed in mel space, so the "
-                "auxiliary mel loss is redundant and not supported "
-                f"(got aux_mel_weight={self.trainer.aux_mel_weight})"
+                "aux_stft_weight must be 0 for the BigVGAN codec: its "
+                "flow-matching loss is already perceptual (mel-space), so the "
+                "auxiliary STFT loss adds little and is not supported "
+                f"(got aux_stft_weight={self.trainer.aux_stft_weight})"
             )
 
 

@@ -23,7 +23,7 @@ from jwt.training.attention_probe import capture_attention, log_attention_maps
 from jwt.training.checkpoint_manager import CheckpointManager
 from jwt.training.ema import EMA
 from jwt.training.loggers import Logger, log_mel
-from jwt.training.loss import MelAuxLoss
+from jwt.training.loss import MelL1Monitor, MultiResComplexSTFTAuxLoss
 from jwt.training.metrics import (
     binned_loss_stats,
     masked_mean_std,
@@ -65,8 +65,10 @@ class TrainerConfig:
     grad_accum_steps: int = 1
     loss_fn: LossFns = LossFns.L1
     attention_implementation: AttentionImplementations = AttentionImplementations.FLASH_VARLEN
-    # Auxiliary log-mel L1 loss weight. 0 = monitor only (no gradient signal);
-    aux_mel_weight: float = 0.0
+    # Auxiliary multi-res complex-STFT L1 loss weight. 0 disables it entirely.
+    # Carries gradient through both magnitude and phase, unlike a mel/magnitude
+    # loss, so a value > 0 supervises phase reconstruction.
+    aux_stft_weight: float = 0.0
     # Scalar diagnostics (throughput, memory, normalization stats) and the
     # binned loss-by-t histogram are accumulated on-GPU and flushed to
     # TensorBoard every `log_steps` steps.
@@ -194,11 +196,23 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             center=False,
             mel_scale="slaney",
         ).to(self._device)
-        # Auxiliary mel loss, only when weighted in. Config validation forbids
-        # aux_mel_weight > 0 for BigVGAN, so this is always a raw-audio codec.
-        self.mel_aux_loss: MelAuxLoss | None = (
-            MelAuxLoss(sample_rate=sample_rate, hop_length=codec.hop_length).to(self._device)
-            if config.aux_mel_weight > 0
+        # Auxiliary multi-res complex-STFT loss, only when weighted in.
+        # Config validation forbids aux_stft_weight > 0 for BigVGAN, so this is
+        # always a raw-audio codec.
+        self.stft_aux_loss: MultiResComplexSTFTAuxLoss | None = (
+            MultiResComplexSTFTAuxLoss(hop_length=codec.hop_length).to(self._device)
+            if config.aux_stft_weight > 0
+            else None
+        )
+        # Mel L1 monitor — same log-mel L1 that used to be the gradient term,
+        # now kept as a no-grad metric so new runs stay comparable to the
+        # mel-only baseline by inspection. Active whenever the STFT loss is
+        # active (same precondition: raw-audio codec).
+        self.mel_monitor: MelL1Monitor | None = (
+            MelL1Monitor(sample_rate=sample_rate, hop_length=codec.hop_length).to(
+                self._device
+            )
+            if config.aux_stft_weight > 0
             else None
         )
 
@@ -329,24 +343,33 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         loss = fm_loss
         metrics: dict[str, torch.Tensor] = {"fm_loss": fm_loss.detach()}
 
-        # Auxiliary log-mel L1 — a perceptual loss term for codecs whose
-        # FM-space loss isn't itself perceptual (raw-audio patches). Decodes the
-        # predicted and target features to waveforms and compares them in mel
-        # space. fp32 outside autocast for STFT stability. `mel_aux_loss` is
-        # None for BigVGAN, whose FM loss is already mel-space.
-        logmel_diff: torch.Tensor | None = None
-        if self.mel_aux_loss is not None:
+        # Auxiliary multi-res complex-STFT L1 — a phase-aware perceptual loss
+        # for codecs whose FM-space loss isn't itself perceptual (raw-audio
+        # patches). Decodes predicted and target features to waveforms and
+        # compares them in complex STFT space. fp32 outside autocast for STFT
+        # stability. `stft_aux_loss` is None for BigVGAN, whose FM loss is
+        # already perceptual (mel-space).
+        #
+        # When the STFT loss is active, also evaluate `mel_monitor` (no-grad)
+        # so the older mel-only baseline stays comparable by inspection.
+        aux_diff: torch.Tensor | None = None
+        mel_diff: torch.Tensor | None = None
+        if self.stft_aux_loss is not None:
             with torch.autocast(device_type=self.device.type, enabled=False):
                 x_1_target_norm = acoustic.values.float()
                 x_1_pred_norm = x_pred.float().transpose(1, 2)
                 pred_wav = self.codec.decode(self.codec.unnormalize(x_1_pred_norm))
                 target_wav = self.codec.decode(self.codec.unnormalize(x_1_target_norm))
-                logmel_l1, logmel_diff = self.mel_aux_loss(pred_wav, target_wav, v_mask)
-            loss = fm_loss + self.config.aux_mel_weight * logmel_l1
-            metrics["logmel_l1"] = logmel_l1.detach()
+                stft_l1, aux_diff = self.stft_aux_loss(pred_wav, target_wav, v_mask)
+                if self.mel_monitor is not None:
+                    with torch.no_grad():
+                        mel_l1, mel_diff = self.mel_monitor(pred_wav, target_wav, v_mask)
+                        metrics["aux_mel_l1"] = mel_l1
+            loss = fm_loss + self.config.aux_stft_weight * stft_l1
+            metrics["aux_stft_l1"] = stft_l1.detach()
 
         metrics["loss"] = loss.detach()
-        scalars, bins = self._step_diagnostics(out, text, acoustic, logmel_diff)
+        scalars, bins = self._step_diagnostics(out, text, acoustic, aux_diff, mel_diff)
 
         if self.model.training:
             scaled = loss / self.config.grad_accum_steps
@@ -362,15 +385,18 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         out: TrainingStepOutput,
         text: MaskedTensor,
         acoustic: MaskedTensor,
-        logmel_diff: torch.Tensor | None = None,
+        aux_diff: torch.Tensor | None = None,
+        mel_diff: torch.Tensor | None = None,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         """Per-micro-step diagnostics — all kept on-GPU (no host sync).
 
         Returns `(scalars, bins)`: `scalars` are 0-dim tensors the caller
         averages over the logging window; `bins` holds the loss-by-t
         `(sum, count)` tensors the caller accumulates for the histogram.
-        `logmel_diff` is the `(B, T)` per-frame auxiliary log-mel L1, present
-        only when the aux mel loss is active (raw-audio codecs).
+        `aux_diff` is the `(B, T)` per-frame auxiliary STFT L1 (first scale)
+        used as a phase-aware diagnostic; `mel_diff` is the `(B, T)` per-frame
+        log-mel L1 from the no-grad monitor. Both are present only when the
+        aux STFT loss is active (raw-audio codecs).
         """
         bin_sums, bin_counts = binned_loss_stats(
             out.per_pos_loss, out.t, out.v_mask, self.config.n_loss_bins
@@ -395,14 +421,21 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             "bin_counts": bin_counts,
             "x1_err_sums": x1_err_sums,
         }
-        # Auxiliary log-mel L1, binned by the same t/v_mask — the *perceptual*
-        # analogue of `x1_err_by_t` (mel space rather than normalized FM space).
-        # Same bins as `bin_counts`, so its counts aren't re-stored.
-        if logmel_diff is not None:
-            logmel_l1_sums, _ = binned_loss_stats(
-                logmel_diff, out.t, out.v_mask, self.config.n_loss_bins
+        # Auxiliary complex-STFT L1 (first scale), binned by the same t/v_mask —
+        # the *perceptual + phase-aware* analogue of `x1_err_by_t`. Same bins as
+        # `bin_counts`, so its counts aren't re-stored.
+        if aux_diff is not None:
+            aux_stft_l1_sums, _ = binned_loss_stats(
+                aux_diff, out.t, out.v_mask, self.config.n_loss_bins
             )
-            bins["logmel_l1_sums"] = logmel_l1_sums
+            bins["aux_stft_l1_sums"] = aux_stft_l1_sums
+        # Mel L1 monitor (no-grad). Same binning so an `aux_mel_l1_by_t` series
+        # is comparable in shape to the older mel-only baseline histograms.
+        if mel_diff is not None:
+            aux_mel_l1_sums, _ = binned_loss_stats(
+                mel_diff, out.t, out.v_mask, self.config.n_loss_bins
+            )
+            bins["aux_mel_l1_sums"] = aux_mel_l1_sums
         return scalars, bins
 
     @staticmethod
@@ -438,18 +471,21 @@ class TTSRollingFlowMatchingTrainer(Trainer):
 
         `fm_loss_by_t` is the parametrization's (possibly reweighted) loss;
         `x1_err_by_t` is the un-reweighted `|x_1 - x_pred|` error. When the
-        auxiliary mel loss is active a third series, `logmel_l1_by_t`, reports
-        that error in perceptual mel space. Comparing them isolates reweighting
-        artefacts from genuine denoising difficulty. Each bin mean is
-        `sum / count`, exact over the window; an empty bin (count 0 -> NaN) is
-        zero-filled. One host transfer covers every series.
+        auxiliary complex-STFT loss is active a third series,
+        `aux_stft_l1_by_t`, reports that error in complex STFT space (phase-
+        sensitive). Comparing them isolates reweighting artefacts from genuine
+        denoising difficulty. Each bin mean is `sum / count`, exact over the
+        window; an empty bin (count 0 -> NaN) is zero-filled. One host transfer
+        covers every series.
         """
         series = [
             ("fm_loss_by_t", diag_accum["bin_sums"]),
             ("x1_err_by_t", diag_accum["x1_err_sums"]),
         ]
-        if "logmel_l1_sums" in diag_accum:
-            series.append(("logmel_l1_by_t", diag_accum["logmel_l1_sums"]))
+        if "aux_stft_l1_sums" in diag_accum:
+            series.append(("aux_stft_l1_by_t", diag_accum["aux_stft_l1_sums"]))
+        if "aux_mel_l1_sums" in diag_accum:
+            series.append(("aux_mel_l1_by_t", diag_accum["aux_mel_l1_sums"]))
         counts = diag_accum["bin_counts"]
         means = torch.stack([sums / counts for _, sums in series])
         vals = torch.nan_to_num(means.detach().float(), nan=0.0).cpu().tolist()
