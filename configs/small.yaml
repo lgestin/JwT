@@ -44,6 +44,7 @@ resume: false
 trainer:
   amp_dtype: BF16
   aux_stft_weight: 0.75
+  aux_mel_weight: 0.1
   checkpoint_steps: 5000
   clip_grad_norm: 1.0
   device: cuda

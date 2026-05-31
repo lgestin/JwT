@@ -133,3 +133,26 @@ def test_bigvgan_allows_zero_aux_stft_weight() -> None:
 
 def test_rawaudio_allows_nonzero_aux_stft_weight() -> None:
     Args(codec=Codecs.RAWAUDIO_256, trainer=TrainerConfig(aux_stft_weight=0.1))
+
+
+def test_bigvgan_rejects_nonzero_aux_mel_weight() -> None:
+    """BigVGAN's flow-matching loss is already in mel space, so the auxiliary
+    mel loss is redundant and not allowed for it."""
+    with pytest.raises(ValueError, match="aux_mel_weight"):
+        Args(codec=Codecs.BIGVGAN, trainer=TrainerConfig(aux_mel_weight=0.1))
+
+
+def test_bigvgan_allows_zero_aux_mel_weight() -> None:
+    Args(codec=Codecs.BIGVGAN, trainer=TrainerConfig(aux_mel_weight=0.0))
+
+
+def test_rawaudio_allows_nonzero_aux_mel_weight() -> None:
+    Args(codec=Codecs.RAWAUDIO_256, trainer=TrainerConfig(aux_mel_weight=0.1))
+
+
+def test_rawaudio_allows_both_aux_weights_simultaneously() -> None:
+    """Both auxiliary losses are independent; either or both can be active."""
+    Args(
+        codec=Codecs.RAWAUDIO_256,
+        trainer=TrainerConfig(aux_stft_weight=0.75, aux_mel_weight=0.1),
+    )

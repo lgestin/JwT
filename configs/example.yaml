@@ -49,6 +49,7 @@ trainer:
   amp_dtype: BF16
   attention_implementation: FLASH_VARLEN
   aux_stft_weight: 0.0
+  aux_mel_weight: 0.0
   checkpoint_steps: 5000
   clip_grad_norm: 1.0
   device: cuda

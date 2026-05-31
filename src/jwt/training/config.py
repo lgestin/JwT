@@ -57,6 +57,13 @@ class Args:
                 "auxiliary STFT loss adds little and is not supported "
                 f"(got aux_stft_weight={self.trainer.aux_stft_weight})"
             )
+        if self.codec == Codecs.BIGVGAN and self.trainer.aux_mel_weight > 0:
+            raise ValueError(
+                "aux_mel_weight must be 0 for the BigVGAN codec: its "
+                "flow-matching loss is already computed in mel space, so the "
+                "auxiliary mel loss is redundant and not supported "
+                f"(got aux_mel_weight={self.trainer.aux_mel_weight})"
+            )
 
 
 def dump_config(args: Args, path: Path | str) -> None:

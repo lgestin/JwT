@@ -23,7 +23,7 @@ from jwt.training.attention_probe import capture_attention, log_attention_maps
 from jwt.training.checkpoint_manager import CheckpointManager
 from jwt.training.ema import EMA
 from jwt.training.loggers import Logger, log_mel
-from jwt.training.loss import MelL1Monitor, MultiResComplexSTFTAuxLoss
+from jwt.training.loss import MelAuxLoss, MultiResComplexSTFTAuxLoss
 from jwt.training.metrics import (
     binned_loss_stats,
     masked_mean_std,
@@ -69,6 +69,11 @@ class TrainerConfig:
     # Carries gradient through both magnitude and phase, unlike a mel/magnitude
     # loss, so a value > 0 supervises phase reconstruction.
     aux_stft_weight: float = 0.0
+    # Auxiliary log-mel L1 loss weight. Phase-blind but log-compressed across
+    # the dynamic range, so it stabilises training when paired with the linear-
+    # magnitude STFT loss. Running on `aux_stft_weight` alone diverged on the
+    # 22kHz raw run; both terms together held.
+    aux_mel_weight: float = 0.0
     # Scalar diagnostics (throughput, memory, normalization stats) and the
     # binned loss-by-t histogram are accumulated on-GPU and flushed to
     # TensorBoard every `log_steps` steps.
@@ -204,15 +209,14 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             if config.aux_stft_weight > 0
             else None
         )
-        # Mel L1 monitor — same log-mel L1 that used to be the gradient term,
-        # now kept as a no-grad metric so new runs stay comparable to the
-        # mel-only baseline by inspection. Active whenever the STFT loss is
-        # active (same precondition: raw-audio codec).
-        self.mel_monitor: MelL1Monitor | None = (
-            MelL1Monitor(sample_rate=sample_rate, hop_length=codec.hop_length).to(
+        # Auxiliary log-mel L1 loss — independent of the STFT loss; either or
+        # both can be active. Provides the bounded log-magnitude gradient that
+        # makes pure-STFT training unstable on raw-audio codecs.
+        self.mel_aux_loss: MelAuxLoss | None = (
+            MelAuxLoss(sample_rate=sample_rate, hop_length=codec.hop_length).to(
                 self._device
             )
-            if config.aux_stft_weight > 0
+            if config.aux_mel_weight > 0
             else None
         )
 
@@ -343,30 +347,28 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         loss = fm_loss
         metrics: dict[str, torch.Tensor] = {"fm_loss": fm_loss.detach()}
 
-        # Auxiliary multi-res complex-STFT L1 — a phase-aware perceptual loss
-        # for codecs whose FM-space loss isn't itself perceptual (raw-audio
-        # patches). Decodes predicted and target features to waveforms and
-        # compares them in complex STFT space. fp32 outside autocast for STFT
-        # stability. `stft_aux_loss` is None for BigVGAN, whose FM loss is
-        # already perceptual (mel-space).
-        #
-        # When the STFT loss is active, also evaluate `mel_monitor` (no-grad)
-        # so the older mel-only baseline stays comparable by inspection.
+        # Auxiliary perceptual losses for codecs whose FM-space loss isn't
+        # itself perceptual (raw-audio patches). Decodes predicted and target
+        # features once and feeds both losses; either can be disabled by setting
+        # its weight to 0. fp32 outside autocast for STFT stability.
+        # Both are None for BigVGAN (config-enforced), whose FM loss is already
+        # perceptual (mel-space).
         aux_diff: torch.Tensor | None = None
         mel_diff: torch.Tensor | None = None
-        if self.stft_aux_loss is not None:
+        if self.stft_aux_loss is not None or self.mel_aux_loss is not None:
             with torch.autocast(device_type=self.device.type, enabled=False):
                 x_1_target_norm = acoustic.values.float()
                 x_1_pred_norm = x_pred.float().transpose(1, 2)
                 pred_wav = self.codec.decode(self.codec.unnormalize(x_1_pred_norm))
                 target_wav = self.codec.decode(self.codec.unnormalize(x_1_target_norm))
-                stft_l1, aux_diff = self.stft_aux_loss(pred_wav, target_wav, v_mask)
-                if self.mel_monitor is not None:
-                    with torch.no_grad():
-                        mel_l1, mel_diff = self.mel_monitor(pred_wav, target_wav, v_mask)
-                        metrics["aux_mel_l1"] = mel_l1
-            loss = fm_loss + self.config.aux_stft_weight * stft_l1
-            metrics["aux_stft_l1"] = stft_l1.detach()
+                if self.stft_aux_loss is not None:
+                    stft_l1, aux_diff = self.stft_aux_loss(pred_wav, target_wav, v_mask)
+                    loss = loss + self.config.aux_stft_weight * stft_l1
+                    metrics["aux_stft_l1"] = stft_l1.detach()
+                if self.mel_aux_loss is not None:
+                    mel_l1, mel_diff = self.mel_aux_loss(pred_wav, target_wav, v_mask)
+                    loss = loss + self.config.aux_mel_weight * mel_l1
+                    metrics["aux_mel_l1"] = mel_l1.detach()
 
         metrics["loss"] = loss.detach()
         scalars, bins = self._step_diagnostics(out, text, acoustic, aux_diff, mel_diff)

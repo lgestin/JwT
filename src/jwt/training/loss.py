@@ -6,9 +6,11 @@ sizes, taking L1 on stacked (real, imag). Unlike a magnitude / mel loss, this
 directly supervises phase, since equal magnitudes with mismatched phases
 produce different complex coefficients.
 
-`MelL1Monitor` is the same log-mel L1 that used to be the auxiliary loss term,
-now kept only as a metric — the trainer evaluates it without a gradient so
-training runs stay comparable to the older mel-only baseline by inspection.
+`MelAuxLoss` is the log-mel L1 the trainer used before the complex-STFT loss
+existed. Both losses now coexist as gradient terms with independent weights:
+the STFT term supplies a phase signal, the mel term supplies the bounded-
+dynamic-range gradient that magnitude-only log compression gives — empirically,
+running on the STFT term alone destabilised training.
 
 The trainer decodes the codec features to waveforms and passes them here, so
 this module knows nothing about any particular codec.
@@ -77,17 +79,17 @@ class MultiResComplexSTFTAuxLoss(nn.Module):
         return loss / len(self.stfts), per_pos_diag
 
 
-class MelL1Monitor(nn.Module):
+class MelAuxLoss(nn.Module):
     """v_mask-weighted log-mel L1 between predicted and target waveforms.
 
     Same shape contract and time-axis alignment as ``MultiResComplexSTFTAuxLoss``:
     a waveform of ``T * hop_length`` samples maps to exactly ``T`` mel frames so
     the v_mask aligns frame-for-frame.
 
-    Intended as a *monitor* rather than a training term — the trainer calls it
-    under ``torch.no_grad`` so it contributes no gradient. Kept around as a
-    metric so runs using the new complex-STFT loss stay comparable, by
-    inspection, to the older mel-only baseline.
+    Magnitude-only (phase-blind) but log-compressed, which keeps the per-frame
+    gradient roughly equal-magnitude across loud and quiet content. Used as a
+    stability companion to the complex-STFT loss, which is linear in magnitude
+    and would otherwise be dominated by loud frames.
     """
 
     def __init__(self, sample_rate: int, hop_length: int, n_mels: int = 80):
@@ -110,9 +112,7 @@ class MelL1Monitor(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """pred_wav/target_wav: (B, S). v_mask: (B, T).
 
-        Returns ``(loss, per_pos)`` matching the STFT loss's contract. Caller
-        is responsible for running this outside the autograd graph (e.g. inside
-        ``torch.no_grad``) if it shouldn't contribute to training.
+        Returns ``(loss, per_pos)`` matching the STFT loss's contract.
         """
         logmel_pred = self.mel(pred_wav).clamp(min=1e-5).log()
         logmel_target = self.mel(target_wav).clamp(min=1e-5).log()
