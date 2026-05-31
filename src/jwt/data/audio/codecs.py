@@ -16,6 +16,7 @@ _RAWAUDIO_PATCH = {
     "RawAudio64": 64,
     "RawAudio128": 128,
     "RawAudio256": 256,
+    "RawAudio512": 512,
 }
 
 
@@ -25,6 +26,7 @@ class Codecs(StrEnum):
     RAWAUDIO_64 = "RawAudio64"
     RAWAUDIO_128 = "RawAudio128"
     RAWAUDIO_256 = "RawAudio256"
+    RAWAUDIO_512 = "RawAudio512"
 
     @property
     def codec_class(self) -> type:
