@@ -80,6 +80,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         self.text_in = nn.Embedding(cfg.vocabulary_size, dim)
         self.acoustic_in = nn.Linear(cfg.acoustic_dim, dim)
         self.acoustic_out = nn.Linear(dim, cfg.acoustic_dim)
+        nn.init.zeros_(self.acoustic_out.weight)
+        nn.init.zeros_(self.acoustic_out.bias)
         self.text_modality = nn.Parameter(torch.randn(dim) * 0.02)
         self.acoustic_modality = nn.Parameter(torch.randn(dim) * 0.02)
         self.transformer = Transformer(cfg.transformer_config)

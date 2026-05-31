@@ -15,7 +15,7 @@ class TransformerConfig(Serializable):
     dim: int = 256
     num_heads: int = 4
     num_layers: int = 10
-    mlp_ratio: float = 4.0
+    mlp_ratio: float = 2.67
     max_seq_len: int = 8192
     rope_theta: float = 10000.0
     time_freq_embed_dim: int = 256
@@ -71,6 +71,10 @@ class TimestepEmbedder(nn.Module):
             nn.SiLU(),
             nn.Linear(dim, dim),
         )
+        for m in (self.mlp[0], self.mlp[2]):
+            assert isinstance(m, nn.Linear)
+            nn.init.normal_(m.weight, std=0.02)
+            nn.init.zeros_(m.bias)
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         emb = timestep_embedding(t, self.freq_embed_dim)
@@ -148,16 +152,18 @@ class SelfAttention(nn.Module):
         return self.proj(out), attn_weights
 
 
-class FeedForward(nn.Module):
-    def __init__(self, dim: int, mlp_ratio: float = 4.0):
+class SwiGLUFFN(nn.Module):
+    def __init__(self, dim: int, mlp_ratio: float) -> None:
         super().__init__()
-        hidden = int(mlp_ratio * dim)
-        self.fc1 = nn.Linear(dim, hidden, bias=False)
-        self.fc2 = nn.Linear(hidden, dim, bias=False)
-        self.act = nn.SiLU()
+        hidden_dim = int(dim * mlp_ratio)
+        self.w12 = nn.Linear(dim, 2 * hidden_dim, bias=False)
+        self.w3 = nn.Linear(hidden_dim, dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc2(self.act(self.fc1(x)))
+        x12 = self.w12(x)
+        x1, x2 = x12.chunk(2, dim=-1)
+        hidden = F.silu(x1) * x2
+        return self.w3(hidden)
 
 
 class TransformerBlock(nn.Module):
@@ -166,7 +172,7 @@ class TransformerBlock(nn.Module):
         self.norm1 = RMSNorm(dim, affine=False)
         self.attn = SelfAttention(dim, num_heads)
         self.norm2 = RMSNorm(dim, affine=False)
-        self.ff = FeedForward(dim, mlp_ratio)
+        self.ff = SwiGLUFFN(dim, mlp_ratio)
         self.adaLN = AdaLN(dim)
 
     def forward(
