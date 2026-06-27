@@ -90,6 +90,52 @@ def test_discriminator_loss_is_finite() -> None:
     assert loss.item() > 0  # hinge loss on an untrained D is positive
 
 
+def test_leading_window_crop_localizes_gradient() -> None:
+    """With window_frames=K, the discriminator only sees the K leading frames of
+    the rolling window, so the generator gradient lands only on those samples."""
+    K = 6
+    adv = AdversarialLoss(
+        MultiResolutionSTFTDiscriminator(n_ffts=N_FFTS, channels=8),
+        hop_length=HOP,
+        window_frames=K,
+    )
+    T = 32
+    pred = _wav(2, T, seed=1).requires_grad_(True)
+    target = _wav(2, T, seed=2)
+    v_mask = torch.zeros(2, T)
+    v_mask[:, 10:26] = 1.0  # rolling window = frames 10..25
+    t = torch.zeros(2, T)
+    t[:, 10:26] = torch.linspace(1.0, 0.0, 16)  # ramps down across the window
+    adv_g, feat = adv.generator_loss(pred, target, v_mask, t)
+    (adv_g + feat).backward()
+
+    assert pred.grad is not None
+    g = pred.grad.abs().sum(dim=0)  # (T*HOP,)
+    lead = slice(10 * HOP, (10 + K) * HOP)  # leading-K samples
+    assert g[lead].sum() > 0
+    outside = torch.ones_like(g, dtype=torch.bool)
+    outside[lead] = False
+    assert g[outside].sum() == 0  # nothing outside the leading-K crop
+
+
+def test_t_weighting_changes_adversarial_loss() -> None:
+    """t-weighting (w=t**gamma) actually reweights the generator hinge: with the
+    same discriminator and inputs, gamma>0 differs from the unweighted mean."""
+    disc = MultiResolutionSTFTDiscriminator(n_ffts=N_FFTS, channels=8)
+    K = 8
+    unweighted = AdversarialLoss(disc, hop_length=HOP, window_frames=K, t_weight_pow=0.0)
+    weighted = AdversarialLoss(disc, hop_length=HOP, window_frames=K, t_weight_pow=3.0)
+    pred, target = _wav(2, 32, seed=1), _wav(2, 32, seed=2)
+    v_mask = torch.zeros(2, 32)
+    v_mask[:, 4:28] = 1.0
+    t = torch.zeros(2, 32)
+    t[:, 4:28] = torch.linspace(1.0, 0.0, 24)
+
+    a0, _ = unweighted.generator_loss(pred, target, v_mask, t)
+    a1, _ = weighted.generator_loss(pred, target, v_mask, t)
+    assert not torch.allclose(a0, a1)
+
+
 def test_grad_accumulation_matches_single_step() -> None:
     """Grad accumulation is correct for the adversarial setting: accumulating
     `ga` identical micro-batches (each scaled by 1/ga) yields the same generator

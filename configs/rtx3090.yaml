@@ -2,11 +2,13 @@
 #
 # Raw-audio JWT at 8 kHz, patch 256 (RawAudio256) with the multi-resolution STFT
 # GAN enabled on top of the existing log-mel L1 aux loss. Patch 256 keeps the
-# transformer sequence short; the discriminator runs on the full decoded
-# waveform, so batch size is the memory lever — batch 20 peaks ~17 GB, leaving
-# headroom for the longest LJSpeech clips. The discriminator FFT sizes are scaled
-# for 8 kHz. The generator warms up on FM (+mel) for adv_start_step before the
-# GAN turns on. Validated end-to-end on an RTX 3090 with compile + resume.
+# transformer sequence short, and the discriminator is cropped to the K leading
+# frames of the rolling window (disc_window_frames) so it only STFTs K*256 samples
+# instead of the whole clip — this collapses discriminator memory, so the model
+# (not the GAN) is the limit and batch can be large. Batch 128 peaks ~16 GB on a
+# 3090. The discriminator FFT sizes are scaled for 8 kHz. The generator warms up
+# on FM (+mel) for adv_start_step before the GAN turns on. Validated end-to-end on
+# an RTX 3090 with compile + resume.
 #
 # Build the patch-256 arrow once (reuses the existing raw64 waveforms, no
 # re-download) then launch:
@@ -16,7 +18,7 @@
 #   uv run python scripts/train.py --config_path configs/rtx3090.yaml
 
 arrow_path: data/ljspeech_8khz.raw256.arrow
-batch_size: 24
+batch_size: 96
 codec: RAWAUDIO_256
 compile: true
 ema:
@@ -56,12 +58,19 @@ trainer:
   feat_match_weight: 10.0
   disc_lr: 2e-4
   disc_n_fft: [1024, 512, 256, 128, 64]
+  # Discriminate only the K leading (most-resolved, ~committed) frames of the
+  # rolling window — keeps the discriminator input tiny (K*256 samples) so it's
+  # cheap, and focuses adversarial pressure on the frames that become output.
+  disc_window_frames: 16
+  # Weight the generator adversarial hinge per frame by t**pow (1.0 = w=t):
+  # down-weights the noisy, easily-discriminated low-t frames of the window.
+  adv_t_weight_pow: 1.0
   adv_start_step: 5000
   # ----------------------------------------------
   checkpoint_steps: 5000
   clip_grad_norm: 1.0
   device: cuda
-  grad_accum_steps: 2
+  grad_accum_steps: 1
   log_steps: 100
   max_steps: 500001
   n_loss_bins: 10

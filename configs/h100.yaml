@@ -58,6 +58,11 @@ trainer:
   feat_match_weight: 10.0
   disc_lr: 2e-4
   disc_n_fft: [1024, 512, 256, 128, 64]
+  # Crop the discriminator to the K leading (most-resolved) window frames, and
+  # weight the generator adversarial hinge per frame by t (1.0 = w=t). Cropping
+  # keeps the discriminator cheap regardless of clip length / sample rate.
+  disc_window_frames: 16
+  adv_t_weight_pow: 1.0
   adv_start_step: 5000
   # ----------------------------------------------
   checkpoint_steps: 5000

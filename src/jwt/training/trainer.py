@@ -78,6 +78,13 @@ class TrainerConfig:
     disc_lr: float = 2e-4
     # STFT resolutions (n_fft) for the multi-resolution discriminator.
     disc_n_fft: tuple[int, ...] = (2048, 1024, 512, 256, 128)
+    # Crop the discriminator to the K leading (highest-t, about-to-be-committed)
+    # frames of each rolling window. 0 = discriminate the whole sequence.
+    # Requires disc_window_frames * codec.hop_length >= max(disc_n_fft).
+    disc_window_frames: int = 0
+    # Weight the generator adversarial hinge per frame by t ** adv_t_weight_pow,
+    # down-weighting noisy low-t frames. 0 = uniform (no t weighting).
+    adv_t_weight_pow: float = 0.0
     # Warm up the generator on FM (+mel) before the GAN turns on: adversarial
     # and discriminator updates only run once step >= adv_start_step.
     adv_start_step: int = 0
@@ -223,7 +230,12 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self.discriminator = discriminator
         self.disc_optimizer = disc_optimizer
         self.adv_loss: AdversarialLoss | None = (
-            AdversarialLoss(discriminator, hop_length=codec.hop_length).to(self._device)
+            AdversarialLoss(
+                discriminator,
+                hop_length=codec.hop_length,
+                window_frames=config.disc_window_frames,
+                t_weight_pow=config.adv_t_weight_pow,
+            ).to(self._device)
             if config.adv_weight > 0 and discriminator is not None
             else None
         )
@@ -394,7 +406,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                     # through the discriminator to the model without writing grads
                     # on the D params — accumulation-safe, no mid-window zeroing.
                     self._set_disc_requires_grad(False)
-                    adv_g, feat = self.adv_loss.generator_loss(pred_wav, target_wav, v_mask)
+                    adv_g, feat = self.adv_loss.generator_loss(pred_wav, target_wav, v_mask, out.t)
                     loss = loss + self.config.adv_weight * adv_g
                     loss = loss + self.config.feat_match_weight * feat
                     metrics["adv_g"] = adv_g.detach()
@@ -416,7 +428,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             assert self.adv_loss is not None and pred_wav is not None and target_wav is not None
             self._set_disc_requires_grad(True)
             with torch.autocast(device_type=self.device.type, enabled=False):
-                disc_loss = self.adv_loss.discriminator_loss(pred_wav, target_wav, v_mask)
+                disc_loss = self.adv_loss.discriminator_loss(pred_wav, target_wav, v_mask, out.t)
             (disc_loss / self.config.grad_accum_steps).backward()
             metrics["disc_loss"] = disc_loss.detach()
 
