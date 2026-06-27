@@ -57,6 +57,13 @@ class Args:
                 "auxiliary mel loss is redundant and not supported "
                 f"(got aux_mel_weight={self.trainer.aux_mel_weight})"
             )
+        if self.codec == Codecs.BIGVGAN and self.trainer.adv_weight > 0:
+            raise ValueError(
+                "adv_weight must be 0 for the BigVGAN codec: adversarial "
+                "supervision would backprop through the frozen pretrained "
+                "vocoder, which is not supported. Use a raw-audio codec "
+                f"(got adv_weight={self.trainer.adv_weight})"
+            )
 
 
 def dump_config(args: Args, path: Path | str) -> None:

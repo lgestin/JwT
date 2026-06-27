@@ -42,6 +42,8 @@ class CheckpointManager:
         scaler: torch.amp.GradScaler | None,
         best_loss: float,
         additional_state: dict[str, Any] | None = None,
+        discriminator: nn.Module | None = None,
+        disc_optimizer: torch.optim.Optimizer | None = None,
     ) -> Path:
         """Save a checkpoint.
 
@@ -52,6 +54,8 @@ class CheckpointManager:
             scaler: GradScaler state to save (if using AMP)
             best_loss: Best validation loss so far
             additional_state: Additional state dict to save
+            discriminator: Adversarial discriminator to save (if enabled)
+            disc_optimizer: Discriminator optimizer state to save (if enabled)
 
         Returns:
             Path to the saved checkpoint
@@ -62,6 +66,12 @@ class CheckpointManager:
             "best_loss": best_loss,
             "opt": optimizer.state_dict(),
         }
+
+        # Adversarial discriminator + its optimizer (absent on non-GAN runs).
+        if discriminator is not None:
+            checkpoint_data["disc"] = discriminator.state_dict()
+        if disc_optimizer is not None:
+            checkpoint_data["disc_opt"] = disc_optimizer.state_dict()
 
         # Handle ConditionalFlowMatcher or direct model
         if hasattr(model, "denoiser"):
@@ -106,6 +116,8 @@ class CheckpointManager:
         scaler: torch.amp.GradScaler | None = None,
         ema: EMA | None = None,
         map_location: torch.device | str | None = None,
+        discriminator: nn.Module | None = None,
+        disc_optimizer: torch.optim.Optimizer | None = None,
     ) -> dict[str, Any]:
         """Load the most recent checkpoint.
 
@@ -142,6 +154,8 @@ class CheckpointManager:
             scaler=scaler,
             ema=ema,
             map_location=map_location,
+            discriminator=discriminator,
+            disc_optimizer=disc_optimizer,
         )
 
     def load_best(
@@ -181,6 +195,8 @@ class CheckpointManager:
         scaler: torch.amp.GradScaler | None = None,
         ema: EMA | None = None,
         map_location: torch.device | str | None = None,
+        discriminator: nn.Module | None = None,
+        disc_optimizer: torch.optim.Optimizer | None = None,
     ) -> dict[str, Any]:
         """Load a specific checkpoint.
 
@@ -226,6 +242,21 @@ class CheckpointManager:
                     "checkpoint has no EMA state; EMA initialized from the loaded model weights",
                     stacklevel=2,
                 )
+
+        # Load adversarial discriminator + optimizer. A checkpoint predating
+        # adversarial training has no "disc"/"disc_opt" keys — warn and leave the
+        # freshly-initialized discriminator as-is, mirroring the EMA fallback.
+        if discriminator is not None:
+            if "disc" in checkpoint_data:
+                discriminator.load_state_dict(checkpoint_data["disc"])
+            else:
+                warnings.warn(
+                    "checkpoint has no discriminator state; discriminator left at "
+                    "its fresh initialization",
+                    stacklevel=2,
+                )
+        if disc_optimizer is not None and "disc_opt" in checkpoint_data:
+            disc_optimizer.load_state_dict(checkpoint_data["disc_opt"])
 
         # Return metadata
         metadata = {

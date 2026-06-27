@@ -12,6 +12,7 @@ from jwt.data.collate import collate
 from jwt.data.dataset import AudioDataset
 from jwt.data.source import ArrowTTSSource
 from jwt.data.text import Tokenizer, Vocabulary
+from jwt.model.discriminator import MultiResolutionSTFTDiscriminator
 from jwt.model.neural_speaker import RollingFlowSpeaker
 from jwt.training.checkpoint_manager import CheckpointManager
 from jwt.training.config import (
@@ -109,6 +110,22 @@ def main() -> None:
         weight_decay=args.optimizer.weight_decay,
     )
 
+    # Adversarial discriminator + its own optimizer, only when the GAN loss is
+    # weighted in. Config validation restricts this to raw-audio codecs.
+    discriminator = None
+    disc_optimizer = None
+    if args.trainer.adv_weight > 0:
+        discriminator = MultiResolutionSTFTDiscriminator(
+            n_ffts=tuple(args.trainer.disc_n_fft)
+        ).to(device)
+        disc_optimizer = AdamW(
+            discriminator.parameters(),
+            lr=args.trainer.disc_lr,
+            betas=args.optimizer.betas,
+            weight_decay=args.optimizer.weight_decay,
+        )
+        print(f"Adversarial loss enabled (disc n_fft={tuple(args.trainer.disc_n_fft)})")
+
     ema = EMA(model, decay=args.ema.decay) if args.ema.enabled else None
 
     sub_loggers: list[Logger] = [
@@ -125,7 +142,14 @@ def main() -> None:
 
     state = TrainerState(step=0)
     if args.resume:
-        meta = checkpoint_manager.load_latest(model, optimizer, ema=ema, map_location=device)
+        meta = checkpoint_manager.load_latest(
+            model,
+            optimizer,
+            ema=ema,
+            map_location=device,
+            discriminator=discriminator,
+            disc_optimizer=disc_optimizer,
+        )
         if "config" in meta:
             check_model_config_consistency(args.model, meta["config"])
         else:
@@ -150,6 +174,8 @@ def main() -> None:
         state=state,
         checkpoint_manager=checkpoint_manager,
         ema=ema,
+        discriminator=discriminator,
+        disc_optimizer=disc_optimizer,
     )
 
     trainer.train()

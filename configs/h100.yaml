@@ -1,0 +1,74 @@
+# Adversarial training config for a single H100 (80 GB).
+#
+# Same validated pipeline as configs/rtx3090.yaml (8 kHz RawAudio256 + multi-res
+# STFT GAN + mel-L1), scaled up for the H100: a real-sized model (dim 512 / 12
+# layers, like configs/runpod.yaml) and a much larger batch. The discriminator
+# runs on the full decoded waveform, so batch is the dominant memory lever.
+#
+# NOTE: batch_size below is a STARTING point — it was not validated on an H100
+# from here (only the 8 kHz/256 pipeline + GAN wiring were, on a 3090). On the
+# first run watch `system/peak_mem_gb` in TensorBoard (or nvidia-smi) and raise
+# batch_size toward ~70 GB utilisation. expandable_segments helps:
+#   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+#     uv run python scripts/train.py --config_path configs/h100.yaml
+#
+# Build the patch-256 arrow once if it isn't present (reuses raw64 waveforms):
+#   uv run python scripts/data/rearrow_raw_patch.py \
+#     --input_path data/ljspeech_8khz.raw64.arrow \
+#     --output_path data/ljspeech_8khz.raw256.arrow --patch_size 256
+
+arrow_path: data/ljspeech_8khz.raw256.arrow
+batch_size: 96
+codec: RAWAUDIO_256
+compile: true
+ema:
+  decay: 0.9995
+  enabled: false
+model:
+  acoustic_dim: 256
+  eos_n_frames: 8
+  max_acoustic_len: 2048
+  n_denoising_steps: 32
+  parametrization: JWT
+  transformer_config:
+    dim: 512
+    max_seq_len: 8192
+    mlp_ratio: 4.0
+    num_heads: 8
+    num_layers: 12
+    rope_theta: 10000.0
+    time_freq_embed_dim: 256
+  vocabulary_size: 0
+n_valid: 64
+num_workers: 8
+optimizer:
+  betas:
+    - 0.9
+    - 0.999
+  lr: 3e-4
+  warmup_steps: 2500
+  weight_decay: 0.0
+output_dir: outputs/run_h100_adv
+resume: false
+trainer:
+  amp_dtype: BF16
+  aux_mel_weight: 0.1
+  # --- Adversarial (multi-resolution STFT GAN) ---
+  adv_weight: 1.0
+  feat_match_weight: 10.0
+  disc_lr: 2e-4
+  disc_n_fft: [1024, 512, 256, 128, 64]
+  adv_start_step: 5000
+  # ----------------------------------------------
+  checkpoint_steps: 5000
+  clip_grad_norm: 1.0
+  device: cuda
+  grad_accum_steps: 1
+  log_steps: 100
+  max_steps: 500001
+  n_loss_bins: 10
+  n_smp: 16
+  smp_steps: 2500
+  valid_steps: 1000
+use_tensorboard: true
+vocab_path: data/vocabulary.json

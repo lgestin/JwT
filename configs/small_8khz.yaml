@@ -44,6 +44,14 @@ resume: false
 trainer:
   amp_dtype: BF16
   aux_mel_weight: 0.1
+  # Adversarial (multi-resolution STFT GAN) loss. Off by default. To enable, set
+  # adv_weight > 0 (raw-audio codecs only); known-good starting preset:
+  #   adv_weight: 1.0
+  #   feat_match_weight: 10.0
+  #   disc_lr: 0.0002
+  #   adv_start_step: 5000   # warm up the generator on FM (+mel) first
+  #   disc_n_fft: [2048, 1024, 512, 256, 128]
+  adv_weight: 0.0
   checkpoint_steps: 5000
   clip_grad_norm: 1.0
   device: cuda

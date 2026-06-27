@@ -13,12 +13,14 @@ from jwt.data.audio.codecs import Codec
 from jwt.data.audio.stft import MelSpectrogram
 from jwt.data.dataset import Batch
 from jwt.model.attention import AttentionImplementations, TorchAttention
+from jwt.model.discriminator import MultiResolutionSTFTDiscriminator
 from jwt.model.loss import LossFns
 from jwt.model.neural_speaker import (
     MaskedTensor,
     RollingFlowSpeaker,
     TrainingStepOutput,
 )
+from jwt.training.adversarial_loss import AdversarialLoss
 from jwt.training.attention_probe import capture_attention, log_attention_maps
 from jwt.training.checkpoint_manager import CheckpointManager
 from jwt.training.ema import EMA
@@ -67,6 +69,18 @@ class TrainerConfig:
     attention_implementation: AttentionImplementations = AttentionImplementations.FLASH_VARLEN
     # Auxiliary log-mel L1 loss weight. 0 = monitor only (no gradient signal);
     aux_mel_weight: float = 0.0
+    # Adversarial (multi-resolution STFT GAN) loss. 0 = disabled (no
+    # discriminator is built). Raw-audio codecs only — see Args.__post_init__.
+    adv_weight: float = 0.0
+    # L1 feature-matching loss weight (companion to the adversarial term).
+    feat_match_weight: float = 0.0
+    # Discriminator optimizer learning rate.
+    disc_lr: float = 2e-4
+    # STFT resolutions (n_fft) for the multi-resolution discriminator.
+    disc_n_fft: tuple[int, ...] = (2048, 1024, 512, 256, 128)
+    # Warm up the generator on FM (+mel) before the GAN turns on: adversarial
+    # and discriminator updates only run once step >= adv_start_step.
+    adv_start_step: int = 0
     # Scalar diagnostics (throughput, memory, normalization stats) and the
     # binned loss-by-t histogram are accumulated on-GPU and flushed to
     # TensorBoard every `log_steps` steps.
@@ -170,6 +184,8 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         state: TrainerState | None,
         checkpoint_manager: CheckpointManager | None,
         ema: EMA | None = None,
+        discriminator: MultiResolutionSTFTDiscriminator | None = None,
+        disc_optimizer: Optimizer | None = None,
     ):
         super().__init__(config=config, state=state)
         self.codec = codec
@@ -199,6 +215,16 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self.mel_aux_loss: MelAuxLoss | None = (
             MelAuxLoss(sample_rate=sample_rate, hop_length=codec.hop_length).to(self._device)
             if config.aux_mel_weight > 0
+            else None
+        )
+        # Adversarial loss + its discriminator/optimizer, only when weighted in.
+        # Config validation forbids adv_weight > 0 for BigVGAN, so the
+        # discriminator always supervises a real decoded waveform.
+        self.discriminator = discriminator
+        self.disc_optimizer = disc_optimizer
+        self.adv_loss: AdversarialLoss | None = (
+            AdversarialLoss(discriminator, hop_length=codec.hop_length).to(self._device)
+            if config.adv_weight > 0 and discriminator is not None
             else None
         )
 
@@ -250,6 +276,8 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                             additional_state=(
                                 {"ema": self.ema.state_dict()} if self.ema is not None else None
                             ),
+                            discriminator=self.discriminator,
+                            disc_optimizer=self.disc_optimizer,
                         )
                         self.checkpoint_manager.cleanup_old_checkpoints()
 
@@ -329,21 +357,48 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         loss = fm_loss
         metrics: dict[str, torch.Tensor] = {"fm_loss": fm_loss.detach()}
 
+        # Adversarial supervision is gated on a warmup so FM (+mel) shapes the
+        # generator before the GAN turns on. It and the mel aux loss both need
+        # the decoded waveform, so the decode runs once when either is active.
+        adv_active = (
+            self.adv_loss is not None
+            and self.model.training
+            and self.step >= self.config.adv_start_step
+        )
+        need_wav = self.mel_aux_loss is not None or adv_active
+
+        # Decoded waveforms (fp32 outside autocast for STFT stability), kept for
+        # the discriminator update after the generator backward.
+        pred_wav: torch.Tensor | None = None
+        target_wav: torch.Tensor | None = None
+
         # Auxiliary log-mel L1 — a perceptual loss term for codecs whose
-        # FM-space loss isn't itself perceptual (raw-audio patches). Decodes the
-        # predicted and target features to waveforms and compares them in mel
-        # space. fp32 outside autocast for STFT stability. `mel_aux_loss` is
-        # None for BigVGAN, whose FM loss is already mel-space.
+        # FM-space loss isn't itself perceptual (raw-audio patches). `mel_aux_loss`
+        # is None for BigVGAN, whose FM loss is already mel-space.
         logmel_diff: torch.Tensor | None = None
-        if self.mel_aux_loss is not None:
+        if need_wav:
             with torch.autocast(device_type=self.device.type, enabled=False):
                 x_1_target_norm = acoustic.values.float()
                 x_1_pred_norm = x_pred.float().transpose(1, 2)
                 pred_wav = self.codec.decode(self.codec.unnormalize(x_1_pred_norm))
                 target_wav = self.codec.decode(self.codec.unnormalize(x_1_target_norm))
-                logmel_l1, logmel_diff = self.mel_aux_loss(pred_wav, target_wav, v_mask)
-            loss = fm_loss + self.config.aux_mel_weight * logmel_l1
-            metrics["logmel_l1"] = logmel_l1.detach()
+
+                if self.mel_aux_loss is not None:
+                    logmel_l1, logmel_diff = self.mel_aux_loss(pred_wav, target_wav, v_mask)
+                    loss = loss + self.config.aux_mel_weight * logmel_l1
+                    metrics["logmel_l1"] = logmel_l1.detach()
+
+                if adv_active:
+                    assert self.adv_loss is not None
+                    # Generator side: freeze D so the adversarial term backprops
+                    # through the discriminator to the model without writing grads
+                    # on the D params — accumulation-safe, no mid-window zeroing.
+                    self._set_disc_requires_grad(False)
+                    adv_g, feat = self.adv_loss.generator_loss(pred_wav, target_wav, v_mask)
+                    loss = loss + self.config.adv_weight * adv_g
+                    loss = loss + self.config.feat_match_weight * feat
+                    metrics["adv_g"] = adv_g.detach()
+                    metrics["feat_match"] = feat.detach()
 
         metrics["loss"] = loss.detach()
         scalars, bins = self._step_diagnostics(out, text, acoustic, logmel_diff)
@@ -355,7 +410,23 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             else:
                 scaled.backward()
 
+        # Discriminator update: real target vs. detached prediction. Runs after
+        # the generator backward on a fresh graph through the detached fake.
+        if adv_active:
+            assert self.adv_loss is not None and pred_wav is not None and target_wav is not None
+            self._set_disc_requires_grad(True)
+            with torch.autocast(device_type=self.device.type, enabled=False):
+                disc_loss = self.adv_loss.discriminator_loss(pred_wav, target_wav, v_mask)
+            (disc_loss / self.config.grad_accum_steps).backward()
+            metrics["disc_loss"] = disc_loss.detach()
+
         return metrics, scalars, bins
+
+    def _set_disc_requires_grad(self, flag: bool) -> None:
+        """Toggle discriminator param grads for the G vs. D phase of the step."""
+        if self.discriminator is not None:
+            for p in self.discriminator.parameters():
+                p.requires_grad_(flag)
 
     def _step_diagnostics(
         self,
@@ -531,6 +602,18 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         if self.ema is not None:
             self.ema.update(self.model, self.step)
         self.optimizer.zero_grad()
+
+        # Discriminator step — only once the GAN is active, so its optimizer
+        # state isn't perturbed by weight decay during the warmup. EMA tracks
+        # the generator only.
+        if self.disc_optimizer is not None and self.step >= self.config.adv_start_step:
+            if self.config.clip_grad_norm is not None and self.discriminator is not None:
+                metrics["disc_grad_norm"] = torch.nn.utils.clip_grad_norm_(
+                    self.discriminator.parameters(),
+                    max_norm=self.config.clip_grad_norm,
+                )
+            self.disc_optimizer.step()
+            self.disc_optimizer.zero_grad()
         return metrics
 
     @torch.inference_mode()
