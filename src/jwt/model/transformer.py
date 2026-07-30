@@ -21,39 +21,34 @@ class TransformerConfig(Serializable):
     time_freq_embed_dim: int = 256
 
 
-def precompute_freqs_cis(seq_len: int, head_dim: int, theta: float = 10000.0) -> torch.Tensor:
-    """RoPE cos/sin table of shape (1, 1, seq_len, head_dim // 2, 2)."""
-    assert head_dim % 2 == 0, "head_dim must be even for RoPE"
-    freqs = 1.0 / (theta ** (torch.arange(0, head_dim, 2).float() / head_dim))
-    positions = torch.arange(seq_len)
-    freqs = torch.outer(positions, freqs)
-    freqs_cis = torch.stack([torch.cos(freqs), torch.sin(freqs)], dim=-1)
-    return freqs_cis.unsqueeze(0).unsqueeze(0)
+def precompute_freqs_cis(seq_len: int, dim: int, theta: float) -> torch.Tensor:
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+    t = torch.arange(seq_len, device=freqs.device)
+    freqs = torch.outer(t, freqs).float()
+    return torch.polar(torch.ones_like(freqs), freqs)  # complex64
 
 
 def apply_rope(
-    q: torch.Tensor, k: torch.Tensor, freqs_cis: torch.Tensor
+    q: torch.Tensor,
+    k: torch.Tensor,
+    freqs_cis: torch.Tensor,  # complex64
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Rotate (q, k) of shape (B, H, L, D) by freqs_cis (1, 1, L, D // 2, 2)."""
-    q_ = q.float().reshape(*q.shape[:-1], -1, 2)
-    k_ = k.float().reshape(*k.shape[:-1], -1, 2)
-    cos, sin = freqs_cis[..., 0], freqs_cis[..., 1]
-    q_out = torch.stack(
-        [cos * q_[..., 0] - sin * q_[..., 1], sin * q_[..., 0] + cos * q_[..., 1]],
-        dim=-1,
-    )
-    k_out = torch.stack(
-        [cos * k_[..., 0] - sin * k_[..., 1], sin * k_[..., 0] + cos * k_[..., 1]],
-        dim=-1,
-    )
-    return q_out.flatten(-2).type_as(q), k_out.flatten(-2).type_as(k)
+    q_ = torch.view_as_complex(q.float().reshape(*q.shape[:-1], -1, 2))
+    k_ = torch.view_as_complex(k.float().reshape(*k.shape[:-1], -1, 2))
+    q_out = torch.view_as_real(q_ * freqs_cis).flatten(-2)
+    k_out = torch.view_as_real(k_ * freqs_cis).flatten(-2)
+    return q_out.type_as(q), k_out.type_as(k)
 
 
-def timestep_embedding(t: torch.Tensor, dim: int, max_period: float = 10000.0) -> torch.Tensor:
+def timestep_embedding(
+    t: torch.Tensor, dim: int, max_period: float = 10000.0
+) -> torch.Tensor:
     """Sinusoidal embedding for scalar timesteps. t (..., ) -> (..., dim)."""
     half = dim // 2
     freqs = torch.exp(
-        -math.log(max_period) * torch.arange(half, dtype=torch.float32, device=t.device) / half
+        -math.log(max_period)
+        * torch.arange(half, dtype=torch.float32, device=t.device)
+        / half
     )
     args = t.float().unsqueeze(-1) * freqs
     emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
@@ -95,9 +90,9 @@ class AdaLN(nn.Module):
         nn.init.zeros_(self.linear.bias)
 
     def forward(self, t_emb: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = self.linear(F.silu(t_emb)).chunk(
-            6, dim=-1
-        )
+        shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = self.linear(
+            F.silu(t_emb)
+        ).chunk(6, dim=-1)
         return shift_a, scale_a, gate_a.tanh(), shift_m, scale_m, gate_m.tanh()
 
 
@@ -121,7 +116,9 @@ class QKNorm(nn.Module):
         self.query_norm = RMSNorm(head_dim)
         self.key_norm = RMSNorm(head_dim)
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, q: torch.Tensor, k: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.query_norm(q).to(q), self.key_norm(k).to(k)
 
 
@@ -223,7 +220,7 @@ class Transformer(nn.Module):
         attention_implementation: type[AttentionImplementation] = SDPAAttention,
     ) -> torch.Tensor:
         """x: (B, L, D), t: (B, L) per-position timestep, mask: optional attn mask."""
-        freqs_cis = self.freqs_cis[:, :, : x.shape[1]]
+        freqs_cis = self.freqs_cis[: x.shape[1]]
         t_emb = self.time_embedder(t)
         for block in self.blocks:
             x = block(x, freqs_cis, t_emb, mask, attention_implementation)

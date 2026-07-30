@@ -28,7 +28,7 @@ def test_transformer_backward() -> None:
 
 def test_transformer_block_shape() -> None:
     block = TransformerBlock(dim=32, num_heads=4)
-    freqs_cis = precompute_freqs_cis(seq_len=8, head_dim=8)
+    freqs_cis = precompute_freqs_cis(seq_len=8, dim=8, theta=10000.0)
     x = torch.randn(2, 8, 32)
     t_emb = torch.randn(2, 8, 32)
     y = block(x, freqs_cis, t_emb)
