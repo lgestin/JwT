@@ -22,6 +22,7 @@ model:
   n_denoising_steps: 32
   parametrization: JWT
   transformer_config:
+    adaln_rank: 32
     dim: 128
     max_seq_len: 8192
     mlp_ratio: 2.0

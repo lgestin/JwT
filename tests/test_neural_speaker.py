@@ -456,3 +456,41 @@ def test_sample_noise_applies_cfg_noise_scale() -> None:
 
     assert abs(noise.std().item() - 0.3) < 0.01
     assert abs(noise.mean().item()) < 0.01
+
+
+# --- adaLN rank / denoising-step consistency --------------------------------
+
+
+def _speaker_cfg(adaln_rank: int | None, n_denoising_steps: int) -> RollingFlowConfig:
+    return RollingFlowConfig(
+        transformer_config=TransformerConfig(
+            dim=32, num_heads=4, num_layers=1, adaln_rank=adaln_rank
+        ),
+        vocabulary_size=8,
+        acoustic_dim=N_MELS,
+        n_denoising_steps=n_denoising_steps,
+        max_acoustic_len=MAX_AC_LEN,
+    )
+
+
+def test_adaln_rank_below_denoising_steps_is_reported(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`t` comes off a grid of `n_denoising_steps` values, so adaLN's output can
+    span that many dimensions. A smaller rank silently caps it — surface that."""
+    RollingFlowSpeaker(_speaker_cfg(adaln_rank=8, n_denoising_steps=32))
+    out = capsys.readouterr().out
+    assert "adaln_rank=8" in out
+    assert "n_denoising_steps=32" in out
+
+
+def test_adaln_rank_matching_denoising_steps_is_silent(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    RollingFlowSpeaker(_speaker_cfg(adaln_rank=32, n_denoising_steps=32))
+    assert "adaln_rank" not in capsys.readouterr().out
+
+
+def test_adaln_rank_none_is_silent(capsys: pytest.CaptureFixture[str]) -> None:
+    RollingFlowSpeaker(_speaker_cfg(adaln_rank=None, n_denoising_steps=128))
+    assert "adaln_rank" not in capsys.readouterr().out

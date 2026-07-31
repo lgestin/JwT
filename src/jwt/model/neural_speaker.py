@@ -76,6 +76,11 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         # not an instance, so this stays free of training state.
         self.param = cfg.parametrization.parametrization
         self.schedule = cfg.timestep_schedule.schedule
+        rank = cfg.transformer_config.adaln_rank
+        if rank is not None and rank < cfg.n_denoising_steps:
+            print(
+                f"adaln_rank={rank} is below n_denoising_steps={cfg.n_denoising_steps}"
+            )
         dim = cfg.transformer_config.dim
         self.text_in = nn.Embedding(cfg.vocabulary_size, dim)
         self.acoustic_in = nn.Linear(cfg.acoustic_dim, dim)

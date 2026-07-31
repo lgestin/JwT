@@ -25,6 +25,7 @@ model:
   parametrization: JWT
   timestep_schedule: LOG_NORM
   transformer_config:
+    adaln_rank: null
     dim: 256
     max_seq_len: 8192
     mlp_ratio: 2.67

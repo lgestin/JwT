@@ -19,6 +19,9 @@ class TransformerConfig(Serializable):
     max_seq_len: int = 8192
     rope_theta: float = 10000.0
     time_freq_embed_dim: int = 256
+    # Bottleneck width for each block's adaLN projection; None = full rank.
+    # Set it to `n_denoising_steps` — see AdaLN for why that is lossless.
+    adaln_rank: int | None = None
 
 
 def precompute_freqs_cis(seq_len: int, dim: int, theta: float) -> torch.Tensor:
@@ -127,18 +130,41 @@ class AdaLN(nn.Module):
 
     Gates are tanh-clamped to [-1, 1] so a single block's contribution can never
     dominate the residual stream.
+
+    `rank` factorizes the `dim -> 6*dim` projection through a bottleneck of that
+    width. This costs nothing in expressiveness as long as `rank` is at least
+    the number of distinct timesteps the model sees: `t` comes off a grid of
+    `n_denoising_steps` values, so the projection only ever receives that many
+    distinct inputs and its output can span at most that many dimensions. The
+    full-rank projection is `6 * dim**2` parameters *and* the same share of the
+    per-token FLOPs — unlike stock DiT, `t_emb` here is per-position, so this
+    runs on every token of every layer.
+
+    `None` keeps the unfactorized projection.
     """
 
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, rank: int | None = None):
         super().__init__()
-        self.linear = nn.Linear(dim, 6 * dim, bias=True)
-        nn.init.zeros_(self.linear.weight)
-        nn.init.zeros_(self.linear.bias)
+        assert rank is None or rank > 0, f"adaLN rank must be positive, got {rank}"
+        self.rank = rank
+        if rank is None:
+            self.linear = nn.Linear(dim, 6 * dim, bias=True)
+            nn.init.zeros_(self.linear.weight)
+            nn.init.zeros_(self.linear.bias)
+        else:
+            # `down` keeps its default init and `up` is zeroed, so the module
+            # still emits zero modulation at init (blocks start as identity)
+            # while `down` retains a usable scale. Zeroing both would leave
+            # `down` with no gradient path forever.
+            self.down = nn.Linear(dim, rank, bias=False)
+            self.up = nn.Linear(rank, 6 * dim, bias=True)
+            nn.init.zeros_(self.up.weight)
+            nn.init.zeros_(self.up.bias)
 
     def forward(self, t_emb: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = self.linear(F.silu(t_emb)).chunk(
-            6, dim=-1
-        )
+        h = F.silu(t_emb)
+        modulation = self.linear(h) if self.rank is None else self.up(self.down(h))
+        shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = modulation.chunk(6, dim=-1)
         return shift_a, scale_a, gate_a.tanh(), shift_m, scale_m, gate_m.tanh()
 
 
@@ -208,13 +234,19 @@ class SwiGLUFFN(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, dim: int, num_heads: int, mlp_ratio: float = 4.0):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        mlp_ratio: float = 4.0,
+        adaln_rank: int | None = None,
+    ):
         super().__init__()
         self.norm1 = RMSNorm(dim, affine=False)
         self.attn = SelfAttention(dim, num_heads)
         self.norm2 = RMSNorm(dim, affine=False)
         self.ff = SwiGLUFFN(dim, mlp_ratio)
-        self.adaLN = AdaLN(dim)
+        self.adaLN = AdaLN(dim, adaln_rank)
 
     def forward(
         self,
@@ -246,7 +278,7 @@ class Transformer(nn.Module):
         self.time_embedder = TimestepEmbedder(config.dim, config.time_freq_embed_dim)
         self.blocks = nn.ModuleList(
             [
-                TransformerBlock(config.dim, config.num_heads, config.mlp_ratio)
+                TransformerBlock(config.dim, config.num_heads, config.mlp_ratio, config.adaln_rank)
                 for _ in range(config.num_layers)
             ]
         )
