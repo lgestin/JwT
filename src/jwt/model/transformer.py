@@ -41,25 +41,71 @@ def apply_rope(
 
 
 def timestep_embedding(
-    t: torch.Tensor, dim: int, max_period: float = 10000.0
+    t: torch.Tensor,
+    dim: int,
+    resolution: float = 2 * math.pi / 1000,
+    bandwidth: float = 10000.0,
 ) -> torch.Tensor:
-    """Sinusoidal embedding for scalar timesteps. t (..., ) -> (..., dim)."""
+    """Sinusoidal (Fourier) features for a scalar timestep.
+
+    Each t is projected onto a bank of `dim // 2` sinusoids whose angular
+    frequencies are geometrically spaced:
+
+        f_max = 2 * pi / resolution                     # fastest channel
+        f_k   = f_max * bandwidth ** (-k / half)        # k = 0 .. half-1
+        f_min ~= f_max / bandwidth = 2 * pi / (resolution * bandwidth)
+
+    Equivalently: the fastest channel completes one cycle every `resolution`
+    units of t, and the slowest one every `resolution * bandwidth` units.
+
+    Args:
+        t: (...) tensor of timesteps, any shape — the feature axis is appended,
+            so (B,) and the per-position (B, L) both work. `resolution` and
+            `bandwidth` are interpreted in the *same units as t* (steps,
+            seconds, [0,1], ...).
+        dim: output width; must be even.
+        resolution: period of the fastest channel = the fine end of the scale.
+            Two timesteps much closer together than this map to almost the same
+            vector, so this sets the finest distinction the embedding can carry.
+            Set it to ~4-10x the smallest Delta t you need to distinguish (going
+            all the way down to Delta t itself aliases: the top channel wraps a
+            full cycle between neighbours and becomes constant).
+        bandwidth: ratio f_max / f_min = the number of scales spanned, i.e. how
+            far the coarse end sits above the fine end. `resolution * bandwidth`
+            is the span over which the embedding is an unambiguous, monotone
+            "where am I in the schedule" coordinate; beyond it every channel has
+            wrapped at least once. Set bandwidth >= a few x (range of t) /
+            resolution.
+
+    Returns:
+        (..., dim) tensor in [-1, 1], laid out as [cos | sin].
+
+    Note:
+        Frequency coverage is `half / log2(bandwidth)` channels per octave, so
+        raising `bandwidth` without raising `dim` thins out the bank. The
+        endpoint is exclusive, so the true f_min is bandwidth ** (1 / half)
+        above f_max / bandwidth.
+
+    Example:
+        Defaults target continuous t in [0, 1] with ~1e-3 granularity:
+        resolution ~= 6.3e-3 (about 6x the target Delta t, so no aliasing) and a
+        coarsest period of 63, ~60x the range of t, so the low channels act as a
+        smooth global ramp. For integer t in 0..999, use resolution ~= 5,
+        bandwidth ~= 1e4.
+    """
+    assert dim % 2 == 0, f"timestep_embedding dim must be even, got {dim}"
     half = dim // 2
-    freqs = torch.exp(
-        -math.log(max_period)
-        * torch.arange(half, dtype=torch.float32, device=t.device)
-        / half
-    )
+    f_max = 2 * math.pi / resolution
+    i = torch.arange(half, dtype=torch.float32, device=t.device) / half
+    freqs = f_max * torch.exp(-math.log(bandwidth) * i)
     args = t.float().unsqueeze(-1) * freqs
-    emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-    if dim % 2:
-        emb = F.pad(emb, (0, 1))
-    return emb
+    return torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
 
 
 class TimestepEmbedder(nn.Module):
     def __init__(self, dim: int, freq_embed_dim: int = 256):
         super().__init__()
+        assert freq_embed_dim % 2 == 0, "freq_embed_dim must be even"
         self.freq_embed_dim = freq_embed_dim
         self.mlp = nn.Sequential(
             nn.Linear(freq_embed_dim, dim),
