@@ -36,8 +36,14 @@ def test_enum_values() -> None:
 
 
 def test_enum_parametrization_mapping() -> None:
-    assert FlowParametrizations.RECTIFIED_FLOW.parametrization is RectifiedFlowParametrization
-    assert FlowParametrizations.JWT.parametrization is JustWaveformTransformersParametrization
+    assert (
+        FlowParametrizations.RECTIFIED_FLOW.parametrization
+        is RectifiedFlowParametrization
+    )
+    assert (
+        FlowParametrizations.JWT.parametrization
+        is JustWaveformTransformersParametrization
+    )
 
 
 def test_loss_output_is_frozen() -> None:

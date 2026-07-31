@@ -136,9 +136,9 @@ class AdaLN(nn.Module):
         nn.init.zeros_(self.linear.bias)
 
     def forward(self, t_emb: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = self.linear(
-            F.silu(t_emb)
-        ).chunk(6, dim=-1)
+        shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = self.linear(F.silu(t_emb)).chunk(
+            6, dim=-1
+        )
         return shift_a, scale_a, gate_a.tanh(), shift_m, scale_m, gate_m.tanh()
 
 
@@ -162,9 +162,7 @@ class QKNorm(nn.Module):
         self.query_norm = RMSNorm(head_dim)
         self.key_norm = RMSNorm(head_dim)
 
-    def forward(
-        self, q: torch.Tensor, k: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, q: torch.Tensor, k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return self.query_norm(q).to(q), self.key_norm(k).to(k)
 
 

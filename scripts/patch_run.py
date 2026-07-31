@@ -25,7 +25,13 @@ import yaml
 # would corrupt a resumed run (load_state_dict would fail or the codec/loss
 # would no longer match what the weights learned), so they're forbidden here.
 _ARCHITECTURAL_FIELDS = frozenset(
-    {"transformer_config", "vocabulary_size", "acoustic_dim", "codec", "parametrization"}
+    {
+        "transformer_config",
+        "vocabulary_size",
+        "acoustic_dim",
+        "codec",
+        "parametrization",
+    }
 )
 
 
@@ -40,7 +46,9 @@ def _cast(field_type: Any, raw: str):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("src", type=Path, help="Source run directory")
-    parser.add_argument("dst", type=Path, help="Destination run directory (must not exist)")
+    parser.add_argument(
+        "dst", type=Path, help="Destination run directory (must not exist)"
+    )
     parser.add_argument(
         "--set",
         dest="overrides",
@@ -101,7 +109,8 @@ def main() -> None:
     (args.dst / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
 
     print(
-        f"Done. Resume with:\n  uv run python scripts/train.py --config_path {args.dst}/config.yaml"
+        f"Done. Resume with:\n"
+        f"  uv run python scripts/train.py --config_path {args.dst}/config.yaml"
     )
 
 

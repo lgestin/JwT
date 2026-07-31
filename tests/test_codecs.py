@@ -171,7 +171,9 @@ def test_check_sample_rate_accepts_match_for_bigvgan(codec: BigVGAN) -> None:
     check_sample_rate(codec, 24000)
 
 
-def test_bigvgan_encode_matches_reference_mel(codec: BigVGAN, audio_from_file: AudioFile) -> None:
+def test_bigvgan_encode_matches_reference_mel(
+    codec: BigVGAN, audio_from_file: AudioFile
+) -> None:
     """Our encode() must produce numerically the same mel as bigvgan's own
     mel_spectrogram so the vocoder sees mels in its training space."""
     from bigvgan.meldataset import mel_spectrogram as reference_mel

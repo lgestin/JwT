@@ -128,7 +128,11 @@ def test_transformer_outputs_match_across_backends() -> None:
     _skip_unless_cuda_flash()
     torch.manual_seed(0)
     device, dtype = "cuda", torch.bfloat16
-    model = Transformer(TransformerConfig(dim=64, num_heads=4, num_layers=2)).to(device).eval()
+    model = (
+        Transformer(TransformerConfig(dim=64, num_heads=4, num_layers=2))
+        .to(device)
+        .eval()
+    )
     # AdaLN zero-init gates the attention residual to 0 (see
     # test_zero_init_adaLN_is_identity_path in test_transformer.py), which
     # would make any mask/backend irrelevant. Randomize so attention matters.

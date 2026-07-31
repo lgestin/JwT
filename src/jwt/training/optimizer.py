@@ -32,6 +32,8 @@ class LinearWarmup:
         if self.warmup_steps <= 0:
             return self.optimizer.param_groups[0]["lr"]
         scale = min(1.0, (step + 1) / self.warmup_steps)
-        for group, base_lr in zip(self.optimizer.param_groups, self._base_lrs, strict=True):
+        for group, base_lr in zip(
+            self.optimizer.param_groups, self._base_lrs, strict=True
+        ):
             group["lr"] = base_lr * scale
         return self.optimizer.param_groups[0]["lr"]

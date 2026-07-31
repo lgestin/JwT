@@ -48,7 +48,8 @@ class MelAuxLoss(nn.Module):
         logmel_pred = self.mel(pred_wav).clamp(min=1e-5).log()
         logmel_target = self.mel(target_wav).clamp(min=1e-5).log()
         assert logmel_pred.shape == logmel_target.shape, (
-            f"pred/target mels differ in shape: {logmel_pred.shape} vs {logmel_target.shape}"
+            f"pred/target mels differ in shape: "
+            f"{logmel_pred.shape} vs {logmel_target.shape}"
         )
         assert logmel_pred.shape[-1] == v_mask.shape[-1], (
             f"mel time axis ({logmel_pred.shape[-1]}) must match v_mask "

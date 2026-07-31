@@ -125,7 +125,9 @@ def main() -> None:
 
     state = TrainerState(step=0)
     if args.resume:
-        meta = checkpoint_manager.load_latest(model, optimizer, ema=ema, map_location=device)
+        meta = checkpoint_manager.load_latest(
+            model, optimizer, ema=ema, map_location=device
+        )
         if "config" in meta:
             check_model_config_consistency(args.model, meta["config"])
         else:

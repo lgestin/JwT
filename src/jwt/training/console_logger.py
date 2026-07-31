@@ -62,7 +62,9 @@ class ConsoleLogger:
             f"[step {step:>7}] {tag}: {float(value):.6f}", markup=False, highlight=False
         )
 
-    def log_audio(self, tag: str, waveform: torch.Tensor, step: int, sample_rate: int) -> None:
+    def log_audio(
+        self, tag: str, waveform: torch.Tensor, step: int, sample_rate: int
+    ) -> None:
         if self.audio_dir is None:
             return
         wav = waveform.detach().cpu().float()
@@ -74,7 +76,9 @@ class ConsoleLogger:
     def log_image(self, tag: str, image: torch.Tensor, step: int) -> None:
         pass
 
-    def log_metrics(self, metrics: dict[str, float], step: int, prefix: str = "train") -> None:
+    def log_metrics(
+        self, metrics: dict[str, float], step: int, prefix: str = "train"
+    ) -> None:
         items = " ".join(f"{k}={float(v):.3f}" for k, v in metrics.items())
         if prefix == "train":
             # High-frequency train metrics ride on the progress bar description
@@ -87,7 +91,9 @@ class ConsoleLogger:
                 highlight=False,
             )
 
-    def log_diagnostics(self, metrics: dict[str, float], step: int, prefix: str = "train") -> None:
+    def log_diagnostics(
+        self, metrics: dict[str, float], step: int, prefix: str = "train"
+    ) -> None:
         # High-cardinality diagnostics never touch the console / progress bar.
         pass
 

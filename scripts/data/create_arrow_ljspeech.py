@@ -110,11 +110,15 @@ def main(args: Args) -> None:
             buffer["text"].append(item["text"])
             buffer["phonemes"].append(item["phonemes"])
             buffer["tokens"].append(item["tokens"])
-            buffer["waveform_i16"].append(np.ascontiguousarray(waveform_i16.numpy()).tobytes())
+            buffer["waveform_i16"].append(
+                np.ascontiguousarray(waveform_i16.numpy()).tobytes()
+            )
             buffer["num_samples"].append(int(waveform_i16.numel()))
             buffer["sample_rate"].append(int(target_sr))
             buffer["loudness"].append(item["loudness"])
-            buffer[acoustic_field].append(np.ascontiguousarray(acoustic.numpy()).tobytes())
+            buffer[acoustic_field].append(
+                np.ascontiguousarray(acoustic.numpy()).tobytes()
+            )
             buffer["acoustic_dim"].append(acoustic_dim)
             buffer["n_frames"].append(n_frames)
 

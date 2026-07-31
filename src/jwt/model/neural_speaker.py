@@ -103,7 +103,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
 
         text.values:     (B, 1, T_text)             text.mask: (B, T_text)
         acoustic.values: (B, acoustic_dim, T_ac)    acoustic.mask: (B, T_ac)
-        t:               (B, T_ac)                  per-acoustic-position timestep in [0, 1]
+        t:               (B, T_ac)               per-acoustic-position t in [0, 1]
         returns:
             pred: (B, T_ac, acoustic_dim)            raw model output
         """
@@ -119,7 +119,9 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
 
         # Project both modalities into the transformer's hidden dim and tag them.
         text_lat = self.text_in(text_ids) + self.text_modality
-        acoustic_lat = self.acoustic_in(acoustic.values.transpose(1, 2)) + self.acoustic_modality
+        acoustic_lat = (
+            self.acoustic_in(acoustic.values.transpose(1, 2)) + self.acoustic_modality
+        )
         dim = text_lat.shape[-1]
 
         # Pack [real text | real acoustic | trailing pad] per sample.
@@ -135,7 +137,9 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         x_packed = torch.gather(x_concat, 1, pack_idx.unsqueeze(-1).expand(B, T, dim))
 
         # Pack per-position t: text positions are always clean (t=1).
-        t_concat = torch.cat([torch.ones(B, T_text, device=device, dtype=t.dtype), t], dim=1)
+        t_concat = torch.cat(
+            [torch.ones(B, T_text, device=device, dtype=t.dtype), t], dim=1
+        )
         t_packed = torch.gather(t_concat, 1, pack_idx)
 
         # Keep masks in packed coords. in_text above is in original coords
@@ -150,13 +154,18 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         keep_first_zero = is_zero_real.cumsum(-1) <= 1
         attn_keys = in_real_packed & keep_first_zero  # (B, T)
         attn_mask = attention_implementation.build_mask(attn_keys)
-        out_packed = self.transformer(x_packed, t_packed, attn_mask, attention_implementation)
+        out_packed = self.transformer(
+            x_packed, t_packed, attn_mask, attention_implementation
+        )
         pred_packed = self.acoustic_out(out_packed)  # (B, T, acoustic_dim)
 
-        # Unpack: acoustic position i in sample b lives at packed position text_lens[b] + i.
+        # Unpack: acoustic position i in sample b lives at packed
+        # position text_lens[b] + i.
         ac_idx = torch.arange(T_ac, device=device).expand(B, T_ac)
         unpack_idx = (text_lens.unsqueeze(1) + ac_idx).clamp(max=T - 1)
-        pred = torch.gather(pred_packed, 1, unpack_idx.unsqueeze(-1).expand(B, T_ac, acoustic_dim))
+        pred = torch.gather(
+            pred_packed, 1, unpack_idx.unsqueeze(-1).expand(B, T_ac, acoustic_dim)
+        )
         return pred
 
     def _sample_noise(
@@ -220,7 +229,9 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
 
         if acoustic_front is None:
             u = torch.rand(B, device=device)
-            acoustic_front = (u * (acoustic_lens_ext.float() + (n - 1)) - (n - 1)).long()  # ty: ignore[invalid-assignment]
+            acoustic_front = (
+                u * (acoustic_lens_ext.float() + (n - 1)) - (n - 1)
+            ).long()  # ty: ignore[invalid-assignment]
 
         x_1 = acoustic.values.transpose(1, 2)  # (B, T_ext, acoustic_dim), normalized
         if x_0 is None:
@@ -311,7 +322,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             x_0 = self._sample_noise((B, acoustic_dim, max_T), device=device)
         else:
             assert x_0.shape[-1] >= max_T, (
-                f"x_0 must have at least cfg.max_acoustic_len ({max_T}) frames, got {x_0.shape[-1]}"
+                f"x_0 must have at least cfg.max_acoustic_len ({max_T}) "
+                f"frames, got {x_0.shape[-1]}"
             )
 
         values = torch.empty(B, acoustic_dim, 0, device=device, dtype=x_0.dtype)
@@ -359,10 +371,12 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             if done.all():
                 break
 
-        # Samples that hit max_T without triggering: scan for first below-threshold frame.
+        # Samples that hit max_T without triggering: scan for the first
+        # below-threshold frame.
         if not done.all():
             frames_raw = codec.unnormalize(values)  # (B, acoustic_dim, L)
-            # codec.is_eos expects (..., acoustic_dim); transpose so last dim is acoustic_dim.
+            # codec.is_eos expects (..., acoustic_dim); transpose so the
+            # last dim is acoustic_dim.
             is_eos_per_frame = codec.is_eos(frames_raw.transpose(1, 2))  # (B, L)
             L = values.shape[-1]
             for b in range(B):

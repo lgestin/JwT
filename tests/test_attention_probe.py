@@ -14,7 +14,9 @@ from jwt.training.attention_probe import capture_attention, log_attention_maps
 def _model(num_layers: int = 3) -> RollingFlowSpeaker:
     torch.manual_seed(0)
     cfg = RollingFlowConfig(
-        transformer_config=TransformerConfig(dim=32, num_heads=4, num_layers=num_layers),
+        transformer_config=TransformerConfig(
+            dim=32, num_heads=4, num_layers=num_layers
+        ),
         vocabulary_size=20,
         acoustic_dim=8,
         n_denoising_steps=4,

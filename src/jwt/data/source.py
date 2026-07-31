@@ -34,7 +34,9 @@ class LJTTSSource(TTSSource):
 
     def __getitem__(self, idx: int) -> tuple[AudioFile, Text]:
         audio_path, text = self.items[idx]
-        return AudioFile(filepath=str(audio_path)), Text(text=text, tokenizer=self.tokenizer)
+        return AudioFile(filepath=str(audio_path)), Text(
+            text=text, tokenizer=self.tokenizer
+        )
 
 
 class ArrowTTSSource(TTSSource):
@@ -76,10 +78,14 @@ class ArrowTTSSource(TTSSource):
         acoustic_dim = row["acoustic_dim"].as_py()
         n_frames = row["n_frames"].as_py()
 
-        waveform_i16 = torch.frombuffer(bytearray(row["waveform_i16"].as_py()), dtype=torch.int16)
+        waveform_i16 = torch.frombuffer(
+            bytearray(row["waveform_i16"].as_py()), dtype=torch.int16
+        )
         waveform = waveform_i16.view(1, -1).float() / 32678.0
 
-        acoustic = torch.frombuffer(bytearray(row[self._acoustic_field].as_py()), dtype=torch.float)
+        acoustic = torch.frombuffer(
+            bytearray(row[self._acoustic_field].as_py()), dtype=torch.float
+        )
         acoustic = acoustic.view(1, acoustic_dim, n_frames).float()
 
         audio = Audio(

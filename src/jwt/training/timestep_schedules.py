@@ -36,7 +36,9 @@ class TimestepSchedule(Protocol):
         return _euler_dt(self, progress, n_steps)
 
 
-def _euler_dt(scheduler: TimestepSchedule, progress: torch.Tensor, n_steps: int) -> torch.Tensor:
+def _euler_dt(
+    scheduler: TimestepSchedule, progress: torch.Tensor, n_steps: int
+) -> torch.Tensor:
     """Generic Euler step size — ``t(progress + h) - t(progress)`` by finite
     difference, for schedules whose step size is not constant.
 

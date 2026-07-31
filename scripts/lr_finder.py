@@ -161,7 +161,9 @@ def main() -> None:
                 pg["lr"] = lr
 
             optimizer.zero_grad()
-            loss, loss_detached = _training_step(model, codec, batch, device, amp_dtype, noamp)
+            loss, loss_detached = _training_step(
+                model, codec, batch, device, amp_dtype, noamp
+            )
             loss_val = float(loss_detached)
 
             if not math.isfinite(loss_val):
@@ -171,7 +173,9 @@ def main() -> None:
 
             loss.backward()
             grad_norm = float(
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float("inf"))
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), max_norm=float("inf")
+                )
             )
             optimizer.step()
 

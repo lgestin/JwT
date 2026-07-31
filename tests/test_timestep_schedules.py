@@ -97,7 +97,9 @@ def test_lognorm_dt_is_finite_and_nonnegative() -> None:
 
 def test_linear_timesteps_grid_is_uniform() -> None:
     n = 9
-    torch.testing.assert_close(LinearTimestepSchedule().timesteps(n), torch.linspace(0.0, 1.0, n))
+    torch.testing.assert_close(
+        LinearTimestepSchedule().timesteps(n), torch.linspace(0.0, 1.0, n)
+    )
 
 
 def test_timesteps_grid_is_timestep_on_uniform_progress() -> None:
@@ -138,7 +140,9 @@ def test_config_defaults_to_lognorm_and_model_resolves_it() -> None:
 
 
 def test_model_resolves_lognorm_schedule_from_config() -> None:
-    cfg = RollingFlowConfig(vocabulary_size=8, timestep_schedule=TimestepSchedules.LOG_NORM)
+    cfg = RollingFlowConfig(
+        vocabulary_size=8, timestep_schedule=TimestepSchedules.LOG_NORM
+    )
     model = RollingFlowSpeaker(cfg)
     assert isinstance(model.schedule, LogNormTimestepSchedule)
 

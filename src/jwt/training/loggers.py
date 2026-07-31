@@ -8,10 +8,16 @@ class Logger(Protocol):
     """Base class for all loggers."""
 
     def log_scalar(self, tag: str, value: float, step: int): ...
-    def log_audio(self, tag: str, waveform: torch.Tensor, step: int, sample_rate: int): ...
+    def log_audio(
+        self, tag: str, waveform: torch.Tensor, step: int, sample_rate: int
+    ): ...
     def log_image(self, tag: str, image: torch.Tensor, step: int): ...
-    def log_metrics(self, metrics: dict[str, float], step: int, prefix: str = "train"): ...
-    def log_diagnostics(self, metrics: dict[str, float], step: int, prefix: str = "train"):
+    def log_metrics(
+        self, metrics: dict[str, float], step: int, prefix: str = "train"
+    ): ...
+    def log_diagnostics(
+        self, metrics: dict[str, float], step: int, prefix: str = "train"
+    ):
         """Low-frequency, high-cardinality diagnostics (e.g. binned loss).
 
         Human-facing loggers (console / progress bar) should no-op this; only
@@ -19,7 +25,9 @@ class Logger(Protocol):
         """
         ...
 
-    def log_histogram(self, tag: str, bin_edges: list[float], bin_values: list[float], step: int):
+    def log_histogram(
+        self, tag: str, bin_edges: list[float], bin_values: list[float], step: int
+    ):
         """Log a precomputed histogram — `bin_edges` holds the outer edges, so
         it has one more entry than `bin_values`. Human-facing loggers no-op it.
         """
@@ -78,7 +86,9 @@ class MultiLogger:
         for lg in self.loggers:
             lg.log_scalar(tag, value, step)
 
-    def log_audio(self, tag: str, waveform: torch.Tensor, step: int, sample_rate: int) -> None:
+    def log_audio(
+        self, tag: str, waveform: torch.Tensor, step: int, sample_rate: int
+    ) -> None:
         for lg in self.loggers:
             lg.log_audio(tag, waveform, step, sample_rate)
 
@@ -86,11 +96,15 @@ class MultiLogger:
         for lg in self.loggers:
             lg.log_image(tag, image, step)
 
-    def log_metrics(self, metrics: dict[str, float], step: int, prefix: str = "train") -> None:
+    def log_metrics(
+        self, metrics: dict[str, float], step: int, prefix: str = "train"
+    ) -> None:
         for lg in self.loggers:
             lg.log_metrics(metrics, step, prefix)
 
-    def log_diagnostics(self, metrics: dict[str, float], step: int, prefix: str = "train") -> None:
+    def log_diagnostics(
+        self, metrics: dict[str, float], step: int, prefix: str = "train"
+    ) -> None:
         for lg in self.loggers:
             lg.log_diagnostics(metrics, step, prefix)
 

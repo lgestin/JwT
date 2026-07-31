@@ -47,7 +47,9 @@ class StubCodec:
         return x * self.std + self.mean
 
     def eos_frames(self, n: int, *, device=None, dtype=torch.float32) -> torch.Tensor:
-        return torch.full((self.acoustic_dim, n), self.eos_value, device=device, dtype=dtype)
+        return torch.full(
+            (self.acoustic_dim, n), self.eos_value, device=device, dtype=dtype
+        )
 
     def is_eos(self, frame: torch.Tensor) -> torch.BoolTensor:
         return frame.mean(dim=-1) < self.eos_threshold
@@ -89,7 +91,9 @@ def text(model: RollingFlowSpeaker) -> MaskedTensor:
 
 
 @pytest.fixture
-def acoustic(model: RollingFlowSpeaker, codec: StubCodec, audio_from_file) -> MaskedTensor:
+def acoustic(
+    model: RollingFlowSpeaker, codec: StubCodec, audio_from_file
+) -> MaskedTensor:
     """Pre-EOS-extended, normalized acoustic features ready for model.training_step.
 
     Produces T_real real frames from a real audio asset, then appends eos_n
@@ -228,7 +232,9 @@ def test_forward_invariant_to_text_padding(model: RollingFlowSpeaker) -> None:
         mask=torch.ones(B, 2, dtype=torch.bool),
     )
     text_padded = MaskedTensor(
-        values=torch.cat([text_ids, torch.zeros(B, 4, dtype=torch.long)], dim=1).unsqueeze(1),
+        values=torch.cat(
+            [text_ids, torch.zeros(B, 4, dtype=torch.long)], dim=1
+        ).unsqueeze(1),
         mask=torch.tensor([[True, True, False, False, False, False]] * B),
     )
 
@@ -282,7 +288,9 @@ def test_training_step_default_acoustic_front_samples_warmup_region(
     fronts_t = torch.tensor(fronts)
     assert fronts_t.min().item() >= -(n - 1), fronts_t.min().item()
     assert fronts_t.max().item() < int(lens_ext.max().item())
-    assert (fronts_t < 0).any(), "default sampler never produced negative acoustic_front"
+    assert (fronts_t < 0).any(), (
+        "default sampler never produced negative acoustic_front"
+    )
 
 
 def test_training_step_shapes(
@@ -338,10 +346,16 @@ def test_training_step_finite_for_both_parametrizations(
     )
     # Quick stand-in for the `acoustic` fixture so this test stays codec-agnostic.
     eos_n = m.cfg.eos_n_frames
-    real = torch.randn(B, m.cfg.acoustic_dim, T_MEL_MAX) * 2 - 5  # roughly log-mel range
-    eos_frames = codec_.eos_frames(eos_n).unsqueeze(0).expand(B, m.cfg.acoustic_dim, eos_n)
+    real = (
+        torch.randn(B, m.cfg.acoustic_dim, T_MEL_MAX) * 2 - 5
+    )  # roughly log-mel range
+    eos_frames = (
+        codec_.eos_frames(eos_n).unsqueeze(0).expand(B, m.cfg.acoustic_dim, eos_n)
+    )
     ext = codec_.normalize(torch.cat([real, eos_frames], dim=-1))
-    ac = MaskedTensor(values=ext, mask=torch.ones(B, T_MEL_MAX + eos_n, dtype=torch.bool))
+    ac = MaskedTensor(
+        values=ext, mask=torch.ones(B, T_MEL_MAX + eos_n, dtype=torch.bool)
+    )
 
     out = m.training_step(txt, ac)
     assert torch.isfinite(out.loss), f"{parametrization}: loss not finite"
@@ -374,7 +388,9 @@ def test_speak_finite_for_both_parametrizations(
         mask=torch.ones(B, T_TEXT, dtype=torch.bool),
     )
     out = m.speak(txt, codec=codec_)
-    assert torch.isfinite(out.values).all(), f"{parametrization}: speak() produced NaN/Inf"
+    assert torch.isfinite(out.values).all(), (
+        f"{parametrization}: speak() produced NaN/Inf"
+    )
 
 
 def test_noise_scale_field_defaults_to_one() -> None:
@@ -405,9 +421,13 @@ def test_lognorm_schedule_runs_end_to_end() -> None:
     )
     eos_n = m.cfg.eos_n_frames
     real = torch.randn(B, m.cfg.acoustic_dim, T_MEL_MAX) * 2 - 5
-    eos_frames = codec_.eos_frames(eos_n).unsqueeze(0).expand(B, m.cfg.acoustic_dim, eos_n)
+    eos_frames = (
+        codec_.eos_frames(eos_n).unsqueeze(0).expand(B, m.cfg.acoustic_dim, eos_n)
+    )
     ext = codec_.normalize(torch.cat([real, eos_frames], dim=-1))
-    ac = MaskedTensor(values=ext, mask=torch.ones(B, T_MEL_MAX + eos_n, dtype=torch.bool))
+    ac = MaskedTensor(
+        values=ext, mask=torch.ones(B, T_MEL_MAX + eos_n, dtype=torch.bool)
+    )
 
     out = m.training_step(txt, ac)
     assert torch.isfinite(out.loss), "lognorm: training loss not finite"

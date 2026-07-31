@@ -103,11 +103,13 @@ def check_model_config_consistency(
     actionable error), so it is a hard failure.
     """
     diffs = [
-        f"  {f.name}: checkpoint={getattr(checkpoint, f.name)!r} run={getattr(runtime, f.name)!r}"
+        f"  {f.name}: checkpoint={getattr(checkpoint, f.name)!r} "
+        f"run={getattr(runtime, f.name)!r}"
         for f in fields(RollingFlowConfig)
         if getattr(checkpoint, f.name) != getattr(runtime, f.name)
     ]
     if diffs:
         raise ValueError(
-            "resumed run's model config does not match the checkpoint:\n" + "\n".join(diffs)
+            "resumed run's model config does not match the checkpoint:\n"
+            + "\n".join(diffs)
         )

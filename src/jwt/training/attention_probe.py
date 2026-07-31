@@ -65,7 +65,9 @@ def capture_attention(model: torch.nn.Module) -> Iterator[AttentionCollector]:
             collector.record(attn_weights.detach())  # ty: ignore[unresolved-attribute]
 
     handles = [
-        m.register_forward_hook(hook) for m in model.modules() if isinstance(m, SelfAttention)
+        m.register_forward_hook(hook)
+        for m in model.modules()
+        if isinstance(m, SelfAttention)
     ]
     # Drop the compiled `forward` instance attribute so calls fall through to the
     # eager class method; restore it afterwards. A no-op when compile is off.

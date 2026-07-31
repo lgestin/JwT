@@ -22,6 +22,7 @@ dependencies = [
     "bigvgan>=2.4.1",
     "einops>=0.8",
     "flash-attn",
+    "marimo>=0.23.6",
     "misaki[en]>=0.9.4",
     "pyarrow>=18.0",
     "pyyaml>=6.0",
@@ -37,7 +38,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
-    "ruff>=0.8",
+    "ruff>=0.16",
     "ty",
     "ipython",
     "marimo>=0.9",
@@ -66,7 +67,7 @@ packages = ["src/jwt"]
 
 [tool.ruff]
 target-version = "py313"
-line-length = 100
+line-length = 88
 extend-exclude = ["notebooks", "docs"]
 
 [tool.ruff.lint]
