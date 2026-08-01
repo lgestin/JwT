@@ -126,46 +126,48 @@ class TimestepEmbedder(nn.Module):
 
 
 class AdaLN(nn.Module):
-    """DiT-style modulation: silu -> linear producing (shift, scale, gate) x 2.
+    """DiT-style modulation: silu -> linear producing `n_chunks` chunks of `dim`.
 
-    Gates are tanh-clamped to [-1, 1] so a single block's contribution can never
-    dominate the residual stream.
+    Chunks come back raw — this is a plain projection and squashes nothing.
+    `TransformerBlock` tanh-clamps its two gate chunks, since only the consumer
+    knows which chunks are gates.
 
-    `rank` factorizes the `dim -> 6*dim` projection through a bottleneck of that
-    width. This costs nothing in expressiveness as long as `rank` is at least
-    the number of distinct timesteps the model sees: `t` comes off a grid of
-    `n_denoising_steps` values, so the projection only ever receives that many
-    distinct inputs and its output can span at most that many dimensions. The
-    full-rank projection is `6 * dim**2` parameters *and* the same share of the
-    per-token FLOPs — unlike stock DiT, `t_emb` here is per-position, so this
-    runs on every token of every layer.
+    Two layouts:
+    - `n_chunks=6` — (shift, scale, gate) x 2, for a residual block.
+    - `n_chunks=2` — (shift, scale), for the final layer. Nothing to gate there.
+
+    `rank` factorizes the `dim -> n_chunks*dim` projection through a bottleneck
+    of that width. This costs nothing in expressiveness as long as `rank` is at
+    least the number of distinct timesteps the model sees: `t` comes off a grid
+    of `n_denoising_steps` values, so the projection only ever receives that
+    many distinct inputs and its output can span at most that many dimensions.
+    At `n_chunks=6` the unfactorized projection is `6 * dim**2` parameters *and*
+    the same share of the per-token FLOPs — unlike stock DiT, `t_emb` here is
+    per-position, so this runs on every token of every layer.
 
     `None` keeps the unfactorized projection.
     """
 
-    def __init__(self, dim: int, rank: int | None = None):
+    def __init__(self, dim: int, rank: int | None = None, n_chunks: int = 6):
         super().__init__()
         assert rank is None or rank > 0, f"adaLN rank must be positive, got {rank}"
+        assert n_chunks in (2, 6), f"adaLN n_chunks must be 2 or 6, got {n_chunks}"
         self.rank = rank
+        self.n_chunks = n_chunks
         if rank is None:
-            self.linear = nn.Linear(dim, 6 * dim, bias=True)
+            self.linear = nn.Linear(dim, n_chunks * dim, bias=True)
             nn.init.zeros_(self.linear.weight)
             nn.init.zeros_(self.linear.bias)
         else:
-            # `down` keeps its default init and `up` is zeroed, so the module
-            # still emits zero modulation at init (blocks start as identity)
-            # while `down` retains a usable scale. Zeroing both would leave
-            # `down` with no gradient path forever.
-            self.down = nn.Linear(dim, rank, bias=False)
-            self.up = nn.Linear(rank, 6 * dim, bias=True)
-            nn.init.zeros_(self.up.weight)
-            nn.init.zeros_(self.up.bias)
+            down = nn.Linear(dim, rank, bias=False)
+            up = nn.Linear(rank, n_chunks * dim, bias=True)
+            nn.init.zeros_(up.weight)
+            nn.init.zeros_(up.bias)
+            self.linear = nn.Sequential(down, up)
 
     def forward(self, t_emb: torch.Tensor) -> tuple[torch.Tensor, ...]:
         h = F.silu(t_emb)
-        modulation = self.linear(h) if self.rank is None else self.up(self.down(h))
-        shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = modulation.chunk(6, dim=-1)
-        return shift_a, scale_a, gate_a.tanh(), shift_m, scale_m, gate_m.tanh()
+        return self.linear(h).chunk(self.n_chunks, dim=-1)
 
 
 class RMSNorm(nn.Module):
@@ -188,7 +190,9 @@ class QKNorm(nn.Module):
         self.query_norm = RMSNorm(head_dim)
         self.key_norm = RMSNorm(head_dim)
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, q: torch.Tensor, k: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.query_norm(q).to(q), self.key_norm(k).to(k)
 
 
@@ -257,6 +261,7 @@ class TransformerBlock(nn.Module):
         attention_implementation: type[AttentionImplementation] = SDPAAttention,
     ) -> torch.Tensor:
         shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = self.adaLN(t_emb)
+        gate_a, gate_m = gate_a.tanh(), gate_m.tanh()
         attn_out, _ = self.attn(
             self.norm1(x) * (1 + scale_a) + shift_a,
             freqs_cis,
@@ -278,11 +283,14 @@ class Transformer(nn.Module):
         self.time_embedder = TimestepEmbedder(config.dim, config.time_freq_embed_dim)
         self.blocks = nn.ModuleList(
             [
-                TransformerBlock(config.dim, config.num_heads, config.mlp_ratio, config.adaln_rank)
+                TransformerBlock(
+                    config.dim, config.num_heads, config.mlp_ratio, config.adaln_rank
+                )
                 for _ in range(config.num_layers)
             ]
         )
-        self.norm = RMSNorm(config.dim)
+        self.final_norm = RMSNorm(config.dim, affine=False)
+        self.final_modulation = AdaLN(config.dim, config.adaln_rank, n_chunks=2)
         freqs_cis = precompute_freqs_cis(
             config.max_seq_len, config.dim // config.num_heads, config.rope_theta
         )
@@ -300,4 +308,5 @@ class Transformer(nn.Module):
         t_emb = self.time_embedder(t)
         for block in self.blocks:
             x = block(x, freqs_cis, t_emb, mask, attention_implementation)
-        return self.norm(x)
+        shift, scale = self.final_modulation(t_emb)
+        return self.final_norm(x) * (1 + scale) + shift
