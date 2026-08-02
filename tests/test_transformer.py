@@ -4,6 +4,7 @@ import torch.nn as nn
 
 from jwt.model.transformer import (
     AdaLN,
+    RMSNorm,
     Transformer,
     TransformerBlock,
     TransformerConfig,
@@ -325,3 +326,16 @@ def test_final_modulation_honours_adaln_rank() -> None:
     )
     assert model.final_modulation.linear[0].weight.shape == (8, 64)
     assert model.final_modulation.linear[-1].weight.shape == (2 * 64, 8)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+@pytest.mark.parametrize("affine", [True, False])
+def test_rmsnorm_output_dtype_matches_input(dtype: torch.dtype, affine: bool) -> None:
+    """Output dtype must depend on the input alone, never on `affine`.
+
+    The normalization runs in fp32 for stability; applying the fp32 `scale`
+    before casting back keeps that an implementation detail. Multiplying after
+    the cast promoted a bf16 activation to fp32 and leaked it downstream.
+    """
+    x = torch.randn(4, 64, dtype=dtype)
+    assert RMSNorm(64, affine=affine)(x).dtype == dtype

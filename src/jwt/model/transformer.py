@@ -179,9 +179,10 @@ class RMSNorm(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         dtype = x.dtype
         x = x.float()
-        rrms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        x = (x * rrms).to(dtype)
-        return x * self.scale if self.scale is not None else x
+        out = x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        if self.scale is not None:
+            out = out * self.scale
+        return out.to(dtype)
 
 
 class QKNorm(nn.Module):
