@@ -1,0 +1,180 @@
+"""End-to-end training entrypoint for SpectrogramInverter (mel inversion)."""
+
+import warnings
+from pathlib import Path
+
+import torch
+from torch.optim import AdamW
+from torch.utils.data import DataLoader, Subset
+
+from jwt.data.audio.codecs import RawAudioPatcher, check_sample_rate
+from jwt.data.window_dataset import (
+    WindowedAudioDataset,
+    WindowedAudioSource,
+    collate_windows,
+)
+from jwt.model.spectrogram_inverter import SpectrogramInverter
+from jwt.training.checkpoint_manager import CheckpointManager
+from jwt.training.config import dump_config
+from jwt.training.console_logger import ConsoleLogger
+from jwt.training.ema import EMA
+from jwt.training.loggers import Logger, MultiLogger
+from jwt.training.spectrogram_inversion_config import (
+    SpectrogramInversionArgs,
+    check_model_config_consistency,
+    parse_args,
+)
+from jwt.training.spectrogram_inversion_trainer import SpectrogramInversionTrainer
+from jwt.training.trainer import TrainerState
+
+
+def main() -> None:
+    args: SpectrogramInversionArgs = parse_args()
+
+    device = torch.device(args.trainer.device)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    dump_config(args, output_dir / "config.yaml")  # ty: ignore[invalid-argument-type]
+
+    source = WindowedAudioSource(args.arrow_path)
+    print(f"Source size: {len(source)}")
+
+    codec = args.model.codec.codec.to(device)
+    assert isinstance(codec, RawAudioPatcher), (
+        f"spectrogram inversion needs a RawAudio* codec, got {args.model.codec}"
+    )
+    # Sample rate comes from the datafile; the codec only constrains it.
+    sample_rate = source.sample_rate
+    check_sample_rate(codec, sample_rate)
+    print(f"Sample rate: {sample_rate} Hz")
+
+    args.model.acoustic_dim = codec.acoustic_dim
+    args.model.sample_rate = sample_rate
+    assert codec.hop_length == args.model.mel_hop_length, (
+        f"patch size ({codec.hop_length}) must equal the mel hop "
+        f"({args.model.mel_hop_length})"
+    )
+    assert args.n_frames <= args.model.transformer_config.max_seq_len, (
+        f"n_frames ({args.n_frames}) exceeds transformer max_seq_len "
+        f"({args.model.transformer_config.max_seq_len})"
+    )
+
+    # Two views over the same eligible-clip list: random crops for training,
+    # deterministic (clip-start) crops for the valid/sample splits so their
+    # metrics are comparable across steps.
+    train_full = WindowedAudioDataset(
+        source, n_frames=args.n_frames, patch_size=codec.patch_size
+    )
+    eval_full = WindowedAudioDataset(
+        source, n_frames=args.n_frames, patch_size=codec.patch_size, deterministic=True
+    )
+    N = len(train_full)
+    print(f"Eligible clips: {N}/{len(source)} (window = {args.n_frames} frames)")
+    n_smp = args.trainer.n_smp
+    if args.n_valid + n_smp >= N:
+        raise ValueError("dataset too small for the requested splits")
+    smp_ds = Subset(eval_full, list(range(n_smp)))
+    valid_ds = Subset(eval_full, list(range(N - args.n_valid, N)))
+    train_idx = list(range(n_smp, N - args.n_valid))
+    if args.n_train is not None:
+        train_idx = train_idx[: args.n_train]
+    train_ds = Subset(train_full, train_idx)
+
+    pin = device.type == "cuda"
+    train_dl = DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        collate_fn=collate_windows,
+        pin_memory=pin,
+        persistent_workers=args.num_workers > 0,
+    )
+    valid_dl = DataLoader(
+        valid_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=collate_windows,
+        pin_memory=pin,
+    )
+    smp_dl = DataLoader(
+        smp_ds,
+        batch_size=n_smp,
+        shuffle=False,
+        num_workers=0,
+        collate_fn=collate_windows,
+        pin_memory=pin,
+    )
+
+    model = SpectrogramInverter(args.model).to(device)
+    print(f"Attention: {args.trainer.attention_implementation.name}")
+    if args.compile:
+        # Disable inductor's split_reductions pass — its mix_order_reduction
+        # codegen can't factor expressions like s13*(s23 + s79) and crashes
+        # with CantSplit on AdaLN's backward at dynamic shapes.
+        import torch._inductor.config as inductor_config
+
+        inductor_config.split_reductions = False
+        # Let dynamo trace through `.item()` calls (e.g. `max_seqlen` for
+        # FlashVarlenAttention) symbolically rather than graph-breaking.
+        torch._dynamo.config.capture_scalar_outputs = True
+        model.forward = torch.compile(model.forward, dynamic=True)
+
+    optimizer = AdamW(
+        model.parameters(),
+        lr=args.optimizer.lr,
+        betas=args.optimizer.betas,
+        weight_decay=args.optimizer.weight_decay,
+    )
+
+    ema = EMA(model, decay=args.ema.decay) if args.ema.enabled else None
+
+    sub_loggers: list[Logger] = [
+        ConsoleLogger(total=args.trainer.max_steps, audio_dir=output_dir / "audio")
+    ]
+    if args.use_tensorboard:
+        from jwt.training.tensorboard_logger import TensorBoardLogger
+
+        sub_loggers.append(TensorBoardLogger(log_dir=output_dir / "tb"))
+    logger: Logger = MultiLogger(*sub_loggers)
+    logger.log_config(args)
+
+    checkpoint_manager = CheckpointManager(exp_path=output_dir / "checkpoints")
+
+    state = TrainerState(step=0)
+    if args.resume:
+        meta = checkpoint_manager.load_latest(
+            model, optimizer, ema=ema, map_location=device
+        )
+        if "config" in meta:
+            check_model_config_consistency(args.model, meta["config"])
+        else:
+            warnings.warn(
+                "checkpoint has no stored model config; skipping the consistency check",
+                stacklevel=2,
+            )
+        state = TrainerState(step=meta["step"], best_loss=meta["best_loss"])
+        print(f"Resumed from step {state.step} (best_loss={meta['best_loss']})")
+
+    trainer = SpectrogramInversionTrainer(
+        config=args.trainer,
+        codec=codec,
+        sample_rate=sample_rate,
+        model=model,  # ty: ignore[invalid-argument-type]
+        optimizer=optimizer,
+        scaler=None,
+        logger=logger,
+        train_dloader=train_dl,
+        valid_dloader=valid_dl,
+        smp_dloader=smp_dl,
+        state=state,
+        checkpoint_manager=checkpoint_manager,
+        ema=ema,
+    )
+
+    trainer.train()
+
+
+if __name__ == "__main__":
+    main()

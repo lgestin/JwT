@@ -1,0 +1,83 @@
+# LJSpeech @ 22.05 kHz — mel-spectrogram inversion (SpectrogramInverter),
+# tuned for a 24 GB RTX 3090.
+#
+# Pure (non-rolling) flow matching over fixed 256-frame windows of RawAudio256
+# patches, conditioned on the clip's own 80-bin log-mel (n_fft 1024, hop 256 ==
+# patch size). Architecture matches the raw512 TTS run (dim 768 / 12 layers)
+# so results are comparable.
+#
+# Data: reuses the raw512 arrow — only its waveform_i16 column is read, so no
+# new arrow build is needed. Clips shorter than the 2.97 s window are excluded.
+#
+# Launch:
+#   uv run python scripts/train_spectrogram_inversion.py \
+#       --config_path configs/ljspeech_22khz_melinv_3090.yaml
+
+arrow_path: /data/jwt/data/ljspeech_22.050khz.raw512.arrow
+# Window length in patches: 256 x 256 samples = 65536 = ~2.97 s @ 22.05 kHz.
+n_frames: 256
+# 32 x 4 accumulation = effective batch 128 windows. Sequences are a uniform
+# 256 tokens (no padding), so memory is far below the TTS run at the same B —
+# check system/peak_mem_gb on the first log window and raise B if idle.
+batch_size: 32
+compile: true
+ema:
+  decay: 0.9995
+  enabled: false
+model:
+  acoustic_dim: 256
+  codec: RAWAUDIO_256
+  n_denoising_steps: 128
+  noise_scale: 1.0
+  parametrization: JWT
+  timestep_schedule: LOG_NORM_TRIMMED
+  # Mel conditioning. sample_rate is overwritten from the arrow at runtime.
+  n_mels: 80
+  mel_n_fft: 1024
+  mel_hop_length: 256
+  sample_rate: 22050
+  # Fixed affine on log-mels -> roughly unit range (LJSpeech stats).
+  mel_shift: -5.9
+  mel_scale: 2.2
+  transformer_config:
+    # Must be >= n_denoising_steps: t comes off a grid of that many values, so
+    # the adaLN projection can span at most that many dimensions.
+    adaln_rank: 128
+    dim: 768
+    # Windows are 256 tokens; 512 leaves headroom for longer-window runs.
+    max_seq_len: 512
+    mlp_ratio: 2.67
+    num_heads: 8
+    num_layers: 12
+    rope_theta: 10000.0
+    time_freq_embed_dim: 64
+n_train: null
+n_valid: 64
+num_workers: 6
+optimizer:
+  betas:
+    - 0.9
+    - 0.998
+  lr: 1.0e-4
+  warmup_steps: 1000
+  weight_decay: 0.0
+output_dir: /data/jwt/runs/run_22khz_melinv_3090
+resume: false
+trainer:
+  amp_dtype: BF16
+  attention_implementation: FLASH_VARLEN
+  # The target mel is also the conditioning, so this term is partially
+  # redundant here; kept at the TTS run's weight as a perceptual signal.
+  aux_mel_weight: 0.1
+  checkpoint_steps: 5000
+  clip_grad_norm: 1.0
+  device: cuda
+  grad_accum_steps: 4
+  log_steps: 500
+  loss_fn: L1
+  max_steps: 600001
+  n_loss_bins: 128
+  n_smp: 16
+  smp_steps: 10000
+  valid_steps: 5000
+use_tensorboard: true
