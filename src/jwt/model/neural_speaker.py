@@ -24,13 +24,13 @@ class NeuralSpeaker(Protocol):
 class RollingFlowConfig:
     transformer_config: TransformerConfig = field(default_factory=TransformerConfig)
     vocabulary_size: int = 0
-    codec: Codecs = Codecs.RAWAUDIO_128
+    codec: Codecs = Codecs.RAWAUDIO_512
     parametrization: FlowParametrizations = FlowParametrizations.JWT
     timestep_schedule: TimestepSchedules = TimestepSchedules.LOG_NORM
     acoustic_dim: int = 100
     n_denoising_steps: int = 32
     max_acoustic_len: int = 2048
-    eos_n_frames: int = 3
+    eos_n_frames: int = 8
     noise_scale: float = 1.0
 
 
