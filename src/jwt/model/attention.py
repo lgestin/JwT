@@ -34,8 +34,8 @@ class AttentionImplementation(Protocol):
     """
 
     @staticmethod
-    def build_mask(attn_keys: torch.Tensor) -> AttentionMask:
-        """`attn_keys`: (B, T) bool, True = visible key. Returns the mask
+    def build_mask(seq_mask: torch.Tensor) -> AttentionMask:
+        """`seq_mask`: (B, T) bool, True = visible key. Returns the mask
         object consumed by `attention`, or None for an unmasked backend."""
         ...
 
@@ -63,8 +63,8 @@ class SDPAAttention:
     """
 
     @staticmethod
-    def build_mask(attn_keys: torch.Tensor) -> torch.Tensor:
-        return attn_keys[:, None, None, :]
+    def build_mask(seq_mask: torch.Tensor) -> torch.Tensor:
+        return seq_mask[:, None, None, :]
 
     @staticmethod
     def attention(
@@ -86,8 +86,8 @@ class TorchAttention:
     """
 
     @staticmethod
-    def build_mask(attn_keys: torch.Tensor) -> torch.Tensor:
-        return attn_keys[:, None, None, :]
+    def build_mask(seq_mask: torch.Tensor) -> torch.Tensor:
+        return seq_mask[:, None, None, :]
 
     @staticmethod
     def attention(
@@ -119,11 +119,11 @@ class FlashVarlenAttention:
     """
 
     @staticmethod
-    def build_mask(attn_keys: torch.Tensor) -> FlashAttentionVarlenMask:
-        B, T = attn_keys.shape
-        seqlens = attn_keys.sum(dim=-1, dtype=torch.int32)  # (B,)
+    def build_mask(seq_mask: torch.Tensor) -> FlashAttentionVarlenMask:
+        B, T = seq_mask.shape
+        seqlens = seq_mask.sum(dim=-1, dtype=torch.int32)  # (B,)
         cu_seqlens = F.pad(seqlens.cumsum(0, dtype=torch.int32), (1, 0))
-        indices = attn_keys.reshape(-1).nonzero(as_tuple=False).squeeze(-1)
+        indices = seq_mask.reshape(-1).nonzero(as_tuple=False).squeeze(-1)
         return FlashAttentionVarlenMask(
             cu_seqlens=cu_seqlens,
             max_seqlen=int(seqlens.max().item()),

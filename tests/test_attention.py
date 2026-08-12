@@ -29,9 +29,9 @@ def _qkv(B=2, H=4, T=6, D=8):
 
 
 def test_build_mask_shape() -> None:
-    attn_keys = torch.ones(2, 6, dtype=torch.bool)
+    seq_mask = torch.ones(2, 6, dtype=torch.bool)
     for impl in (SDPAAttention, TorchAttention):
-        mask = impl.build_mask(attn_keys)
+        mask = impl.build_mask(seq_mask)
         assert mask.shape == (2, 1, 1, 6)
         assert mask.dtype == torch.bool
 
@@ -65,10 +65,10 @@ def test_torch_matches_sdpa_output() -> None:
 
 def test_torch_matches_sdpa_with_mask() -> None:
     q, k, v = _qkv()
-    attn_keys = torch.tensor(
+    seq_mask = torch.tensor(
         [[True, True, True, False, False, False], [True, True, True, True, True, False]]
     )
-    mask = TorchAttention.build_mask(attn_keys)
+    mask = TorchAttention.build_mask(seq_mask)
     out_sdpa, _ = SDPAAttention.attention(q, k, v, mask)
     out_torch, attn_weights = TorchAttention.attention(q, k, v, mask)
     assert torch.allclose(out_sdpa, out_torch, atol=1e-5)
@@ -86,10 +86,10 @@ def test_enum_resolves_implementation() -> None:
 
 def test_flash_varlen_build_mask_structure() -> None:
     _skip_unless_cuda_flash()
-    attn_keys = torch.zeros(2, 6, dtype=torch.bool, device="cuda")
-    attn_keys[0, :3] = True
-    attn_keys[1, :6] = True
-    mask = FlashVarlenAttention.build_mask(attn_keys)
+    seq_mask = torch.zeros(2, 6, dtype=torch.bool, device="cuda")
+    seq_mask[0, :3] = True
+    seq_mask[1, :6] = True
+    mask = FlashVarlenAttention.build_mask(seq_mask)
     assert mask.cu_seqlens.tolist() == [0, 3, 9]
     assert mask.max_seqlen == 6
     assert mask.indices.tolist() == [0, 1, 2, 6, 7, 8, 9, 10, 11]
@@ -105,20 +105,20 @@ def test_flash_varlen_matches_sdpa_attention() -> None:
     B, H, T, D = 2, 4, 32, 16
     device, dtype = "cuda", torch.bfloat16
 
-    attn_keys = torch.zeros(B, T, dtype=torch.bool, device=device)
-    attn_keys[0, :20] = True
-    attn_keys[1, :32] = True
+    seq_mask = torch.zeros(B, T, dtype=torch.bool, device=device)
+    seq_mask[0, :20] = True
+    seq_mask[1, :32] = True
 
     q = torch.randn(B, H, T, D, device=device, dtype=dtype)
     k = torch.randn(B, H, T, D, device=device, dtype=dtype)
     v = torch.randn(B, H, T, D, device=device, dtype=dtype)
 
-    sdpa_out, _ = SDPAAttention.attention(q, k, v, SDPAAttention.build_mask(attn_keys))
+    sdpa_out, _ = SDPAAttention.attention(q, k, v, SDPAAttention.build_mask(seq_mask))
     flash_out, _ = FlashVarlenAttention.attention(
-        q, k, v, FlashVarlenAttention.build_mask(attn_keys)
+        q, k, v, FlashVarlenAttention.build_mask(seq_mask)
     )
 
-    valid = attn_keys[:, None, :, None].expand_as(sdpa_out)
+    valid = seq_mask[:, None, :, None].expand_as(sdpa_out)
     assert torch.allclose(sdpa_out[valid], flash_out[valid], atol=5e-3)
 
 
@@ -142,9 +142,9 @@ def test_transformer_outputs_match_across_backends() -> None:
     B, T = 3, 24
     x = torch.randn(B, T, 64, device=device)
     t = torch.rand(B, T, device=device)
-    attn_keys = torch.zeros(B, T, dtype=torch.bool, device=device)
+    seq_mask = torch.zeros(B, T, dtype=torch.bool, device=device)
     for i, L in enumerate([12, 18, 24]):
-        attn_keys[i, :L] = True
+        seq_mask[i, :L] = True
 
     outs: dict[str, torch.Tensor] = {}
     for impl in (TorchAttention, SDPAAttention, FlashVarlenAttention):
@@ -152,12 +152,12 @@ def test_transformer_outputs_match_across_backends() -> None:
             out = model(
                 x,
                 t,
-                mask=impl.build_mask(attn_keys),
+                mask=impl.build_mask(seq_mask),
                 attention_implementation=impl,
             )
         outs[impl.__name__] = out.float()
 
-    valid = attn_keys.unsqueeze(-1).expand_as(outs["SDPAAttention"])
+    valid = seq_mask.unsqueeze(-1).expand_as(outs["SDPAAttention"])
     ref = outs["SDPAAttention"]
     for name in ("TorchAttention", "FlashVarlenAttention"):
         diff = (ref - outs[name])[valid].abs().max().item()

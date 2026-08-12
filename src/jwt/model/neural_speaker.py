@@ -152,13 +152,13 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         in_real_packed = arange < total_lens.unsqueeze(1)
         in_ac_packed = (arange >= text_lens.unsqueeze(1)) & in_real_packed
 
-        # Attention keys: visible up to and including the first real t=0 (the
-        # "next frontier"). Pure-noise positions beyond it carry no signal
-        # and would only distract attention.
+        # Sequence mask (True = visible key): visible up to and including the
+        # first real t=0 (the "next frontier"). Pure-noise positions beyond it
+        # carry no signal and would only distract attention.
         is_zero_real = (t_packed == 0.0) & in_ac_packed
         keep_first_zero = is_zero_real.cumsum(-1) <= 1
-        attn_keys = in_real_packed & keep_first_zero  # (B, T)
-        attn_mask = attention_implementation.build_mask(attn_keys)
+        seq_mask = in_real_packed & keep_first_zero  # (B, T)
+        attn_mask = attention_implementation.build_mask(seq_mask)
         out_packed = self.transformer(
             x_packed, t_packed, attn_mask, attention_implementation
         )
