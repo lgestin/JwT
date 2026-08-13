@@ -7,7 +7,12 @@ import torch.nn.functional as F
 from einops import rearrange
 from simple_parsing import Serializable
 
-from jwt.model.attention import AttentionImplementation, SDPAAttention
+from jwt.model.attention import (
+    AttentionImplementation,
+    AttentionMask,
+    SDPAAttention,
+)
+from jwt.model.registers import Registers, RegistersConfig
 
 
 @dataclass
@@ -19,9 +24,16 @@ class TransformerConfig(Serializable):
     max_seq_len: int = 8192
     rope_theta: float = 10000.0
     time_freq_embed_dim: int = 256
-    # Bottleneck width for each block's adaLN projection; None = full rank.
-    # Set it to `n_denoising_steps` — see AdaLN for why that is lossless.
     adaln_rank: int | None = None
+    registers: RegistersConfig | None = None
+
+    def __post_init__(self):
+        has_registers = self.registers is not None
+        if has_registers and self.registers.starts_layer >= self.num_layers:
+            raise ValueError(
+                f"registers.starts_layer ({self.registers.starts_layer}) must be below "
+                f"num_layers ({self.num_layers}) or they never run"
+            )
 
 
 def precompute_freqs_cis(seq_len: int, dim: int, theta: float) -> torch.Tensor:
@@ -210,7 +222,7 @@ class SelfAttention(nn.Module):
         self,
         x: torch.Tensor,
         freqs_cis: torch.Tensor,
-        mask: torch.Tensor | None = None,
+        mask: AttentionMask | None = None,
         attention_implementation: type[AttentionImplementation] = SDPAAttention,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Returns `(out, attn_weights)`. `attn_weights` is the (B, H, T, T)
@@ -258,7 +270,7 @@ class TransformerBlock(nn.Module):
         x: torch.Tensor,
         freqs_cis: torch.Tensor,
         t_emb: torch.Tensor,
-        mask: torch.Tensor | None = None,
+        mask: AttentionMask | None = None,
         attention_implementation: type[AttentionImplementation] = SDPAAttention,
     ) -> torch.Tensor:
         shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = self.adaLN(t_emb)
@@ -297,17 +309,27 @@ class Transformer(nn.Module):
         )
         self.register_buffer("freqs_cis", freqs_cis, persistent=False)
 
+        self.has_registers = config.registers is not None
+        if config.registers is not None:
+            self.registers = Registers(dim=config.dim, config=config.registers)
+
     def forward(
         self,
         x: torch.Tensor,
         t: torch.Tensor,
-        mask: torch.Tensor | None = None,
+        mask: AttentionMask | None = None,
         attention_implementation: type[AttentionImplementation] = SDPAAttention,
     ) -> torch.Tensor:
         """x: (B, L, D), t: (B, L) per-position timestep, mask: optional attn mask."""
         freqs_cis = self.freqs_cis[: x.shape[1]]
         t_emb = self.time_embedder(t)
-        for block in self.blocks:
+        for i, block in enumerate(self.blocks):
+            if self.has_registers and i == self.registers.starts_layer:
+                x, t_emb, mask, freqs_cis = self.registers.prepend(
+                    x, t_emb, mask, freqs_cis
+                )
             x = block(x, freqs_cis, t_emb, mask, attention_implementation)
+        if self.has_registers:
+            x, t_emb = x[:, self.registers.n :], t_emb[:, self.registers.n :]
         shift, scale = self.final_modulation(t_emb)
         return self.final_norm(x) * (1 + scale) + shift
