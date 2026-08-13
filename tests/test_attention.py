@@ -85,8 +85,9 @@ def test_enum_resolves_implementation() -> None:
 
 
 def test_flash_varlen_build_mask_structure() -> None:
-    _skip_unless_cuda_flash()
-    seq_mask = torch.zeros(2, 6, dtype=torch.bool, device="cuda")
+    """`build_mask` is pure tensor arithmetic — it never touches the kernel,
+    so it needs neither CUDA nor flash-attn to be installed."""
+    seq_mask = torch.zeros(2, 6, dtype=torch.bool)
     seq_mask[0, :3] = True
     seq_mask[1, :6] = True
     mask = FlashVarlenAttention.build_mask(seq_mask)
