@@ -25,11 +25,20 @@ class Logger(Protocol):
         """
         ...
 
-    def log_histogram(
-        self, tag: str, bin_edges: list[float], bin_values: list[float], step: int
+    def log_curve(
+        self,
+        tag: str,
+        x: list[float],
+        y: list[float],
+        step: int,
+        xlabel: str = "t",
     ):
-        """Log a precomputed histogram — `bin_edges` holds the outer edges, so
-        it has one more entry than `bin_values`. Human-facing loggers no-op it.
+        """Log `y` sampled on the `x` grid as a line plot (equal lengths).
+
+        NaN entries in `y` mark points with no data and are not drawn. Curves
+        deliberately do not go through the histogram summary: that widget is
+        built for count distributions and re-buckets what it is given (see
+        `TensorBoardLogger.log_curve`). Human-facing loggers no-op it.
         """
         ...
 
@@ -108,11 +117,16 @@ class MultiLogger:
         for lg in self.loggers:
             lg.log_diagnostics(metrics, step, prefix)
 
-    def log_histogram(
-        self, tag: str, bin_edges: list[float], bin_values: list[float], step: int
+    def log_curve(
+        self,
+        tag: str,
+        x: list[float],
+        y: list[float],
+        step: int,
+        xlabel: str = "t",
     ) -> None:
         for lg in self.loggers:
-            lg.log_histogram(tag, bin_edges, bin_values, step)
+            lg.log_curve(tag, x, y, step, xlabel)
 
     def log_config(self, config: object, step: int = 0) -> None:
         for lg in self.loggers:

@@ -97,10 +97,15 @@ class ConsoleLogger:
         # High-cardinality diagnostics never touch the console / progress bar.
         pass
 
-    def log_histogram(
-        self, tag: str, bin_edges: list[float], bin_values: list[float], step: int
+    def log_curve(
+        self,
+        tag: str,
+        x: list[float],
+        y: list[float],
+        step: int,
+        xlabel: str = "t",
     ) -> None:
-        # Histograms are a TensorBoard-only artifact.
+        # Curves are a TensorBoard-only artifact.
         pass
 
     def log_config(self, config: object, step: int = 0) -> None:

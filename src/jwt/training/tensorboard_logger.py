@@ -5,6 +5,8 @@ from pathlib import Path
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
+from jwt.training.plots import render_curve
+
 
 def _flatten_for_hparams(config: object) -> dict[str, int | float | str | bool]:
     """Flatten a nested dataclass/dict to the (str, int, float, bool) scalars
@@ -62,25 +64,23 @@ class TensorBoardLogger:
             if fv == fv:  # skip NaN — e.g. an empty timestep bin
                 self.writer.add_scalar(f"{prefix}/{k}", fv, step)
 
-    def log_histogram(
-        self, tag: str, bin_edges: list[float], bin_values: list[float], step: int
+    def log_curve(
+        self,
+        tag: str,
+        x: list[float],
+        y: list[float],
+        step: int,
+        xlabel: str = "t",
     ) -> None:
-        # Render a precomputed histogram (e.g. FM loss bucketed by timestep) in
-        # the Histograms tab. `bin_edges` are the outer edges, so the right edge
-        # of bucket i is `bin_edges[i + 1]`. The summary statistics are
-        # placeholders: this is a precomputed function of the bin axis, not a
-        # sample of values, so the Distributions-tab stats are not meaningful.
-        self.writer.add_histogram_raw(
-            tag=tag,
-            min=bin_edges[0],
-            max=bin_edges[-1],
-            num=len(bin_values),
-            sum=0.0,
-            sum_squares=0.0,
-            bucket_limits=bin_edges[1:],
-            bucket_counts=bin_values,
-            global_step=step,
-        )
+        # Rasterized into the Images tab rather than sent through
+        # `add_histogram_raw`. The histogram widget is built for count
+        # distributions: it resamples the stored bins onto its own display
+        # buckets and *sums* whatever lands in each one, so a mean-per-bin
+        # curve on a non-uniformly populated grid grows step artefacts wherever
+        # a display bucket happens to swallow more bins than its neighbour. A
+        # plot stores exactly what it displays, and gaps stay gaps.
+        image = render_curve(x, y, xlabel=xlabel, ylabel=tag.rsplit("/", 1)[-1])
+        self.writer.add_image(tag, image, step)
 
     def log_config(self, config: object, step: int = 0) -> None:
         # `add_hparams` requires only flat scalar values; nested dataclasses are

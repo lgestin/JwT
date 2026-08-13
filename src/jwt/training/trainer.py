@@ -70,7 +70,7 @@ class TrainerConfig:
     # Auxiliary log-mel L1 loss weight. 0 = monitor only (no gradient signal);
     aux_mel_weight: float = 0.0
     # Scalar diagnostics (throughput, memory, normalization stats) and the
-    # binned loss-by-t histogram are accumulated on-GPU and flushed to
+    # binned loss-by-t curves are accumulated on-GPU and flushed to
     # TensorBoard every `log_steps` steps.
     log_steps: int = 100
     n_loss_bins: int = 10
@@ -287,7 +287,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                         self._log_train_diagnostics(
                             diag_accum, diag_micro, last_log_step, last_log_time
                         )
-                        self._emit_loss_histogram(bin_accum, self.step, "train")
+                        self._emit_loss_curves(bin_accum, self.step, "train")
                         diag_accum = {}
                         diag_micro = 0
                         bin_accum = {}
@@ -311,7 +311,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         gradients average across the window. Returns `(metrics, scalars,
         bins)`: `metrics` are the headline scalars (unscaled loss); `scalars`
         are on-GPU diagnostics averaged over the logging window; `bins` are the
-        loss-by-t (sum, count) tensors accumulated for the histogram.
+        loss-by-t (sum, count) tensors accumulated for the by-t curves.
         """
         batch = batch.to(self.device, non_blocking=True)
         text = MaskedTensor(values=batch.tokens.unsqueeze(1), mask=batch.tokens_mask)
@@ -376,7 +376,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
 
         Returns `(scalars, bins)`: `scalars` are 0-dim tensors the caller
         averages over the logging window; `bins` holds the loss-by-t
-        `(sum, count)` tensors the caller accumulates for the histogram.
+        `(sum, count)` tensors the caller accumulates for the by-t curves.
         `logmel_diff` is the `(B, T)` per-frame auxiliary log-mel L1, present
         only when the aux mel loss is active (raw-audio codecs).
         """
@@ -430,7 +430,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
 
         These describe the batches being fed (lengths, target stats, supervision
         fill), so they are logged under the `data/` section rather than `train/`.
-        The binned FM loss is emitted separately by `_emit_loss_histogram`.
+        The binned FM loss is emitted separately by `_emit_loss_curves`.
         """
         return {
             k: acc[k] / micro
@@ -443,18 +443,19 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             )
         }
 
-    def _emit_loss_histogram(
+    def _emit_loss_curves(
         self, diag_accum: dict[str, torch.Tensor], step: int, prefix: str
     ) -> None:
-        """Emit the timestep-binned loss histograms.
+        """Emit the timestep-binned loss curves.
 
         `fm_loss_by_t` is the parametrization's (possibly reweighted) loss;
         `x1_err_by_t` is the un-reweighted `|x_1 - x_pred|` error. When the
         auxiliary mel loss is active a third series, `logmel_l1_by_t`, reports
         that error in perceptual mel space. Comparing them isolates reweighting
         artefacts from genuine denoising difficulty. Each bin mean is
-        `sum / count`, exact over the window; an empty bin (count 0 -> NaN) is
-        zero-filled. One host transfer covers every series.
+        `sum / count`, exact over the window, plotted at its bin centre; an
+        empty bin (count 0 -> NaN) stays NaN so the curve gaps there instead of
+        dipping to zero. One host transfer covers every series.
         """
         series = [
             ("fm_loss_by_t", diag_accum["bin_sums"]),
@@ -464,11 +465,11 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             series.append(("logmel_l1_by_t", diag_accum["logmel_l1_sums"]))
         counts = diag_accum["bin_counts"]
         means = torch.stack([sums / counts for _, sums in series])
-        vals = torch.nan_to_num(means.detach().float(), nan=0.0).cpu().tolist()
+        vals = means.detach().float().cpu().tolist()
         n = self.config.n_loss_bins
-        edges = [i / n for i in range(n + 1)]
-        for (tag, _), bin_values in zip(series, vals, strict=True):
-            self.logger.log_histogram(f"{prefix}/{tag}", edges, bin_values, step)
+        centers = [(i + 0.5) / n for i in range(n)]
+        for (tag, _), curve in zip(series, vals, strict=True):
+            self.logger.log_curve(f"{prefix}/{tag}", centers, curve, step)
 
     def _log_timestep_schedule(self) -> None:
         """Log the timestep schedule curve — t = schedule.timestep(progress)
@@ -476,8 +477,11 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         progress), so it is logged once at startup rather than per window."""
         n = self.model.cfg.n_denoising_steps
         timesteps = self.model.schedule.timesteps(n).detach().float().tolist()
-        edges = [i / n for i in range(n + 1)]
-        self.logger.log_histogram("schedule/timesteps", edges, timesteps, self.step)
+        # `timesteps` warps the uniform progress grid, so x is that same grid.
+        progress = torch.linspace(0.0, 1.0, n).tolist()
+        self.logger.log_curve(
+            "schedule/timesteps", progress, timesteps, self.step, xlabel="progress"
+        )
 
     def _emit_diagnostics(
         self,
@@ -582,7 +586,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self._emit_diagnostics(
             self._reduce_diagnostics(diag_accum, count), self.step, "data/valid"
         )
-        self._emit_loss_histogram(bin_accum, self.step, "valid")
+        self._emit_loss_curves(bin_accum, self.step, "valid")
         self._log_attention_maps()
 
         loss_val = val_metrics.get("loss", float("inf"))

@@ -72,7 +72,7 @@ def test_mel_aux_loss_zero_mask_is_zero_without_nan() -> None:
 def test_mel_aux_loss_returns_per_position_diff() -> None:
     """The second return value is a detached (B, T) per-frame log-mel L1 whose
     v_mask-weighted mean is the scalar loss — the trainer bins it by timestep
-    into the `logmel_l1_by_t` histogram."""
+    into the `logmel_l1_by_t` curve."""
     loss = MelAuxLoss(sample_rate=SAMPLE_RATE, hop_length=HOP)
     pred, target = _wav(2, 13, seed=1), _wav(2, 13, seed=2)
     v_mask = torch.ones(2, 13)
