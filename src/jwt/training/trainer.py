@@ -1,5 +1,8 @@
+import itertools
+import math
 import time
 import warnings
+from collections import defaultdict
 from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import StrEnum
@@ -32,8 +35,16 @@ from jwt.training.metrics.utils import (
     binned_loss_stats,
     masked_mean_std,
     per_pos_l1_error,
+    sampled_generation_stats,
 )
 from jwt.training.metrics.utmos import UTMOS
+
+# Free generations shorter than this are not MOS-scored (still counted in
+# eos_rate/n_scored) — MOS predictors are unreliable on sub-second clips.
+MIN_SCORED_SECONDS = 1.0
+# Fixed x_0 seed for the sampled-metrics pass: identical latents every
+# evaluation, so the curves track the model rather than the noise draw.
+SAMPLED_NOISE_SEED = 20_260_814
 
 
 @dataclass
@@ -233,6 +244,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                     if self.step % self.smp_steps == 0:
                         with self._ema_weights():
                             self._log_samples()
+                            self._log_sampled_metrics()
                     if self.step % self.valid_steps == 0:
                         with self._ema_weights():
                             self.validation()
@@ -722,6 +734,75 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         }
         metrics.update({k: v.mean().item() for k, v in scores.items()})
         self.logger.log_metrics(metrics, self.step, prefix="valid")
+
+    @torch.inference_mode()
+    def _log_sampled_metrics(self) -> None:
+        """UTMOS/NISQA and termination stats over free generations of the smp
+        and validation prompts — the quantitative counterpart of `_log_samples`.
+
+        Every generation past the `MIN_SCORED_SECONDS` floor is scored at its
+        full length, terminated or not, so the scored population stays fixed
+        and comparable across steps and runs; stopping-criterion health is
+        reported separately (`eos_rate`, `len_ratio`, `n_scored`) instead of
+        contaminating the MOS numbers.
+        """
+        self.model.eval()
+        max_len = self.model.cfg.max_acoustic_len
+        min_frames = max(
+            1, math.ceil(MIN_SCORED_SECONDS * self.sample_rate / self.codec.hop_length)
+        )
+
+        gen_lens_all: list[torch.Tensor] = []
+        ref_lens_all: list[torch.Tensor] = []
+        wavs: list[torch.Tensor] = []
+        batches = itertools.chain(
+            [next(iter(self.smp_dloader))], iter(self.valid_dloader)
+        )
+        for i, batch in enumerate(batches):
+            batch = batch.to(self.device, non_blocking=True)
+            text = MaskedTensor(
+                values=batch.tokens.unsqueeze(1), mask=batch.tokens_mask
+            )
+            B = batch.tokens.shape[0]
+            g = torch.Generator().manual_seed(SAMPLED_NOISE_SEED + i)
+            # CPU draw keeps the latents device-independent; speak() applies no
+            # scaling to a provided x_0, so the prior's noise_scale goes here.
+            x_0 = (
+                torch.randn(B, self.model.cfg.acoustic_dim, max_len, generator=g)
+                * self.model.cfg.noise_scale
+            ).to(self.device)
+
+            with torch.autocast(
+                device_type=self.device.type,
+                dtype=self.amp_dtype,
+                enabled=not self.noamp,
+            ):
+                acoustic_pred = self.model.speak(text, codec=self.codec, x_0=x_0)
+
+            gen_lens = acoustic_pred.mask.sum(-1)
+            gen_lens_all.append(gen_lens)
+            ref_lens_all.append(batch.acoustic_mask.sum(-1))
+            for b in range(B):
+                L = int(gen_lens[b])
+                if L < min_frames:
+                    continue
+                ac_b = acoustic_pred.values[b : b + 1, :, :L].float()
+                wav = self.codec.decode(self.codec.unnormalize(ac_b))[0]
+                wavs.append(wav.reshape(-1))
+
+        stats, _ = sampled_generation_stats(
+            torch.cat(gen_lens_all), torch.cat(ref_lens_all), max_len, min_frames
+        )
+        metrics = {k: float(v) for k, v in stats.items()}
+        per_utt: dict[str, list[float]] = defaultdict(list)
+        for wav in wavs:
+            scored = self.utmos.score(wav, sample_rate=self.sample_rate) | (
+                self.nisqa.score(wav, sample_rate=self.sample_rate)
+            )
+            for k, v in scored.items():
+                per_utt[k].append(float(v.mean()))
+        metrics.update({k: sum(v) / len(v) for k, v in per_utt.items()})
+        self.logger.log_metrics(metrics, self.step, prefix="sampled")
 
     @torch.inference_mode()
     def _log_samples(self):
