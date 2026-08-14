@@ -17,8 +17,8 @@ ema:
   enabled: true
 model:
   acoustic_dim: 100
-  codec: RAWAUDIO_128
-  eos_n_frames: 3
+  codec: RAWAUDIO_512
+  eos_n_frames: 8
   max_acoustic_len: 2048
   n_denoising_steps: 32
   noise_scale: 1.0
