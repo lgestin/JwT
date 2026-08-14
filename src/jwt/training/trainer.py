@@ -77,7 +77,7 @@ class TrainerConfig:
     # Scalar diagnostics (throughput, memory, normalization stats) and the
     # binned loss-by-t curves are accumulated on-GPU and flushed to
     # TensorBoard every `log_steps` steps.
-    log_steps: int = 100
+    log_steps: int = 1_000
     n_loss_bins: int = 10
 
 

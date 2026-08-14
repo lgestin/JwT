@@ -54,7 +54,7 @@ trainer:
   clip_grad_norm: 1.0
   device: cuda
   grad_accum_steps: 1
-  log_steps: 100
+  log_steps: 1000
   loss_fn: L1
   max_steps: 200001
   n_loss_bins: 10
