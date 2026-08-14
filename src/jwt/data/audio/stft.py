@@ -1,3 +1,4 @@
+import math
 from typing import Literal
 
 import torch
@@ -74,6 +75,27 @@ class STFT(nn.Module):
         magnitudes = torch.sqrt(stft.real.pow(2) + stft.imag.pow(2) + 1e-9)
         return magnitudes
 
+    def log_magnitudes(
+        self,
+        x: torch.Tensor,
+        eps: float = 1e-8,
+        log_base: float = math.e,
+    ) -> torch.Tensor:
+        x_logstft = self.magnitudes(x).clamp(min=eps).log() / math.log(log_base)
+        return x_logstft
+
+    def logstft_l1(
+        self,
+        pred: torch.Tensor,
+        trgt: torch.Tensor,
+        eps: float = 1e-8,
+        log_base: float = math.e,
+    ) -> torch.Tensor:
+        pred_logstft = self.log_magnitudes(pred, eps=eps, log_base=log_base)
+        trgt_logstft = self.log_magnitudes(trgt, eps=eps, log_base=log_base)
+        logstft_l1 = F.l1_loss(pred_logstft, trgt_logstft, reduction="none").mean(1)
+        return logstft_l1
+
 
 class MelSpectrogram(STFT):
     def __init__(
@@ -87,6 +109,7 @@ class MelSpectrogram(STFT):
         window: Literal["hann", "hamming"] = "hamming",
         center: bool = False,
         mel_scale: Literal["htk", "slaney"] = "htk",
+        n_mfcc: int | None = None,
     ):
         super().__init__(
             n_fft=n_fft, hop_length=hop_length, window=window, center=center
@@ -102,8 +125,55 @@ class MelSpectrogram(STFT):
         )
         self.register_buffer("melscale_fbanks", melscale_fbanks, persistent=False)
 
+        if n_mfcc is not None:
+            dct = torchaudio.functional.create_dct(
+                n_mfcc=n_mfcc + 1,
+                n_mels=n_mels,
+                norm="ortho",
+            )
+            self.register_buffer("dct", dct, persistent=False)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.mel(x)
+
+    def mel(self, x: torch.Tensor) -> torch.Tensor:
         magnitudes = super().magnitudes(x)
         self.melscale_fbanks = self.melscale_fbanks.to(magnitudes.device)
         mels = self.melscale_fbanks.T @ magnitudes
         return mels
+
+    def logmel(
+        self,
+        x: torch.Tensor,
+        eps: float = 1e-8,
+        log_base: float = math.e,
+    ) -> torch.Tensor:
+        return self.mel(x).clamp(min=eps).log() / math.log(log_base)
+
+    def logmel_l1(
+        self,
+        pred: torch.Tensor,
+        trgt: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        eps: float = 1e-8,
+        log_base: float = math.e,
+    ) -> torch.Tensor:
+        pred_logmel = self.logmel(pred, eps=eps, log_base=log_base)
+        trgt_logmel = self.logmel(trgt, eps=eps, log_base=log_base)
+        logmel_l1 = F.l1_loss(pred_logmel, trgt_logmel, reduction="none").mean(1)
+        return logmel_l1
+
+    def mel_cepstral_distortion(
+        self,
+        pred: torch.Tensor,
+        trgt: torch.Tensor,
+        eps: float = 1e-8,
+    ):
+        pred_logmel = self.logmel(pred, eps=eps, log_base=math.e)
+        trgt_logmel = self.logmel(trgt, eps=eps, log_base=math.e)
+        pred_cep = torch.einsum("bmt,mk->bkt", pred_logmel, self.dct)[:, 1:]
+        trgt_cep = torch.einsum("bmt,mk->bkt", trgt_logmel, self.dct)[:, 1:]
+        cep_l2 = (
+            20 / math.log(10) * F.mse_loss(pred_cep, trgt_cep, reduction="none").mean(1)
+        )
+        return cep_l2
