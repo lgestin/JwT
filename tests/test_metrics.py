@@ -109,15 +109,11 @@ def test_sampled_generation_stats_terminated_and_ratio() -> None:
     gen_lens = torch.tensor([100, 600, 300])  # middle row hit max_len
     ref_lens = torch.tensor([200, 300, 300])
 
-    stats, keep = sampled_generation_stats(
-        gen_lens, ref_lens, max_len=600, min_frames=50
-    )
+    stats = sampled_generation_stats(gen_lens, ref_lens, max_len=600)
 
     assert stats["eos_rate"].item() == pytest.approx(2 / 3)
     # mean of 100/200 and 300/300 — the max_len row is excluded.
     assert stats["len_ratio"].item() == pytest.approx(0.75)
-    assert stats["n_scored"].item() == 3
-    assert keep.tolist() == [True, True, True]
 
 
 def test_sampled_generation_stats_nothing_stopped_omits_len_ratio() -> None:
@@ -126,22 +122,7 @@ def test_sampled_generation_stats_nothing_stopped_omits_len_ratio() -> None:
     gen_lens = torch.tensor([600, 600])
     ref_lens = torch.tensor([300, 300])
 
-    stats, _ = sampled_generation_stats(gen_lens, ref_lens, max_len=600, min_frames=50)
+    stats = sampled_generation_stats(gen_lens, ref_lens, max_len=600)
 
     assert stats["eos_rate"].item() == 0.0
     assert "len_ratio" not in stats
-
-
-def test_sampled_generation_stats_floor_excludes_but_still_counts() -> None:
-    """A near-empty generation is excluded from scoring (keep=False) yet still
-    contributes to eos_rate — skipping it silently would inflate quality."""
-    gen_lens = torch.tensor([5, 400])
-    ref_lens = torch.tensor([300, 300])
-
-    stats, keep = sampled_generation_stats(
-        gen_lens, ref_lens, max_len=600, min_frames=50
-    )
-
-    assert keep.tolist() == [False, True]
-    assert stats["n_scored"].item() == 1
-    assert stats["eos_rate"].item() == 1.0  # both stopped, even the tiny one

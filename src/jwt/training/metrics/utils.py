@@ -24,27 +24,20 @@ def sampled_generation_stats(
     gen_lens: torch.Tensor,  # (B,) generated frames per sample
     ref_lens: torch.Tensor,  # (B,) reference (ground-truth) frames per sample
     max_len: int,
-    min_frames: int,
-) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
-    """Termination stats for free generations, plus the scoreable-row mask.
+) -> dict[str, torch.Tensor]:
+    """Termination stats for free generations.
 
     `eos_rate` is the fraction that stopped before `max_len`; `len_ratio`
     compares stopped generations to their reference lengths (absent when
-    nothing stopped, so the curve gaps instead of lying). Rows shorter than
-    `min_frames` are excluded from MOS scoring but still count toward the
-    rates — exclusions are visible via `n_scored`, not silent.
+    nothing stopped, so the curve gaps instead of lying).
     """
     stopped = gen_lens < max_len
-    keep = gen_lens >= min_frames
-    stats = {
-        "eos_rate": stopped.float().mean(),
-        "n_scored": keep.float().sum(),
-    }
+    stats = {"eos_rate": stopped.float().mean()}
     if bool(stopped.any()):
         stats["len_ratio"] = (
             gen_lens.float()[stopped] / ref_lens.float()[stopped].clamp(min=1)
         ).mean()
-    return stats, keep
+    return stats
 
 
 def binned_loss_stats(

@@ -39,9 +39,10 @@ from jwt.training.metrics.utils import (
 )
 from jwt.training.metrics.utmos import UTMOS
 
-# Free generations shorter than this are not MOS-scored (still counted in
-# eos_rate/n_scored) — MOS predictors are unreliable on sub-second clips.
-MIN_SCORED_SECONDS = 1.0
+# Free generations shorter than this are zero-padded up to it before MOS
+# scoring — the predictors need a minimum of signal, and padding (unlike
+# exclusion) keeps the scored population fixed across steps and runs.
+MIN_SCORED_SECONDS = 0.5
 # Fixed x_0 seed for the sampled-metrics pass: identical latents every
 # evaluation, so the curves track the model rather than the noise draw.
 SAMPLED_NOISE_SEED = 20_260_814
@@ -740,17 +741,15 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         """UTMOS/NISQA and termination stats over free generations of the smp
         and validation prompts — the quantitative counterpart of `_log_samples`.
 
-        Every generation past the `MIN_SCORED_SECONDS` floor is scored at its
-        full length, terminated or not, so the scored population stays fixed
-        and comparable across steps and runs; stopping-criterion health is
-        reported separately (`eos_rate`, `len_ratio`, `n_scored`) instead of
-        contaminating the MOS numbers.
+        Every generation is scored at its full length, terminated or not —
+        short ones are zero-padded to `MIN_SCORED_SECONDS` — so the scored
+        population is all prompts, always, comparable across steps and runs;
+        stopping-criterion health is reported separately (`eos_rate`,
+        `len_ratio`) instead of contaminating the MOS numbers.
         """
         self.model.eval()
         max_len = self.model.cfg.max_acoustic_len
-        min_frames = max(
-            1, math.ceil(MIN_SCORED_SECONDS * self.sample_rate / self.codec.hop_length)
-        )
+        min_samples = math.ceil(MIN_SCORED_SECONDS * self.sample_rate)
 
         gen_lens_all: list[torch.Tensor] = []
         ref_lens_all: list[torch.Tensor] = []
@@ -784,14 +783,20 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             ref_lens_all.append(batch.acoustic_mask.sum(-1))
             for b in range(B):
                 L = int(gen_lens[b])
-                if L < min_frames:
-                    continue
-                ac_b = acoustic_pred.values[b : b + 1, :, :L].float()
-                wav = self.codec.decode(self.codec.unnormalize(ac_b))[0]
-                wavs.append(wav.reshape(-1))
+                if L > 0:
+                    ac_b = acoustic_pred.values[b : b + 1, :, :L].float()
+                    wav = self.codec.decode(self.codec.unnormalize(ac_b))[0]
+                    wav = wav.reshape(-1)
+                else:
+                    wav = torch.zeros(0, device=self.device)
+                if wav.shape[-1] < min_samples:
+                    wav = torch.nn.functional.pad(
+                        wav, (0, min_samples - wav.shape[-1])
+                    )
+                wavs.append(wav)
 
-        stats, _ = sampled_generation_stats(
-            torch.cat(gen_lens_all), torch.cat(ref_lens_all), max_len, min_frames
+        stats = sampled_generation_stats(
+            torch.cat(gen_lens_all), torch.cat(ref_lens_all), max_len
         )
         metrics = {k: float(v) for k, v in stats.items()}
         per_utt: dict[str, list[float]] = defaultdict(list)
