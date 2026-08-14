@@ -4,6 +4,7 @@ from pathlib import Path
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.summary import hparams
 
 from jwt.training.plots import render_curve
 
@@ -82,13 +83,27 @@ class TensorBoardLogger:
         image = render_curve(x, y, xlabel=xlabel, ylabel=tag.rsplit("/", 1)[-1])
         self.writer.add_image(tag, image, step)
 
+    _HPARAM_METRICS = (
+        "valid/loss",
+        "valid/fm_loss",
+        "valid/si_snr",
+        "valid/snr",
+        "valid/logstft_l1",
+        "valid/mel_cepstral_distortion",
+        "valid/si_sdr",
+        "valid/sdr",
+        "valid/pesq",
+        "valid/stoi",
+        "valid/nisqa_mos",
+        "valid/utmos",
+    )
+
     def log_config(self, config: object, step: int = 0) -> None:
-        # `add_hparams` requires only flat scalar values; nested dataclasses are
-        # joined with dots so e.g. `model.transformer_config.dim` becomes one
-        # hparam. The empty metric_dict means the run shows up in the HParams
-        # tab without any paired metrics.
         flat = _flatten_for_hparams(config)
-        self.writer.add_hparams(flat, {}, global_step=step)
+        exp, ssi, sei = hparams(flat, dict.fromkeys(self._HPARAM_METRICS, 0.0))
+        file_writer = self.writer._get_file_writer()  # re-opens after close()
+        for summary in (exp, ssi, sei):
+            file_writer.add_summary(summary, global_step=step)
 
     def set_description(self, description: str) -> None:
         pass
