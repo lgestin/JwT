@@ -32,6 +32,9 @@ dependencies = [
     "simple-parsing>=0.1.8",
     "soundfile>=0.13.1",
     "tensorboard>=2.20.0",
+    # [audio] pulls pesq/pystoi for the validation-time perceptual metrics;
+    # >=1.6 is the floor for NISQA (non_intrusive_speech_quality_assessment).
+    "torchmetrics[audio]>=1.6",
     "torch>=2.12.0",
     "torchaudio>=2.11.0",
     "torchcodec>=0.11.1",
