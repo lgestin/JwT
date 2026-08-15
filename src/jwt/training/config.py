@@ -9,6 +9,7 @@ run used is dumped to `output_dir/config.yaml`; to resume a run, point
 
 import argparse
 from dataclasses import dataclass, field, fields
+from enum import Enum
 from pathlib import Path
 
 from simple_parsing import ArgumentParser
@@ -19,6 +20,20 @@ from jwt.model.neural_speaker import RollingFlowConfig
 from jwt.training.ema import EMAConfig
 from jwt.training.optimizer import OptimizerConfig
 from jwt.training.trainer import TrainerConfig
+
+
+class LoggerBackend(Enum):
+    WANDB = "wandb"
+    TENSORBOARD = "tensorboard"
+
+
+@dataclass
+class WandbConfig:
+    project: str = "JwT"
+    entity: str | None = None
+    # Defaults to the config file's stem (e.g. "proxy") in `parse_args`.
+    group: str | None = None
+    tags: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -40,8 +55,10 @@ class Args:
     # Codec — selects the arrow acoustic column and the codec object; also
     # copied into `model.codec`.
     codec: Codecs = Codecs.BIGVGAN
-    # Logging
-    use_tensorboard: bool = True
+    # Logging — configs saved before the LoggerBackend switch need their
+    # `use_tensorboard: true` line replaced with `logger: TENSORBOARD`.
+    logger: LoggerBackend = LoggerBackend.WANDB
+    wandb: WandbConfig = field(default_factory=WandbConfig)
     # Perf
     compile: bool = True
     # Model
@@ -89,7 +106,10 @@ def parse_args(argv: list[str] | None = None) -> Args:
         parser.error("--config_path is required")
 
     parser.add_arguments(Args, dest="args", default=load(Args, known.config_path))
-    return parser.parse_args(argv).args
+    args = parser.parse_args(argv).args
+    if args.wandb.group is None:
+        args.wandb.group = Path(known.config_path).stem
+    return args
 
 
 def check_model_config_consistency(

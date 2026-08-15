@@ -8,6 +8,7 @@ from jwt.model.flow import FlowParametrizations
 from jwt.model.neural_speaker import RollingFlowConfig
 from jwt.training.config import (
     Args,
+    LoggerBackend,
     check_model_config_consistency,
     dump_config,
     parse_args,
@@ -133,3 +134,18 @@ def test_bigvgan_allows_zero_aux_mel_weight() -> None:
 
 def test_rawaudio_allows_nonzero_aux_mel_weight() -> None:
     Args(codec=Codecs.RAWAUDIO_256, trainer=TrainerConfig(aux_mel_weight=0.1))
+
+
+def test_logger_backend_defaults_to_wandb() -> None:
+    args = Args()
+    assert args.logger is LoggerBackend.WANDB
+    assert args.wandb.project == "JwT"
+    assert args.wandb.group is None
+    assert args.wandb.tags == []
+
+
+def test_logger_backend_round_trips(tmp_path: Path) -> None:
+    args = Args(logger=LoggerBackend.TENSORBOARD)
+    dump_config(args, tmp_path / "config.yaml")
+    loaded = load(Args, tmp_path / "config.yaml")
+    assert loaded.logger is LoggerBackend.TENSORBOARD
