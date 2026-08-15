@@ -53,9 +53,9 @@ def test_diagnostics_emit_unreweighted_x1_error_curve() -> None:
     _, bins = trainer._step_diagnostics(out, text, acoustic)
     trainer._emit_loss_curves(bins, step=0, prefix="train")
 
-    assert logger.curves["train/fm_loss_by_t"] == pytest.approx([0.1, 0.9], abs=1e-4)
+    assert logger.curves["by_t/train_fm_loss"] == pytest.approx([0.1, 0.9], abs=1e-4)
     # |2 - 5| = 3.0 in bin 0; |5.05 - 5| = 0.05 in bin 1 — the reverse ranking.
-    assert logger.curves["train/x1_err_by_t"] == pytest.approx([3.0, 0.05], abs=1e-4)
+    assert logger.curves["by_t/train_x1_err"] == pytest.approx([3.0, 0.05], abs=1e-4)
 
 
 def _diag_inputs() -> tuple[TrainingStepOutput, MaskedTensor, MaskedTensor]:
@@ -91,7 +91,7 @@ def test_loss_curves_are_plotted_on_the_bin_centre_grid() -> None:
     _, bins = trainer._step_diagnostics(*_diag_inputs())
     trainer._emit_loss_curves(bins, step=0, prefix="train")
 
-    assert logger.grids["train/fm_loss_by_t"] == pytest.approx(
+    assert logger.grids["by_t/train_fm_loss"] == pytest.approx(
         [0.125, 0.375, 0.625, 0.875]
     )
 
@@ -109,7 +109,7 @@ def test_empty_t_bins_stay_nan_so_the_curve_gaps() -> None:
     _, bins = trainer._step_diagnostics(*_diag_inputs())
     trainer._emit_loss_curves(bins, step=0, prefix="train")
 
-    curve = logger.curves["train/fm_loss_by_t"]
+    curve = logger.curves["by_t/train_fm_loss"]
     assert [math.isnan(v) for v in curve] == [True, False, True, False]
     assert curve[1] == pytest.approx(0.1, abs=1e-4)
     assert curve[3] == pytest.approx(0.9, abs=1e-4)
