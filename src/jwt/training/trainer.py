@@ -29,7 +29,7 @@ from jwt.training.loggers import Logger, log_mel
 from jwt.training.loss import masked_mean_reduction
 from jwt.training.metrics.nisqa import NISQA
 from jwt.training.metrics.pesq import PESQ
-from jwt.training.metrics.snr import si_snr, snr
+from jwt.training.metrics.snr import mag_snr, si_snr, snr
 from jwt.training.metrics.stoi import STOI
 from jwt.training.metrics.utils import (
     binned_loss_stats,
@@ -387,6 +387,11 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         wav_mask = mask.repeat_interleave(hop, dim=-1)
         metrics["si_snr"] = si_snr(pred_wav, trgt_wav, wav_mask).mean()
         metrics["snr"] = snr(pred_wav, trgt_wav, wav_mask).mean()
+        metrics["mag_snr"] = mag_snr(
+            pred_wav, trgt_wav, wav_mask, self.mel_spectrogram
+        ).mean()
+        # magnitude good + waveform bad ⇒ the error is phase-attributable
+        metrics["phase_snr_gap"] = metrics["mag_snr"] - metrics["snr"]
         if not self.model.training:
             repeats = self.codec.hop_length // self.mel_spectrogram.hop_length
             mel_mask = mask.repeat_interleave(repeats=repeats, dim=1)

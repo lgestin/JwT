@@ -3,6 +3,8 @@ training hot loop."""
 
 import torch
 
+from jwt.data.audio.stft import STFT
+
 
 def _masked_zero_mean(
     x: torch.Tensor,  # (B, S)
@@ -36,6 +38,29 @@ def si_snr(
     s = scale * t
     e = p - s
     ratio = (s * s).sum(-1) / (e * e).sum(-1).clamp(min=1e-8)
+    return 10 * torch.log10(ratio.clamp(min=1e-8))
+
+
+@torch.inference_mode()
+def mag_snr(
+    pred: torch.Tensor,  # (B, S)
+    target: torch.Tensor,  # (B, S)
+    mask: torch.Tensor,  # (B, S), bool
+    stft: STFT,
+) -> torch.Tensor:
+    """Masked STFT-magnitude SNR in dB, per utterance — returns (B,).
+
+    Phase-blind counterpart of `snr`: discarding phase can only shrink the
+    error (reverse triangle inequality), so `mag_snr - snr` isolates the
+    phase-attributable part of the waveform error.
+    """
+    p = pred.float()
+    t = target.float()
+    m = mask.to(p.dtype)
+    p_mag = stft.magnitudes(p * m)
+    t_mag = stft.magnitudes(t * m)
+    e = t_mag - p_mag
+    ratio = (t_mag * t_mag).sum((-2, -1)) / (e * e).sum((-2, -1)).clamp(min=1e-8)
     return 10 * torch.log10(ratio.clamp(min=1e-8))
 
 

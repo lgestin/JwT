@@ -1,9 +1,10 @@
 import pytest
 import torch
 
+from jwt.data.audio.stft import STFT
 from jwt.training.metrics.nisqa import NISQA
 from jwt.training.metrics.pesq import PESQ
-from jwt.training.metrics.snr import si_snr, snr
+from jwt.training.metrics.snr import mag_snr, si_snr, snr
 from jwt.training.metrics.stoi import STOI
 from jwt.training.metrics.utmos import UTMOS
 
@@ -23,6 +24,9 @@ def _wavs(batch: int = 2, n_samples: int = S, seed: int = SEED):
 
 def _full_mask(batch: int = 2, n_samples: int = S) -> torch.Tensor:
     return torch.ones(batch, n_samples, dtype=torch.bool)
+
+
+_STFT = STFT(n_fft=1024, hop_length=256, window="hann")
 
 
 def test_si_snr_is_scale_invariant() -> None:
@@ -64,6 +68,47 @@ def test_time_metrics_ignore_samples_outside_mask() -> None:
     assert torch.allclose(clean[1], corrupt[1], atol=1e-4)
 
 
+def test_mag_snr_is_blind_to_pure_phase_error() -> None:
+    """A global sign flip is a pure pi phase shift: STFT magnitudes are
+    untouched, so mag_snr stays high while waveform snr collapses."""
+    _, target = _wavs()
+    mask = _full_mask()
+    assert (mag_snr(-target, target, mask, _STFT) > 40).all()
+    assert (snr(-target, target, mask) < 0).all()
+
+
+def test_mag_snr_matches_snr_on_pure_gain_error() -> None:
+    """pred = 0.5*target has zero phase error: both domains read ~6.02 dB."""
+    _, target = _wavs()
+    mask = _full_mask()
+    expected = 10 * torch.log10(torch.tensor(4.0))
+    assert torch.allclose(
+        mag_snr(0.5 * target, target, mask, _STFT), expected, atol=1e-3
+    )
+    assert torch.allclose(snr(0.5 * target, target, mask), expected, atol=1e-3)
+
+
+def test_mag_snr_gap_over_snr_is_nonnegative() -> None:
+    """Reverse triangle inequality: discarding phase can only shrink the
+    error, so mag_snr >= snr (up to windowing tolerance)."""
+    pred, target = _wavs()
+    mask = _full_mask()
+    gap = mag_snr(pred, target, mask, _STFT) - snr(pred, target, mask)
+    assert (gap > -0.1).all()
+
+
+def test_mag_snr_ignores_samples_outside_mask() -> None:
+    pred, target = _wavs()
+    mask = _full_mask()
+    mask[:, S // 2 :] = False
+    clean = mag_snr(pred, target, mask, _STFT)
+    pred_corrupt = pred.clone()
+    pred_corrupt[:, S // 2 :] = 10.0
+    assert torch.allclose(
+        clean, mag_snr(pred_corrupt, target, mask, _STFT), atol=1e-4
+    )
+
+
 def test_si_snr_and_snr_match_torchmetrics_on_unmasked_input() -> None:
     from torchmetrics.functional.audio import (
         scale_invariant_signal_distortion_ratio,
@@ -88,7 +133,11 @@ def test_masked_metrics_stay_on_device_and_detached() -> None:
     pred, target = _wavs()
     pred = pred.requires_grad_(True)
     mask = _full_mask()
-    for out in (si_snr(pred, target, mask), snr(pred, target, mask)):
+    for out in (
+        si_snr(pred, target, mask),
+        snr(pred, target, mask),
+        mag_snr(pred, target, mask, _STFT),
+    ):
         assert out.device == pred.device
         assert not out.requires_grad
 

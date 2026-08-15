@@ -116,6 +116,7 @@ def test_empty_t_bins_stay_nan_so_the_curve_gaps() -> None:
 
 
 _SPECTRAL_KEYS = {"logstft_l1", "mel_cepstral_distortion"}
+_WAVEFORM_KEYS = {"si_snr", "snr", "mag_snr", "phase_snr_gap"}
 
 
 def _metrics_trainer(hop: int = 256) -> TTSRollingFlowMatchingTrainer:
@@ -150,7 +151,7 @@ def test_reconstruction_metrics_cheap_pair_in_train_mode() -> None:
     metrics: dict[str, torch.Tensor] = {}
     trainer._reconstruction_metrics(metrics, pred, target, v_mask)
 
-    assert set(metrics) == {"si_snr", "snr"}
+    assert set(metrics) == _WAVEFORM_KEYS
     for v in metrics.values():
         assert v.shape == () and torch.isfinite(v)
 
@@ -168,7 +169,7 @@ def test_reconstruction_metrics_squeezes_channel_dim() -> None:
     metrics: dict[str, torch.Tensor] = {}
     trainer._reconstruction_metrics(metrics, pred, target, v_mask)
 
-    assert set(metrics) == {"si_snr", "snr"} | _SPECTRAL_KEYS
+    assert set(metrics) == _WAVEFORM_KEYS | _SPECTRAL_KEYS
     for v in metrics.values():
         assert v.shape == () and torch.isfinite(v)
 
@@ -186,7 +187,7 @@ def test_reconstruction_metrics_adds_spectral_pair_in_eval_mode() -> None:
     metrics: dict[str, torch.Tensor] = {}
     trainer._reconstruction_metrics(metrics, pred, target, v_mask)
 
-    assert set(metrics) == {"si_snr", "snr"} | _SPECTRAL_KEYS
+    assert set(metrics) == _WAVEFORM_KEYS | _SPECTRAL_KEYS
     for v in metrics.values():
         assert v.shape == () and torch.isfinite(v)
 
@@ -214,5 +215,6 @@ def test_reconstruction_metrics_respect_the_mask() -> None:
 
     assert m_half["si_snr"] > m_full["si_snr"]
     assert m_half["snr"] > m_full["snr"]
+    assert m_half["mag_snr"] > m_full["mag_snr"]
     for key in _SPECTRAL_KEYS:
         assert m_half[key] < m_full[key]
