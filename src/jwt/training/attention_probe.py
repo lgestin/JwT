@@ -18,7 +18,7 @@ from contextlib import contextmanager
 import torch
 
 from jwt.model.transformer import SelfAttention
-from jwt.training.loggers import Logger
+from jwt.training.loggers import colorize
 
 
 class AttentionCollector:
@@ -81,22 +81,22 @@ def capture_attention(model: torch.nn.Module) -> Iterator[AttentionCollector]:
             h.remove()
 
 
-def log_attention_maps(
-    logger: Logger,
+def attention_images(
     attn_map: torch.Tensor,
     text_lens: torch.Tensor,
     acoustic_lens: torch.Tensor,
-    step: int,
-) -> None:
-    """Log each sample's text->audio attention block as a heatmap.
+) -> dict[int, torch.Tensor]:
+    """Each sample's text->audio attention block as a heatmap image, by index.
 
     `attn_map` is `(N, T, T)` in packed `[text | audio | pad]` coordinates. For
-    sample `i` the logged block is `attn_map[i, text:text+audio, :text]`
-    transposed to text tokens (rows) attended to by audio frames (columns) —
-    min-max normalized to a grayscale image under `valid/attention/{i}`.
+    sample `i` the block is `attn_map[i, text:text+audio, :text]` transposed to
+    text tokens (rows) attended to by audio frames (columns) — min-max
+    normalized to a `(3, text, audio)` viridis-colored image. Samples with no
+    text or no audio are skipped.
     """
     tl_all = text_lens.tolist()
     al_all = acoustic_lens.tolist()
+    images: dict[int, torch.Tensor] = {}
     for i in range(attn_map.shape[0]):
         tl, al = int(tl_all[i]), int(al_all[i])
         if tl == 0 or al == 0:
@@ -105,4 +105,10 @@ def log_attention_maps(
         block = attn_map[i, tl : tl + al, :tl].T.detach().cpu().float()
         mn, mx = block.min(), block.max()
         block = (block - mn) / (mx - mn).clamp(min=1e-9)
-        logger.log_image(f"valid/attention/{i}", block.unsqueeze(0), step)
+        # Nearest-neighbor upscale to >=256px on the short side: viewers
+        # smooth when scaling, so ship the crisp cells at display size.
+        k = max(1, -(-256 // min(block.shape)))
+        if k > 1:
+            block = block.repeat_interleave(k, 0).repeat_interleave(k, 1)
+        images[i] = colorize(block, cmap="viridis")
+    return images

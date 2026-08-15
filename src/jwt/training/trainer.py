@@ -12,6 +12,7 @@ from torch import GradScaler
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 
+from jwt.data.audio.audio import Audio
 from jwt.data.audio.codecs import Codec
 from jwt.data.audio.stft import MelSpectrogram
 from jwt.data.dataset import Batch
@@ -22,10 +23,10 @@ from jwt.model.neural_speaker import (
     RollingFlowSpeaker,
     TrainingStepOutput,
 )
-from jwt.training.attention_probe import capture_attention, log_attention_maps
+from jwt.training.attention_probe import attention_images, capture_attention
 from jwt.training.checkpoint_manager import CheckpointManager
 from jwt.training.ema import EMA
-from jwt.training.loggers import Logger, log_mel
+from jwt.training.loggers import Logger, SampleRecord, mel_image
 from jwt.training.loss import masked_mean_reduction
 from jwt.training.metrics.nisqa import NISQA
 from jwt.training.metrics.pesq import PESQ
@@ -87,8 +88,6 @@ class TrainerConfig:
     # Auxiliary log-mel L1 loss weight. 0 = monitor only (no gradient signal);
     aux_mel_weight: float = 0.0
     # Scalar diagnostics (throughput, memory, normalization stats) and the
-    # binned loss-by-t curves are accumulated on-GPU and flushed to
-    # TensorBoard every `log_steps` steps.
     log_steps: int = 1_000
     n_loss_bins: int = 10
 
@@ -485,8 +484,8 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         series.
         """
         series = [
-            ("fm_loss_by_t", diag_accum["bin_sums"]),
-            ("x1_err_by_t", diag_accum["x1_err_sums"]),
+            ("fm_loss", diag_accum["bin_sums"]),
+            ("x1_err", diag_accum["x1_err_sums"]),
         ]
         counts = diag_accum["bin_counts"]
         means = torch.stack([sums / counts for _, sums in series])
@@ -494,7 +493,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         n = self.config.n_loss_bins
         centers = [(i + 0.5) / n for i in range(n)]
         for (tag, _), curve in zip(series, vals, strict=True):
-            self.logger.log_curve(f"{prefix}/{tag}", centers, curve, step)
+            self.logger.log_curve(f"by_t/{prefix}_{tag}", centers, curve, step)
 
     def _log_timestep_schedule(self) -> None:
         """Log the timestep schedule curve — t = schedule.timestep(progress)
@@ -505,7 +504,12 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         # `timesteps` warps the uniform progress grid, so x is that same grid.
         progress = torch.linspace(0.0, 1.0, n).tolist()
         self.logger.log_curve(
-            "schedule/timesteps", progress, timesteps, self.step, xlabel="progress"
+            "schedule/timesteps",
+            progress,
+            timesteps,
+            self.step,
+            xlabel="progress",
+            history=False,  # config-fixed, logged once
         )
 
     def _emit_diagnostics(
@@ -516,16 +520,19 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         host_metrics: dict[str, float] | None = None,
     ) -> None:
         """Single batched host transfer, then hand off to the logger."""
-        keys = list(gpu_metrics)
-        stacked = torch.stack(
-            [gpu_metrics[k].detach().float().reshape(()) for k in keys]
-        )
-        merged = dict(
-            zip(keys, stacked.cpu().tolist(), strict=True)
-        )  # one D2H transfer
+        merged: dict[str, float] = {}
+        if gpu_metrics:
+            keys = list(gpu_metrics)
+            stacked = torch.stack(
+                [gpu_metrics[k].detach().float().reshape(()) for k in keys]
+            )
+            merged = dict(
+                zip(keys, stacked.cpu().tolist(), strict=True)
+            )  # one D2H transfer
         if host_metrics:
             merged.update(host_metrics)
-        self.logger.log_diagnostics(merged, step, prefix=prefix)
+        if merged:
+            self.logger.log_diagnostics(merged, step, prefix=prefix)
 
     def _log_train_diagnostics(
         self,
@@ -535,11 +542,11 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         last_time: float,
     ) -> None:
         # Batch-shape / target diagnostics describe the data, not the
-        # optimization — they go under `data/train`. Optimization and hardware
-        # diagnostics (param norm, throughput, memory) live under `system` so
-        # they don't crowd the `train/` loss curves.
+        # optimization — they go under `data/train`. Param norm sits with the
+        # optimization-health panels (`optim`); throughput and memory get
+        # their own section so nothing crowds the loss curves.
         data_metrics = self._reduce_diagnostics(diag_accum, diag_micro)
-        system_metrics: dict[str, torch.Tensor] = {
+        optim_metrics: dict[str, torch.Tensor] = {
             "param_norm": torch.stack(
                 [p.detach().norm() for p in self.model.parameters()]
             ).norm()
@@ -561,7 +568,8 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             torch.cuda.reset_peak_memory_stats(self.device)
 
         self._emit_diagnostics(data_metrics, self.step, "data/train")
-        self._emit_diagnostics(system_metrics, self.step, "system", host_metrics=host)
+        self._emit_diagnostics(optim_metrics, self.step, "optim")
+        self._emit_diagnostics({}, self.step, "throughput", host_metrics=host)
 
     def _optimizer_step(self) -> dict[str, torch.Tensor]:
         """Clip + step + zero_grad. Called once per accumulation window."""
@@ -612,30 +620,23 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             self._reduce_diagnostics(diag_accum, count), self.step, "data/valid"
         )
         self._emit_loss_curves(bin_accum, self.step, "valid")
-        self._log_audio_metrics()
-        self._log_attention_maps()
+        self._log_audio_metrics(self._attention_images())
 
         loss_val = val_metrics.get("loss", float("inf"))
         if loss_val < self.best_loss:
             self.state.best_loss = loss_val
 
     @torch.inference_mode()
-    def _log_attention_maps(self) -> None:
-        """Log per-sample text->audio attention heatmaps for the first `n_smp`
-        validation samples.
+    def _probe_attention(
+        self, text: MaskedTensor, acoustic: MaskedTensor
+    ) -> dict[int, torch.Tensor]:
+        """Per-sample text->audio attention heatmaps, keyed by sample index.
 
         Runs one extra eager forward with the weight-exposing `TorchAttention`
         backend (the fused SDPA kernel cannot surface attention weights), behind
-        hooks that collect every layer's map. The logged map is averaged over
-        heads and layers — see `jwt.training.attention_probe`.
+        hooks that collect every layer's map. The map is averaged over heads
+        and layers — see `jwt.training.attention_probe`.
         """
-        batch = next(iter(self.valid_dloader)).to(self.device, non_blocking=True)
-        n = min(self.config.n_smp, batch.tokens.shape[0])
-        text = MaskedTensor(values=batch.tokens.unsqueeze(1), mask=batch.tokens_mask)
-        acoustic = self._prepare_acoustic(batch)
-        text_n = MaskedTensor(values=text.values[:n], mask=text.mask[:n])  # ty: ignore[invalid-argument-type]
-        acoustic_n = MaskedTensor(values=acoustic.values[:n], mask=acoustic.mask[:n])  # ty: ignore[invalid-argument-type]
-
         with (
             torch.autocast(
                 device_type=self.device.type,
@@ -645,29 +646,38 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             capture_attention(self.model) as collector,
         ):
             self.model.training_step(
-                text_n,
-                acoustic_n,
+                text,
+                acoustic,
                 loss_fn=self.config.loss_fn.fn,
                 attention_implementation=TorchAttention,
             )
 
-        log_attention_maps(
-            self.logger,
-            collector.map,
-            text_n.mask.sum(-1),
-            acoustic_n.mask.sum(-1),
-            self.step,
-        )
+        return attention_images(collector.map, text.mask.sum(-1), acoustic.mask.sum(-1))
 
     @torch.inference_mode()
-    def _log_audio_metrics(self) -> None:
+    def _attention_images(self) -> dict[int, torch.Tensor]:
+        """Teacher-forced attention probe over the first `n_smp` validation
+        samples."""
+        batch = next(iter(self.valid_dloader)).to(self.device, non_blocking=True)
+        n = min(self.config.n_smp, batch.tokens.shape[0])
+        text = MaskedTensor(values=batch.tokens.unsqueeze(1), mask=batch.tokens_mask)
+        acoustic = self._prepare_acoustic(batch)
+        text_n = MaskedTensor(values=text.values[:n], mask=text.mask[:n])  # ty: ignore[invalid-argument-type]
+        acoustic_n = MaskedTensor(values=acoustic.values[:n], mask=acoustic.mask[:n])  # ty: ignore[invalid-argument-type]
+        return self._probe_attention(text_n, acoustic_n)
+
+    @torch.inference_mode()
+    def _log_audio_metrics(
+        self, attention: dict[int, torch.Tensor] | None = None
+    ) -> None:
         """SI-SDR, SDR, PESQ, ESTOI, NISQA on teacher-forced reconstructions
         of the first `n_smp` validation samples.
 
         Runs one extra forward and scores only full (n-1)-frame supervised
         windows: uniform length keeps the metrics comparable across steps and
         allows a single gather + batched metric calls. Clipped warm-up/tail
-        windows are dropped.
+        windows are dropped. `attention` carries the per-sample heatmaps for
+        the same batch, keyed by sample index.
         """
         from torchmetrics.functional.audio import (
             scale_invariant_signal_distortion_ratio,
@@ -724,13 +734,9 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         pred_wav = pred_wav[rows]
         trgt_wav = trgt_wav[rows]
 
-        metrics: dict[str, float] = {
-            "si_sdr": scale_invariant_signal_distortion_ratio(pred_wav, trgt_wav)
-            .mean()
-            .item(),
-            "sdr": signal_distortion_ratio(pred_wav, trgt_wav, load_diag=1e-6)
-            .mean()
-            .item(),
+        per_sample: dict[str, torch.Tensor] = {
+            "si_sdr": scale_invariant_signal_distortion_ratio(pred_wav, trgt_wav),
+            "sdr": signal_distortion_ratio(pred_wav, trgt_wav, load_diag=1e-6),
         }
         scores = {
             **self.utmos.score(pred_wav, sample_rate=self.sample_rate),
@@ -738,8 +744,30 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             **self.stoi.score(pred_wav, trgt_wav, sample_rate=self.sample_rate),
             **self.pesq.score(pred_wav, trgt_wav, sample_rate=self.sample_rate),
         }
-        metrics.update({k: v.mean().item() for k, v in scores.items()})
+        per_sample.update({k: v.reshape(-1) for k, v in scores.items()})
+        metrics = {k: v.mean().item() for k, v in per_sample.items()}
         self.logger.log_metrics(metrics, self.step, prefix="valid")
+
+        # Per-sample records under the sample's index in the validation batch
+        # (stable across steps despite the window filters above); only metrics
+        # scored per sample fit.
+        n_rows = pred_wav.shape[0]
+        keys = [k for k, v in per_sample.items() if v.numel() == n_rows]
+        sample_idx = torch.arange(keep.shape[0], device=keep.device)[keep][rows]
+        attention = attention or {}
+        records = [
+            SampleRecord(
+                index=si,
+                audio={
+                    "pred": Audio(pred_wav[i], self.sample_rate),  # ty: ignore[invalid-argument-type]
+                    "target": Audio(trgt_wav[i], self.sample_rate),  # ty: ignore[invalid-argument-type]
+                },
+                images=({"attention": attention[si]} if si in attention else {}),
+                metrics={k: float(per_sample[k][i]) for k in keys},
+            )
+            for i, si in enumerate(int(s) for s in sample_idx.tolist())
+        ]
+        self.logger.log_samples("valid_audio", records, self.step)
 
     @torch.inference_mode()
     def _log_sampled_metrics(self) -> None:
@@ -795,9 +823,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                 else:
                     wav = torch.zeros(0, device=self.device)
                 if wav.shape[-1] < min_samples:
-                    wav = torch.nn.functional.pad(
-                        wav, (0, min_samples - wav.shape[-1])
-                    )
+                    wav = torch.nn.functional.pad(wav, (0, min_samples - wav.shape[-1]))
                 wavs.append(wav)
 
         stats = sampled_generation_stats(
@@ -829,6 +855,18 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         ):
             acoustic_pred = self.model.speak(text, codec=self.codec)
 
+        # Self-forced probe: alignment read back from the generated frames.
+        att: dict[int, torch.Tensor] = {}
+        if bool(acoustic_pred.mask[:n].any()):
+            att = self._probe_attention(
+                MaskedTensor(values=text.values[:n], mask=text.mask[:n]),  # ty: ignore[invalid-argument-type]
+                MaskedTensor(
+                    values=acoustic_pred.values[:n],
+                    mask=acoustic_pred.mask[:n],  # ty: ignore[invalid-argument-type]
+                ),
+            )
+
+        records: list[SampleRecord] = []
         for i in range(n):
             L = int(acoustic_pred.mask[i].sum().item())
             if L == 0:
@@ -837,7 +875,13 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                 i : i + 1, :, :L
             ]  # (1, acoustic_dim, L), normalized
             wav = self.codec.decode(self.codec.unnormalize(ac_i))[0]
-            self.logger.log_audio(f"sampled/{i}", wav, self.step, self.sample_rate)
+            record = SampleRecord(
+                index=i,
+                audio={"audio": Audio(wav, self.sample_rate)},  # ty: ignore[invalid-argument-type]
+            )
+            if i in att:
+                record.images["attention"] = att[i]
+            records.append(record)
             if wav.shape[-1] < self.mel_spectrogram.n_fft:
                 warnings.warn(
                     f"sample {i}: generation too short for mel viz "
@@ -850,17 +894,19 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             mel_spectrogram = (
                 self.mel_spectrogram(wav.unsqueeze(0))[0].clamp(min=1e-5).log()
             )
-            log_mel(self.logger, f"sampled/{i}/mel", mel_spectrogram, self.step)
+            record.images["mel"] = mel_image(mel_spectrogram)
             utmos = self.utmos(wav, sample_rate=self.sample_rate)["utmos"]
-            self.logger.log_scalar(f"sampled/utmos_{i}", utmos.item(), self.step)
+            record.metrics["utmos"] = utmos.item()
+        if records:
+            # References share the smp batch, so indices align for the join.
+            self.logger.log_samples("samples", records, self.step, join="references")
 
     def _log_initial_samples(self):
         smp_batch = next(iter(self.smp_dloader))
         n = min(len(smp_batch.audios), self.config.n_smp)
 
+        records: list[SampleRecord] = []
         for i, audio in enumerate(smp_batch.audios[:n]):
-            self.logger.log_audio(f"{i}/clean", audio.waveform, 0, audio.sample_rate)
-
             waveform = audio.waveform.to(self.device)
             with (
                 torch.no_grad(),
@@ -877,11 +923,17 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                     .clamp(min=1e-5)
                     .log()
                 )
-            self.logger.log_audio(
-                f"{i}/reconstructed",
-                reconstructed,
-                0,
-                self.sample_rate,
+            records.append(
+                SampleRecord(
+                    index=i,
+                    audio={
+                        "clean": Audio(audio.waveform, audio.sample_rate),
+                        "reconstructed": Audio(reconstructed, self.sample_rate),  # ty: ignore[invalid-argument-type]
+                    },
+                    images={
+                        "clean_mel": mel_image(clean_viz),
+                        "reconstructed_mel": mel_image(recon_viz),
+                    },
+                )
             )
-            log_mel(self.logger, f"{i}/clean/mel", clean_viz, 0)
-            log_mel(self.logger, f"{i}/reconstructed/mel", recon_viz, 0)
+        self.logger.log_samples("references", records, 0)

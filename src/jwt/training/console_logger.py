@@ -15,6 +15,8 @@ from rich.progress import (
 )
 from rich.text import Text
 
+from jwt.training.loggers import SampleRecord
+
 
 class _IterSpeedColumn(ProgressColumn):
     """Render the current iteration speed: 'X.XX it/s' or 'X.XX s/it'."""
@@ -104,9 +106,24 @@ class ConsoleLogger:
         y: list[float],
         step: int,
         xlabel: str = "t",
+        history: bool = True,
     ) -> None:
         # Curves are a TensorBoard-only artifact.
         pass
+
+    def log_samples(
+        self,
+        section: str,
+        records: list[SampleRecord],
+        step: int,
+        join: str | None = None,
+    ) -> None:
+        # Only the audio survives on disk — metrics/images have richer homes.
+        for r in records:
+            for name, a in r.audio.items():
+                self.log_audio(
+                    f"{section}/{r.index}_{name}", a.waveform, step, a.sample_rate
+                )
 
     def log_config(self, config: object, step: int = 0) -> None:
         # The resolved config is also dumped to output_dir/config.yaml — no

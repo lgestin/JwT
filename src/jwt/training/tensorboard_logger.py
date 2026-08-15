@@ -1,36 +1,11 @@
-from dataclasses import asdict, is_dataclass
-from enum import Enum
 from pathlib import Path
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.tensorboard.summary import hparams
 
+from jwt.training.loggers import SampleRecord, flatten_config, metric_tag
 from jwt.training.plots import render_curve
-
-
-def _flatten_for_hparams(config: object) -> dict[str, int | float | str | bool]:
-    """Flatten a nested dataclass/dict to the (str, int, float, bool) scalars
-    that `add_hparams` accepts, joining nested keys with dots."""
-    if is_dataclass(config) and not isinstance(config, type):
-        config = asdict(config)
-    out: dict[str, int | float | str | bool] = {}
-
-    def walk(prefix: str, value: object) -> None:
-        if isinstance(value, dict):
-            for k, v in value.items():
-                walk(f"{prefix}.{k}" if prefix else k, v)  # ty: ignore[invalid-argument-type]
-        elif isinstance(value, Enum):
-            out[prefix] = str(value.value)
-        elif isinstance(value, bool | int | float | str):
-            out[prefix] = value
-        elif value is None:
-            out[prefix] = "None"
-        else:
-            out[prefix] = str(value)
-
-    walk("", config)
-    return out
 
 
 class TensorBoardLogger:
@@ -55,7 +30,7 @@ class TensorBoardLogger:
         self, metrics: dict[str, float], step: int, prefix: str = "train"
     ) -> None:
         for k, v in metrics.items():
-            self.writer.add_scalar(f"{prefix}/{k}", float(v), step)
+            self.writer.add_scalar(metric_tag(prefix, k), float(v), step)
 
     def log_diagnostics(
         self, metrics: dict[str, float], step: int, prefix: str = "train"
@@ -72,6 +47,7 @@ class TensorBoardLogger:
         y: list[float],
         step: int,
         xlabel: str = "t",
+        history: bool = True,
     ) -> None:
         # Rasterized into the Images tab rather than sent through
         # `add_histogram_raw`. The histogram widget is built for count
@@ -84,22 +60,40 @@ class TensorBoardLogger:
         self.writer.add_image(tag, image, step)
 
     _HPARAM_METRICS = (
-        "valid/loss",
-        "valid/fm_loss",
-        "valid/si_snr",
-        "valid/snr",
-        "valid/logstft_l1",
-        "valid/mel_cepstral_distortion",
-        "valid/si_sdr",
-        "valid/sdr",
-        "valid/pesq",
-        "valid/stoi",
-        "valid/nisqa_mos",
-        "valid/utmos",
+        "loss/valid",
+        "loss/valid_fm",
+        "quality_tf/valid_si_snr",
+        "quality_tf/valid_snr",
+        "quality_tf/valid_logstft_l1",
+        "quality_tf/valid_mel_cepstral_distortion",
+        "quality_tf/valid_si_sdr",
+        "quality_tf/valid_sdr",
+        "quality_tf/valid_pesq",
+        "quality_tf/valid_stoi",
+        "quality_tf/valid_nisqa_mos",
+        "quality_tf/valid_utmos",
     )
 
+    def log_samples(
+        self,
+        section: str,
+        records: list[SampleRecord],
+        step: int,
+        join: str | None = None,
+    ) -> None:
+        # No table widget — unpack each record into individual entries.
+        for r in records:
+            for name, a in r.audio.items():
+                self.log_audio(
+                    f"{section}/{r.index}_{name}", a.waveform, step, a.sample_rate
+                )
+            for name, img in r.images.items():
+                self.log_image(f"{section}/{r.index}_{name}", img, step)
+            for name, v in r.metrics.items():
+                self.log_scalar(f"{section}/{r.index}_{name}", v, step)
+
     def log_config(self, config: object, step: int = 0) -> None:
-        flat = _flatten_for_hparams(config)
+        flat = flatten_config(config)
         exp, ssi, sei = hparams(flat, dict.fromkeys(self._HPARAM_METRICS, 0.0))
         file_writer = self.writer._get_file_writer()  # re-opens after close()
         for summary in (exp, ssi, sei):

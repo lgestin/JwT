@@ -16,6 +16,7 @@ from jwt.model.neural_speaker import RollingFlowSpeaker
 from jwt.training.checkpoint_manager import CheckpointManager
 from jwt.training.config import (
     Args,
+    LoggerBackend,
     check_model_config_consistency,
     dump_config,
     parse_args,
@@ -114,7 +115,20 @@ def main() -> None:
     sub_loggers: list[Logger] = [
         ConsoleLogger(total=args.trainer.max_steps, audio_dir=output_dir / "audio")
     ]
-    if args.use_tensorboard:
+    if args.logger is LoggerBackend.WANDB:
+        from jwt.training.wandb_logger import WandbLogger
+
+        sub_loggers.append(
+            WandbLogger(
+                log_dir=output_dir,
+                run_name=output_dir.name,
+                project=args.wandb.project,
+                entity=args.wandb.entity,
+                group=args.wandb.group,
+                tags=args.wandb.tags or None,
+            )
+        )
+    elif args.logger is LoggerBackend.TENSORBOARD:
         from jwt.training.tensorboard_logger import TensorBoardLogger
 
         sub_loggers.append(TensorBoardLogger(log_dir=output_dir / "tb"))
@@ -154,7 +168,10 @@ def main() -> None:
         ema=ema,
     )
 
-    trainer.train()
+    try:
+        trainer.train()
+    finally:
+        logger.close()
 
 
 if __name__ == "__main__":

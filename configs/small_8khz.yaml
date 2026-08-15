@@ -56,5 +56,5 @@ trainer:
   n_smp: 16
   smp_steps: 2500
   valid_steps: 1000
-use_tensorboard: true
+logger: WANDB
 vocab_path: data/vocabulary.json

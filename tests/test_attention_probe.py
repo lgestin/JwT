@@ -8,7 +8,7 @@ from jwt.model.neural_speaker import (
     RollingFlowSpeaker,
 )
 from jwt.model.transformer import TransformerConfig
-from jwt.training.attention_probe import capture_attention, log_attention_maps
+from jwt.training.attention_probe import attention_images, capture_attention
 
 
 def _model(num_layers: int = 3) -> RollingFlowSpeaker:
@@ -75,22 +75,22 @@ def test_capture_attention_removes_hooks_on_exit() -> None:
     assert collector2.map.shape == collector.map.shape
 
 
-def test_log_attention_maps_slices_text_to_audio_block() -> None:
-    logged: dict[str, torch.Tensor] = {}
+def test_attention_images_slices_text_to_audio_block() -> None:
+    attn = torch.rand(3, 10, 10)
+    text_lens = torch.tensor([4, 3, 0])
+    acoustic_lens = torch.tensor([6, 5, 4])
+    images = attention_images(attn, text_lens, acoustic_lens)
 
-    class FakeLogger:
-        def log_image(self, tag: str, image: torch.Tensor, step: int) -> None:
-            logged[tag] = image
-
-    attn = torch.rand(2, 10, 10)
-    text_lens = torch.tensor([4, 3])
-    acoustic_lens = torch.tensor([6, 5])
-    log_attention_maps(FakeLogger(), attn, text_lens, acoustic_lens, step=7)
-
-    assert set(logged) == {"valid/attention/0", "valid/attention/1"}
-    # (C=1, text rows, audio columns).
-    assert logged["valid/attention/0"].shape == (1, 4, 6)
-    assert logged["valid/attention/1"].shape == (1, 3, 5)
+    # Sample 2 has no text — skipped.
+    assert set(images) == {0, 1}
+    # (RGB, text rows, audio columns) — viridis-colorized, nearest-neighbor
+    # upscaled by an integer factor so viewers can't blur the cells.
+    k0 = -(-256 // 4)
+    k1 = -(-256 // 3)
+    assert images[0].shape == (3, 4 * k0, 6 * k0)
+    assert images[1].shape == (3, 3 * k1, 5 * k1)
+    # Each source cell is a constant k x k block (no interpolation).
+    assert torch.equal(images[0][:, 0, 0], images[0][:, k0 - 1, k0 - 1])
     # Normalized to [0, 1].
-    for img in logged.values():
+    for img in images.values():
         assert img.min() >= 0.0 and img.max() <= 1.0
