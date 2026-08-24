@@ -132,9 +132,17 @@ def test_lognorm_enum_uses_jit_paper_values() -> None:
     assert sched.std == 0.8
 
 
-def test_config_defaults_to_lognorm_and_model_resolves_it() -> None:
+def test_enum_resolves_sd3_variant() -> None:
+    sched = TimestepSchedules.LOG_NORM_SD3.schedule
+    assert isinstance(sched, LogNormTimestepSchedule)
+    assert sched.mean == 0.0
+    assert sched.std == 1.0
+    assert sched.eps == 0.0
+
+
+def test_config_defaults_to_lognorm_sd3_and_model_resolves_it() -> None:
     cfg = RollingFlowConfig(vocabulary_size=8)
-    assert cfg.timestep_schedule is TimestepSchedules.LOG_NORM
+    assert cfg.timestep_schedule is TimestepSchedules.LOG_NORM_SD3
     model = RollingFlowSpeaker(cfg)
     assert isinstance(model.schedule, LogNormTimestepSchedule)
 

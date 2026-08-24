@@ -26,7 +26,7 @@ class RollingFlowConfig:
     vocabulary_size: int = 0
     codec: Codecs = Codecs.RAWAUDIO_512
     parametrization: FlowParametrizations = FlowParametrizations.JWT
-    timestep_schedule: TimestepSchedules = TimestepSchedules.LOG_NORM
+    timestep_schedule: TimestepSchedules = TimestepSchedules.LOG_NORM_SD3
     acoustic_dim: int = 100
     n_denoising_steps: int = 32
     max_acoustic_len: int = 2048

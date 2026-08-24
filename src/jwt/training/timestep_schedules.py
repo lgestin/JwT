@@ -116,6 +116,7 @@ class TimestepSchedules(StrEnum):
     LINEAR = "linear"
     LOG_NORM = "log_norm"
     LOG_NORM_TRIMMED = "log_norm_trimmed"
+    LOG_NORM_SD3 = "log_norm_sd3"
 
     @property
     def schedule(self) -> TimestepSchedule:
@@ -132,3 +133,5 @@ class TimestepSchedules(StrEnum):
                 # the final Euler step is not a t≈0.66→1 cliff (~34% of the
                 # trajectory at n=32). See the tail-trim design doc.
                 return LogNormTimestepSchedule(mean=-0.8, std=0.8, eps=0.025)
+            case TimestepSchedules.LOG_NORM_SD3:
+                return LogNormTimestepSchedule(mean=0.0, std=1.0)

@@ -21,7 +21,7 @@ model:
   max_acoustic_len: 2048
   n_denoising_steps: 128
   parametrization: JWT
-  timestep_schedule: LOG_NORM_TRIMMED
+  timestep_schedule: LOG_NORM_SD3
   transformer_config:
     adaln_rank: 128
     dim: 512

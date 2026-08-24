@@ -23,7 +23,7 @@ model:
   n_denoising_steps: 32
   noise_scale: 1.0
   parametrization: JWT
-  timestep_schedule: LOG_NORM
+  timestep_schedule: LOG_NORM_SD3
   transformer_config:
     adaln_rank: null
     dim: 256
