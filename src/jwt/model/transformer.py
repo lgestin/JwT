@@ -12,7 +12,7 @@ from jwt.model.attention import (
     AttentionMask,
     SDPAAttention,
 )
-from jwt.model.registers import Registers, RegistersConfig
+from jwt.model.registers import Registers
 
 
 @dataclass
@@ -25,15 +25,7 @@ class TransformerConfig(Serializable):
     rope_theta: float = 10000.0
     time_freq_embed_dim: int = 256
     adaln_rank: int | None = None
-    registers: RegistersConfig | None = None
-
-    def __post_init__(self):
-        has_registers = self.registers is not None
-        if has_registers and self.registers.starts_layer >= self.num_layers:
-            raise ValueError(
-                f"registers.starts_layer ({self.registers.starts_layer}) must be below "
-                f"num_layers ({self.num_layers}) or they never run"
-            )
+    n_registers: int = 16
 
 
 def precompute_freqs_cis(seq_len: int, dim: int, theta: float) -> torch.Tensor:
@@ -309,27 +301,35 @@ class Transformer(nn.Module):
         )
         self.register_buffer("freqs_cis", freqs_cis, persistent=False)
 
-        self.has_registers = config.registers is not None
-        if config.registers is not None:
-            self.registers = Registers(dim=config.dim, config=config.registers)
+        registers = None
+        if config.n_registers > 0:
+            registers = Registers(n=config.n_registers, dim=config.dim)
+        self.registers: Registers | None = registers
 
     def forward(
         self,
         x: torch.Tensor,
         t: torch.Tensor,
-        mask: AttentionMask | None = None,
+        seq_mask: torch.Tensor | None = None,
         attention_implementation: type[AttentionImplementation] = SDPAAttention,
     ) -> torch.Tensor:
-        """x: (B, L, D), t: (B, L) per-position timestep, mask: optional attn mask."""
+        """x: (B, L, D), t: (B, L) per-position timestep,
+        seq_mask: optional (B, L) bool, True = visible key."""
         freqs_cis = self.freqs_cis[: x.shape[1]]
         t_emb = self.time_embedder(t)
-        for i, block in enumerate(self.blocks):
-            if self.has_registers and i == self.registers.starts_layer:
-                x, t_emb, mask, freqs_cis = self.registers.prepend(
-                    x, t_emb, mask, freqs_cis
-                )
-            x = block(x, freqs_cis, t_emb, mask, attention_implementation)
-        if self.has_registers:
+        if self.registers is not None:
+            x, t_emb, seq_mask, freqs_cis = self.registers.prepend(
+                x, t_emb, seq_mask, freqs_cis
+            )
+
+        attn_mask = None
+        if seq_mask is not None:
+            attn_mask = attention_implementation.build_mask(seq_mask)
+
+        for block in self.blocks:
+            x = block(x, freqs_cis, t_emb, attn_mask, attention_implementation)
+
+        if self.registers is not None:
             x, t_emb = x[:, self.registers.n :], t_emb[:, self.registers.n :]
         shift, scale = self.final_modulation(t_emb)
         return self.final_norm(x) * (1 + scale) + shift

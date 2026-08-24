@@ -35,7 +35,7 @@ dependencies = [
     # [audio] pulls pesq/pystoi for the validation-time perceptual metrics;
     # >=1.6 is the floor for NISQA (non_intrusive_speech_quality_assessment).
     "torchmetrics[audio]>=1.6",
-    "torch>=2.12.0",
+    "torch>=2.13",
     "torchaudio>=2.11.0",
     "torchcodec>=0.11.1",
     "wandb>=0.19",
@@ -58,11 +58,13 @@ demo = [
 # Force a resolution failure if anything ever transitively requires PyJWT.
 constraint-dependencies = ["pyjwt<0"]
 
+environments = ["python_full_version < '3.14' and sys_platform == 'linux'"]
+
 [tool.uv.extra-build-dependencies]
 flash-attn = ["torch", "setuptools", "wheel", "packaging", "psutil", "ninja"]
 
 [tool.uv.sources]
-flash-attn = { url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl" }
+flash-attn = { path = "wheels/flash_attn-2.8.3.post1-cp313-cp313-linux_x86_64.whl" }
 
 [tool.hatch.version]
 path = "src/jwt/__init__.py"

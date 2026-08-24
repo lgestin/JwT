@@ -43,7 +43,7 @@ def test_config_roundtrip() -> None:
     assert TransformerConfig.loads_json(cfg.dumps_json()) == cfg
 
 
-def test_causal_mask_changes_output() -> None:
+def test_seq_mask_changes_output() -> None:
     torch.manual_seed(0)
     model = Transformer(TransformerConfig(dim=32, num_heads=4, num_layers=2))
     # AdaLN is zero-init, which gates the attention residual to 0 and makes the
@@ -52,8 +52,8 @@ def test_causal_mask_changes_output() -> None:
         nn.init.normal_(block.adaLN.linear.weight, std=0.02)
     x = torch.randn(1, 8, 32)
     t = torch.rand(1, 8)
-    mask = torch.triu(torch.ones(8, 8, dtype=torch.bool), diagonal=1).logical_not()
-    y_masked = model(x, t, mask=mask)
+    seq_mask = torch.arange(8)[None] < 4  # hide the last 4 keys
+    y_masked = model(x, t, seq_mask=seq_mask)
     y_unmasked = model(x, t)
     assert y_masked.shape == y_unmasked.shape
     assert not torch.allclose(y_masked, y_unmasked)

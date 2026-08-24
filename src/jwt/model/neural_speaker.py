@@ -158,9 +158,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         is_zero_real = (t_packed == 0.0) & in_ac_packed
         keep_first_zero = is_zero_real.cumsum(-1) <= 1
         seq_mask = in_real_packed & keep_first_zero  # (B, T)
-        attn_mask = attention_implementation.build_mask(seq_mask)
         out_packed = self.transformer(
-            x_packed, t_packed, attn_mask, attention_implementation
+            x_packed, t_packed, seq_mask, attention_implementation
         )
         pred_packed = self.acoustic_out(out_packed)  # (B, T, acoustic_dim)
 

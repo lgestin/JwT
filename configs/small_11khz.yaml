@@ -23,6 +23,7 @@ model:
   parametrization: JWT
   transformer_config:
     adaln_rank: 32
+    n_registers: 0
     dim: 128
     max_seq_len: 8192
     mlp_ratio: 2.0

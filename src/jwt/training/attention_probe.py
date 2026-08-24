@@ -17,6 +17,7 @@ from contextlib import contextmanager
 
 import torch
 
+from jwt.model.registers import Registers
 from jwt.model.transformer import SelfAttention
 from jwt.training.loggers import colorize
 
@@ -28,13 +29,17 @@ class AttentionCollector:
     the mean once the forward pass has fired every layer.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, n_registers: int = 0) -> None:
         self._sum: torch.Tensor | None = None
         self._layers = 0
+        self._n_registers = n_registers
 
     def record(self, attn_weights: torch.Tensor) -> None:
-        """`attn_weights`: (B, H, T, T) — averaged over heads, summed over layers."""
-        head_avg = attn_weights.mean(dim=1)  # (B, T, T)
+        """`attn_weights`: (B, H, n + T, n + T) — the leading n register
+        rows/cols are dropped so the map stays in packed sequence coordinates
+        (rows then sum to <= 1, the rest being mass parked on registers)."""
+        n = self._n_registers
+        head_avg = attn_weights[:, :, n:, n:].mean(dim=1)  # (B, T, T)
         self._sum = head_avg if self._sum is None else self._sum + head_avg
         self._layers += 1
 
@@ -55,7 +60,8 @@ def capture_attention(model: torch.nn.Module) -> Iterator[AttentionCollector]:
     for the eager one for the duration and restored on exit, along with the
     hooks — the model is left exactly as it was found.
     """
-    collector = AttentionCollector()
+    registers = [m for m in model.modules() if isinstance(m, Registers)]
+    collector = AttentionCollector(n_registers=sum(r.n for r in registers))
 
     def hook(_module: torch.nn.Module, _args: tuple, output: object) -> None:
         # SelfAttention.forward returns (out, attn_weights); TorchAttention

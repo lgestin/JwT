@@ -153,7 +153,7 @@ def test_transformer_outputs_match_across_backends() -> None:
             out = model(
                 x,
                 t,
-                mask=impl.build_mask(seq_mask),
+                seq_mask=seq_mask,
                 attention_implementation=impl,
             )
         outs[impl.__name__] = out.float()

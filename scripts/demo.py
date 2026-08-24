@@ -1,9 +1,17 @@
 """Gradio demo server for a trained RollingFlowSpeaker checkpoint.
 
+The codec is taken from the checkpoint's config (cfg.codec), so a BigVGAN
+checkpoint and a RawAudio checkpoint both Just Work. RawAudio codecs are
+sample-rate agnostic, so pass --sample-rate for them (BigVGAN locks 24 kHz).
+
 Usage:
     uv run --extra demo --extra bigvgan python scripts/demo.py \
         --checkpoint outputs/run2/checkpoints/checkpoint.best.pt \
         --vocab-path data/vocabulary.json
+
+    uv run --extra demo python scripts/demo.py \
+        --checkpoint outputs/run_22khz_raw512/checkpoints/checkpoint.555000.pt \
+        --sample-rate 22050
 """
 
 from dataclasses import dataclass
@@ -13,7 +21,8 @@ import matplotlib
 import torch
 from simple_parsing import ArgumentParser
 
-from jwt.data.audio.codecs import BigVGAN
+from jwt.data.audio.codecs import Codec
+from jwt.data.audio.stft import MelSpectrogram
 from jwt.data.text import Phonemizer, Tokenizer, Vocabulary
 from jwt.model.neural_speaker import (
     MaskedTensor,
@@ -24,19 +33,30 @@ from jwt.model.neural_speaker import (
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+# Fixed visualization mel: independent of the codec so the displayed
+# spectrogram is the same representation for every checkpoint.
+_VIZ_MEL_N_MELS = 80
+_VIZ_MEL_N_FFT = 1024
+_VIZ_MEL_HOP = 256
+
 
 @dataclass
 class Args:
     checkpoint: str
     vocab_path: str = "data/vocabulary.json"
     device: str = "cuda"
+    # Playback rate for codecs that don't lock one (RawAudio). Ignored for
+    # BigVGAN, whose vocoder fixes 24 kHz. Required for RawAudio checkpoints.
+    sample_rate: int | None = None
     # Server
     host: str = "127.0.0.1"
     port: int = 7860
     share: bool = False
 
 
-def _load_model(checkpoint_path: str, device: torch.device) -> tuple[RollingFlowSpeaker, dict]:
+def _load_model(
+    checkpoint_path: str, device: torch.device
+) -> tuple[RollingFlowSpeaker, dict]:
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if "config" not in ckpt:
         raise RuntimeError(
@@ -50,7 +70,8 @@ def _load_model(checkpoint_path: str, device: torch.device) -> tuple[RollingFlow
     model = RollingFlowSpeaker(cfg).to(device)
 
     state = ckpt["model"]
-    # Strip torch.compile's "_orig_mod." prefix if the checkpoint came from a compiled model.
+    # Strip torch.compile's "_orig_mod." prefix if the checkpoint came
+    # from a compiled model.
     state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
     model.load_state_dict(state)
     model.eval()
@@ -87,14 +108,23 @@ def _plot_mel(
 
 def _build_synth_fn(
     model: RollingFlowSpeaker,
-    codec: BigVGAN,
+    codec: Codec,
     phonemizer: Phonemizer,
     tokenizer: Tokenizer,
     device: torch.device,
+    sample_rate: int,
 ):
-    sr = codec.required_sample_rate
-    assert sr is not None  # BigVGAN's vocoder is locked to 24 kHz
+    sr = sample_rate
     hop = codec.hop_length
+    viz_mel = MelSpectrogram(
+        n_fft=_VIZ_MEL_N_FFT,
+        hop_length=_VIZ_MEL_HOP,
+        n_mels=_VIZ_MEL_N_MELS,
+        sample_rate=sr,
+        window="hann",
+        center=False,
+        mel_scale="slaney",
+    ).to(device)
 
     @torch.inference_mode()
     def synthesize(text: str, seed: int):
@@ -138,8 +168,9 @@ def _build_synth_fn(
             f"Rate: {rate:.2f} frames/token"
         )
 
+        viz = viz_mel(wav.unsqueeze(0)).clamp(min=1e-5).log()[0]  # (n_mels, T)
         wav_np = wav.detach().cpu().float().numpy()
-        fig = _plot_mel(ac_unnorm[0], hop_length=hop, sample_rate=sr)
+        fig = _plot_mel(viz, hop_length=_VIZ_MEL_HOP, sample_rate=sr)
         return (sr, wav_np), fig, phonemes, length_info
 
     return synthesize
@@ -159,20 +190,36 @@ def main() -> None:
     vocab = Vocabulary.from_json(args.vocab_path)
     tokenizer = Tokenizer(vocab)
     phonemizer = Phonemizer()
-    codec = BigVGAN().to(device)
     model, ckpt = _load_model(args.checkpoint, device)
     assert model.cfg.vocabulary_size == len(vocab), (
         f"vocab size mismatch: checkpoint has {model.cfg.vocabulary_size}, "
         f"vocab file has {len(vocab)}"
     )
 
-    synthesize = _build_synth_fn(model, codec, phonemizer, tokenizer, device)
+    # The checkpoint records which codec it was trained with; build that one so
+    # the model's acoustic features decode correctly (a 512-dim RawAudio model
+    # would otherwise be fed into BigVGAN's 100-mel vocoder and blow up).
+    codec = model.cfg.codec.codec.to(device)
+    sample_rate = codec.required_sample_rate
+    if sample_rate is None:
+        if args.sample_rate is None:
+            raise SystemExit(
+                f"codec {model.cfg.codec} has no locked sample rate; "
+                "pass --sample-rate (e.g. 22050)"
+            )
+        sample_rate = args.sample_rate
+    print(f"Codec: {model.cfg.codec} · sample rate: {sample_rate} Hz")
+
+    synthesize = _build_synth_fn(
+        model, codec, phonemizer, tokenizer, device, sample_rate
+    )
 
     with gr.Blocks(title="RollingFlowSpeaker demo") as demo:
         gr.Markdown("# RollingFlowSpeaker demo")
         gr.Markdown(
             f"Checkpoint: `{args.checkpoint}` (step {ckpt.get('step', '?')}) &middot; "
-            f"sample rate: {codec.required_sample_rate} Hz &middot; "
+            f"codec: {model.cfg.codec} &middot; "
+            f"sample rate: {sample_rate} Hz &middot; "
             f"n_denoising_steps: {model.cfg.n_denoising_steps}"
         )
         with gr.Row():
@@ -185,7 +232,9 @@ def main() -> None:
                 seed = gr.Number(label="Seed", value=0, precision=0)
                 go = gr.Button("Synthesize", variant="primary")
                 phonemes_out = gr.Textbox(label="Phonemes", interactive=False)
-                length_out = gr.Textbox(label="Length predictor", interactive=False, lines=3)
+                length_out = gr.Textbox(
+                    label="Length predictor", interactive=False, lines=3
+                )
             with gr.Column(scale=3):
                 audio_out = gr.Audio(label="Synthesized audio", type="numpy")
                 mel_out = gr.Plot(label="log-mel spectrogram")

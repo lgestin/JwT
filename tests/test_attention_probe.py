@@ -11,11 +11,11 @@ from jwt.model.transformer import TransformerConfig
 from jwt.training.attention_probe import attention_images, capture_attention
 
 
-def _model(num_layers: int = 3) -> RollingFlowSpeaker:
+def _model(num_layers: int = 3, n_registers: int = 0) -> RollingFlowSpeaker:
     torch.manual_seed(0)
     cfg = RollingFlowConfig(
         transformer_config=TransformerConfig(
-            dim=32, num_heads=4, num_layers=num_layers
+            dim=32, num_heads=4, num_layers=num_layers, n_registers=n_registers
         ),
         vocabulary_size=20,
         acoustic_dim=8,
@@ -50,6 +50,20 @@ def test_capture_attention_collects_layer_averaged_map() -> None:
     # distribution over the visible keys.
     rows = attn.sum(dim=-1)
     assert torch.allclose(rows, torch.ones_like(rows), atol=1e-4)
+
+
+def test_capture_attention_strips_registers() -> None:
+    """Registers sit ahead of the packed sequence; the map must drop them so
+    `attention_images` keeps indexing in [text | audio | pad] coordinates."""
+    model = _model(num_layers=2, n_registers=8)
+    text, acoustic = _inputs(model, B=2, t_text=4, t_ac=6)
+    with capture_attention(model) as collector:
+        model.training_step(text, acoustic, attention_implementation=TorchAttention)
+    attn = collector.map
+    assert attn.shape == (2, 4 + 6, 4 + 6)
+    rows = attn.sum(dim=-1)
+    assert bool((rows <= 1 + 1e-4).all())
+    assert bool((rows < 1 - 1e-4).any()), "some mass should land on registers"
 
 
 def test_capture_attention_records_nothing_for_sdpa() -> None:
