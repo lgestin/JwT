@@ -163,3 +163,14 @@ def test_transformer_outputs_match_across_backends() -> None:
     for name in ("TorchAttention", "FlashVarlenAttention"):
         diff = (ref - outs[name])[valid].abs().max().item()
         assert diff < 5e-2, f"{name} diverged from SDPA: max abs diff {diff:.3e}"
+
+
+def test_flash_varlen_rejects_foreign_mask() -> None:
+    """Masks are backend-specific: handing FlashVarlen an SDPA-style tensor
+    mask (or none at all) must fail loudly rather than misindex."""
+    q, k, v = _qkv()
+    seq_mask = torch.ones(2, 6, dtype=torch.bool)
+    with pytest.raises(TypeError):
+        FlashVarlenAttention.attention(q, k, v, SDPAAttention.build_mask(seq_mask))
+    with pytest.raises(TypeError):
+        FlashVarlenAttention.attention(q, k, v, None)

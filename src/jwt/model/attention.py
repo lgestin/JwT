@@ -55,7 +55,7 @@ class AttentionImplementation(Protocol):
         ...
 
 
-class SDPAAttention:
+class SDPAAttention(AttentionImplementation):
     """Attention via `F.scaled_dot_product_attention` — the fused kernel.
 
     Fast and memory-efficient, but the softmax matrix is never materialized,
@@ -71,13 +71,13 @@ class SDPAAttention:
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        mask: torch.Tensor | None,
+        mask: AttentionMask | None,
     ) -> tuple[torch.Tensor, None]:
         assert mask is None or isinstance(mask, torch.Tensor)
         return F.scaled_dot_product_attention(q, k, v, attn_mask=mask), None
 
 
-class TorchAttention:
+class TorchAttention(AttentionImplementation):
     """Explicit attention in plain torch ops.
 
     Slower and materializes the (B, H, T, T) softmax matrix, but returns it as
@@ -94,7 +94,7 @@ class TorchAttention:
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        mask: torch.Tensor | None,
+        mask: AttentionMask | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         assert mask is None or isinstance(mask, torch.Tensor)
         scale = q.shape[-1] ** -0.5
@@ -106,7 +106,7 @@ class TorchAttention:
         return out, attn_weights
 
 
-class FlashVarlenAttention:
+class FlashVarlenAttention(AttentionImplementation):
     """Attention via `flash_attn.flash_attn_varlen_func`.
 
     Unpads `q`/`k`/`v` to a flat `(total_valid, H, D)` layout, runs the
@@ -137,9 +137,10 @@ class FlashVarlenAttention:
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        mask: FlashAttentionVarlenMask | None,
+        mask: AttentionMask | None,
     ) -> tuple[torch.Tensor, None]:
-        assert mask is not None, "FlashVarlenAttention requires a non-None mask"
+        if not isinstance(mask, FlashAttentionVarlenMask):
+            raise TypeError("FlashVarlenAttention requires a FlashAttentionVarlenMask")
         B, H, T, D = q.shape
 
         def pack(x: torch.Tensor) -> torch.Tensor:
