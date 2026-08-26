@@ -129,9 +129,6 @@ class TimestepSchedules(StrEnum):
                 # harder-to-denoise timesteps).
                 return LogNormTimestepSchedule(mean=-0.8, std=0.8)
             case TimestepSchedules.LOG_NORM_TRIMMED:
-                # Same logit-normal warp, eps=0.025 trimmed from each tail so
-                # the final Euler step is not a t≈0.66→1 cliff (~34% of the
-                # trajectory at n=32). See the tail-trim design doc.
                 return LogNormTimestepSchedule(mean=-0.8, std=0.8, eps=0.025)
             case TimestepSchedules.LOG_NORM_SD3:
                 return LogNormTimestepSchedule(mean=0.0, std=1.0)
