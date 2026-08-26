@@ -106,3 +106,29 @@ def test_stft_property_shape(random_audio: AudioFile) -> None:
     stft = random_audio.stft
     assert torch.is_tensor(stft)
     assert stft.is_complex()
+
+
+def test_resample_same_rate_is_noop() -> None:
+    waveform = torch.randn(1, 16000)
+    audio = AudioFile(waveform=waveform, sample_rate=16000)
+    assert audio.resample(16000).waveform is waveform
+
+
+def test_lazy_resample_at_load_matches_eager(audio_from_file: AudioFile) -> None:
+    native_sr = audio_from_file.sample_rate
+    target_sr = native_sr // 2
+    lazy = AudioFile(audio_from_file.filepath, sample_rate=target_sr)
+    eager = AudioFile(audio_from_file.filepath).resample(target_sr)
+    assert lazy.sample_rate == target_sr
+    torch.testing.assert_close(lazy.waveform, eager.waveform)
+    assert lazy.sample_rate == target_sr
+    assert lazy.resample(target_sr).waveform is lazy.waveform
+
+
+def test_lazy_excerpt_offsets_use_native_rate(audio_from_file: AudioFile) -> None:
+    native_sr = audio_from_file.sample_rate
+    target_sr = native_sr // 2
+    lazy = AudioFile(
+        audio_from_file.filepath, sample_rate=target_sr, start_s=0.1, end_s=0.6
+    )
+    assert lazy.waveform.shape[-1] == pytest.approx(0.5 * target_sr, abs=2)

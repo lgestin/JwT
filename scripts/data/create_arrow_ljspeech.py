@@ -51,11 +51,11 @@ def _build_schema(codec_name: str) -> pa.Schema:
     )
 
 
-def _prepare(idx: int, source: LJTTSSource, target_sr: int, target_loudness: float):
+def _prepare(idx: int, source: LJTTSSource, target_loudness: float):
     audio_path, _ = source.items[idx]
     audio_id = audio_path.stem
-    audio, text = source[idx]
-    audio = audio.mono().resample(target_sr).normalize(target_loudness)
+    audio, text = source[idx]  # already resampled to source.sample_rate on load
+    audio = audio.mono().normalize(target_loudness)
     waveform_i16 = (audio.waveform * 32768.0).clamp(-32768, 32767).to(torch.int16)
     phonemes = text.phonemes
     tokens = source.tokenizer.encode(phonemes)
@@ -71,14 +71,15 @@ def _prepare(idx: int, source: LJTTSSource, target_sr: int, target_loudness: flo
 
 def main(args: Args) -> None:
     tokenizer = Tokenizer(Vocabulary.from_json(str(args.vocab_path)))
-    source = LJTTSSource(str(args.lj_folder), tokenizer=tokenizer)
+    source = LJTTSSource(
+        str(args.lj_folder), tokenizer=tokenizer, sample_rate=args.sample_rate
+    )
     print(f"Loaded {len(source)} items from {args.lj_folder}")
 
     device = torch.device(args.device)
     codec = args.codec.codec
     codec = codec.eval().to(device)
     check_sample_rate(codec, args.sample_rate)
-    target_sr = args.sample_rate
     codec_name = str(args.codec).lower()
     acoustic_field = f"acoustic_{codec_name}"
 
@@ -92,7 +93,7 @@ def main(args: Args) -> None:
         ThreadPoolExecutor(args.n_workers) as executor,
     ):
         futures = [
-            executor.submit(_prepare, i, source, target_sr, args.target_loudness)
+            executor.submit(_prepare, i, source, args.target_loudness)
             for i in range(len(source))
         ]
 
@@ -114,7 +115,7 @@ def main(args: Args) -> None:
                 np.ascontiguousarray(waveform_i16.numpy()).tobytes()
             )
             buffer["num_samples"].append(int(waveform_i16.numel()))
-            buffer["sample_rate"].append(int(target_sr))
+            buffer["sample_rate"].append(int(args.sample_rate))
             buffer["loudness"].append(item["loudness"])
             buffer[acoustic_field].append(
                 np.ascontiguousarray(acoustic.numpy()).tobytes()

@@ -44,11 +44,13 @@ def resample(waveform: np.ndarray, orig_sr: int, targ_sr: int):
     if orig_sr == targ_sr:
         return waveform
 
+    n_channels = waveform.shape[0]
     layout = av_resampler_layout_from_waveform(waveform)
     resampler = AudioResampler(format="s16", layout=layout, rate=targ_sr)
-    frame = AudioFrame.from_ndarray(waveform, layout=layout)
+    # Packed s16 frames are interleaved (1, n_samples * n_channels).
+    packed = np.ascontiguousarray(waveform.T.reshape(1, -1))
+    frame = AudioFrame.from_ndarray(packed, format="s16", layout=layout)
     frame.rate = orig_sr
-    frame = resampler.resample(frame)
-    flush = resampler.resample(None)
-    resampled = np.concat([frame[0].to_ndarray(), flush[0].to_ndarray()], axis=-1)
-    return resampled
+    frames = resampler.resample(frame) + resampler.resample(None)
+    resampled = np.concat([f.to_ndarray() for f in frames], axis=-1)
+    return np.ascontiguousarray(resampled.reshape(-1, n_channels).T)

@@ -34,7 +34,7 @@ class AudioFile:
         self,
         filepath: str | None = None,
         waveform: torch.FloatTensor | None = None,
-        sample_rate: int | None = None,
+        sample_rate: int | None = None,  # resamples the file at load time.
         start_s: float = 0,
         end_s: float | None = None,
         loudness: float | None = None,
@@ -68,20 +68,20 @@ class AudioFile:
     def waveform(self):
         waveform = self._waveform
         if waveform is None:
-            sample_rate = self.sample_rate
-            start = int(self.start_s * sample_rate)
-            end = -1
-            if self.end_s:
-                end = int(self.end_s * sample_rate)
-            waveform, sr = load_waveform(
+            # Offsets index native frames; resample to _sample_rate happens in int16.
+            native_sr = sf.SoundFile(self.filepath).samplerate
+            start = int(self.start_s * native_sr)
+            end = int(self.end_s * native_sr) if self.end_s else -1
+            waveform, _ = load_waveform(
                 path=self.filepath,  # ty: ignore[invalid-argument-type]
-                sample_rate=sample_rate,
+                sample_rate=self._sample_rate,
                 start=start,
                 end=end,
             )
             waveform = torch.from_numpy(waveform) / 32768.0
             self._waveform = waveform
-            self._sample_rate = sr
+            if self._sample_rate is None:
+                self._sample_rate = native_sr
         return waveform
 
     @property
@@ -133,6 +133,8 @@ class AudioFile:
         return self
 
     def resample(self, sample_rate: int):
+        if self.sample_rate == sample_rate:
+            return self
         waveform = self.waveform
         waveform = (32768 * waveform).to(torch.int16).numpy()
         resampled = resample(

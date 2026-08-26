@@ -45,3 +45,12 @@ def test_lj_source_works_without_a_tokenizer(tmp_path) -> None:
     _, text = source[0]
     assert text.tokenizer is None
     assert text.text == "normalized text"
+
+
+def test_lj_source_threads_sample_rate_to_audio(tmp_path) -> None:
+    (tmp_path / "metadata.csv").write_text(
+        "LJ001-0001|raw text|normalized text\n", encoding="utf-8"
+    )
+    source = LJTTSSource(str(tmp_path), sample_rate=24000)
+    audio, _ = source[0]
+    assert audio.sample_rate == 24000

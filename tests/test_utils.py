@@ -51,3 +51,15 @@ def test_resample_identity_returns_input() -> None:
     waveform = np.zeros((1, 1024), dtype=np.int16)
     out = resample(waveform, orig_sr=16000, targ_sr=16000)
     assert out is waveform
+
+
+def test_resample_stereo_keeps_channels_separate() -> None:
+    sr = 16000
+    t = np.arange(sr) / sr
+    left = (10000 * np.sin(2 * np.pi * 440 * t)).astype(np.int16)
+    right = np.zeros(sr, dtype=np.int16)
+    resampled = resample(np.stack([left, right]), orig_sr=sr, targ_sr=sr // 2)
+    assert resampled.shape[0] == 2
+    assert resampled.shape[-1] == pytest.approx(sr // 2, abs=2)
+    assert np.abs(resampled[1]).max() == 0
+    assert np.abs(resampled[0]).max() > 9000

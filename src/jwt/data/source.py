@@ -16,7 +16,13 @@ class TTSSource(Protocol):
 
 
 class LJTTSSource(TTSSource):
-    def __init__(self, folder_path: str, tokenizer: Tokenizer | None = None):
+    def __init__(
+        self,
+        folder_path: str,
+        tokenizer: Tokenizer | None = None,
+        sample_rate: int | None = None,
+    ):
+        """sample_rate: resample on load (int16, see AudioFile); None keeps native."""
         folder = Path(folder_path)
         items: list[tuple[Path, str]] = []
         with open(folder / "metadata.csv", encoding="utf-8", newline="") as f:
@@ -28,15 +34,15 @@ class LJTTSSource(TTSSource):
                 items.append((folder / "wavs" / f"{audio_id}.wav", normalized))
         self.items = items
         self.tokenizer = tokenizer
+        self.sample_rate = sample_rate
 
     def __len__(self) -> int:
         return len(self.items)
 
     def __getitem__(self, idx: int) -> tuple[AudioFile, Text]:
         audio_path, text = self.items[idx]
-        return AudioFile(filepath=str(audio_path)), Text(
-            text=text, tokenizer=self.tokenizer
-        )
+        audio = AudioFile(filepath=str(audio_path), sample_rate=self.sample_rate)
+        return audio, Text(text=text, tokenizer=self.tokenizer)
 
 
 class ArrowTTSSource(TTSSource):
