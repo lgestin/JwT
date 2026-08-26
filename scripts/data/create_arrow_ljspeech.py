@@ -56,7 +56,7 @@ def _prepare(idx: int, source: LJTTSSource, target_sr: int, target_loudness: flo
     audio_id = audio_path.stem
     audio, text = source[idx]
     audio = audio.mono().resample(target_sr).normalize(target_loudness)
-    waveform_i16 = (audio.waveform * 32678.0).clamp(-32768, 32767).to(torch.int16)
+    waveform_i16 = (audio.waveform * 32768.0).clamp(-32768, 32767).to(torch.int16)
     phonemes = text.phonemes
     tokens = source.tokenizer.encode(phonemes)
     return {
@@ -102,7 +102,7 @@ def main(args: Args) -> None:
             waveform_i16: torch.Tensor = item["waveform_i16"]
 
             with torch.inference_mode():
-                wav_f = waveform_i16.to(device, dtype=torch.float32).div_(32678.0)
+                wav_f = waveform_i16.to(device, dtype=torch.float32).div_(32768.0)
                 acoustic = codec.encode(wav_f[None]).squeeze(0).to(torch.float32).cpu()
 
             acoustic_dim, n_frames = int(acoustic.shape[-2]), int(acoustic.shape[-1])

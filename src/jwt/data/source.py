@@ -81,7 +81,7 @@ class ArrowTTSSource(TTSSource):
         waveform_i16 = torch.frombuffer(
             bytearray(row["waveform_i16"].as_py()), dtype=torch.int16
         )
-        waveform = waveform_i16.view(1, -1).float() / 32678.0
+        waveform = waveform_i16.view(1, -1).float() / 32768.0
 
         acoustic = torch.frombuffer(
             bytearray(row[self._acoustic_field].as_py()), dtype=torch.float

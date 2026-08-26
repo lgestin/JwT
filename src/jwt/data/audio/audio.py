@@ -79,7 +79,7 @@ class AudioFile:
                 start=start,
                 end=end,
             )
-            waveform = torch.from_numpy(waveform) / 32678.0
+            waveform = torch.from_numpy(waveform) / 32768.0
             self._waveform = waveform
             self._sample_rate = sr
         return waveform
@@ -134,13 +134,13 @@ class AudioFile:
 
     def resample(self, sample_rate: int):
         waveform = self.waveform
-        waveform = (32678 * waveform).to(torch.int16).numpy()
+        waveform = (32768 * waveform).to(torch.int16).numpy()
         resampled = resample(
             waveform=waveform,
             orig_sr=self.sample_rate,
             targ_sr=sample_rate,
         )
-        resampled = torch.from_numpy(resampled) / 32678.0
+        resampled = torch.from_numpy(resampled) / 32768.0
         self._waveform = resampled
         self._stft = None
         self._sample_rate = sample_rate
