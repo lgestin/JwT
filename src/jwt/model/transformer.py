@@ -330,6 +330,6 @@ class Transformer(nn.Module):
             x = block(x, freqs_cis, t_emb, attn_mask, attention_implementation)
 
         if self.registers is not None:
-            x, t_emb = x[:, self.registers.n :], t_emb[:, self.registers.n :]
+            x, t_emb = self.registers.strip(x, t_emb)
         shift, scale = self.final_modulation(t_emb)
         return self.final_norm(x) * (1 + scale) + shift
