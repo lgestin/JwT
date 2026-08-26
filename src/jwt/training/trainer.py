@@ -23,7 +23,7 @@ from jwt.model.neural_speaker import (
     RollingFlowSpeaker,
     TrainingStepOutput,
 )
-from jwt.training.attention_probe import attention_images, capture_attention
+from jwt.training.attention_probe import capture_attention
 from jwt.training.checkpoint_manager import CheckpointManager
 from jwt.training.ema import EMA
 from jwt.training.loggers import Logger, SampleRecord, mel_image
@@ -629,8 +629,10 @@ class TTSRollingFlowMatchingTrainer(Trainer):
     @torch.inference_mode()
     def _probe_attention(
         self, text: MaskedTensor, acoustic: MaskedTensor
-    ) -> dict[int, torch.Tensor]:
-        """Per-sample text->audio attention heatmaps, keyed by sample index.
+    ) -> tuple[dict[int, dict[str, torch.Tensor]], dict[str, torch.Tensor]]:
+        """`(images, scalars)`: per-sample attention heatmaps keyed by sample
+        index, and the register-mass scalars (empty without registers). The
+        caller logs the scalars under its own prefix.
 
         Runs one extra eager forward with the weight-exposing `TorchAttention`
         backend (the fused SDPA kernel cannot surface attention weights), behind
@@ -652,10 +654,14 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                 attention_implementation=TorchAttention,
             )
 
-        return attention_images(collector.map, text.mask.sum(-1), acoustic.mask.sum(-1))
+        text_lens = text.mask.sum(-1)
+        acoustic_lens = acoustic.mask.sum(-1)
+        return collector.images(text_lens, acoustic_lens), collector.scalars(
+            text_lens, acoustic_lens
+        )
 
     @torch.inference_mode()
-    def _attention_images(self) -> dict[int, torch.Tensor]:
+    def _attention_images(self) -> dict[int, dict[str, torch.Tensor]]:
         """Teacher-forced attention probe over the first `n_smp` validation
         samples."""
         batch = next(iter(self.valid_dloader)).to(self.device, non_blocking=True)
@@ -664,11 +670,16 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         acoustic = self._prepare_acoustic(batch)
         text_n = MaskedTensor(values=text.values[:n], mask=text.mask[:n])  # ty: ignore[invalid-argument-type]
         acoustic_n = MaskedTensor(values=acoustic.values[:n], mask=acoustic.mask[:n])  # ty: ignore[invalid-argument-type]
-        return self._probe_attention(text_n, acoustic_n)
+        images, scalars = self._probe_attention(text_n, acoustic_n)
+        if scalars:
+            self.logger.log_metrics(
+                {k: float(v) for k, v in scalars.items()}, self.step, prefix="valid"
+            )
+        return images
 
     @torch.inference_mode()
     def _log_audio_metrics(
-        self, attention: dict[int, torch.Tensor] | None = None
+        self, attention: dict[int, dict[str, torch.Tensor]] | None = None
     ) -> None:
         """SI-SDR, SDR, PESQ, ESTOI, NISQA on teacher-forced reconstructions
         of the first `n_smp` validation samples.
@@ -762,7 +773,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                     "pred": Audio(pred_wav[i], self.sample_rate),  # ty: ignore[invalid-argument-type]
                     "target": Audio(trgt_wav[i], self.sample_rate),  # ty: ignore[invalid-argument-type]
                 },
-                images=({"attention": attention[si]} if si in attention else {}),
+                images=attention.get(si, {}),
                 metrics={k: float(per_sample[k][i]) for k in keys},
             )
             for i, si in enumerate(int(s) for s in sample_idx.tolist())
@@ -856,15 +867,21 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             acoustic_pred = self.model.speak(text, codec=self.codec)
 
         # Self-forced probe: alignment read back from the generated frames.
-        att: dict[int, torch.Tensor] = {}
+        att: dict[int, dict[str, torch.Tensor]] = {}
         if bool(acoustic_pred.mask[:n].any()):
-            att = self._probe_attention(
+            att, scalars = self._probe_attention(
                 MaskedTensor(values=text.values[:n], mask=text.mask[:n]),  # ty: ignore[invalid-argument-type]
                 MaskedTensor(
                     values=acoustic_pred.values[:n],
                     mask=acoustic_pred.mask[:n],  # ty: ignore[invalid-argument-type]
                 ),
             )
+            if scalars:
+                self.logger.log_metrics(
+                    {k: float(v) for k, v in scalars.items()},
+                    self.step,
+                    prefix="sampled",
+                )
 
         records: list[SampleRecord] = []
         for i in range(n):
@@ -880,7 +897,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                 audio={"audio": Audio(wav, self.sample_rate)},  # ty: ignore[invalid-argument-type]
             )
             if i in att:
-                record.images["attention"] = att[i]
+                record.images.update(att[i])
             records.append(record)
             if wav.shape[-1] < self.mel_spectrogram.n_fft:
                 warnings.warn(
