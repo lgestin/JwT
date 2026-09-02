@@ -749,14 +749,27 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             "si_sdr": scale_invariant_signal_distortion_ratio(pred_wav, trgt_wav),
             "sdr": signal_distortion_ratio(pred_wav, trgt_wav, load_diag=1e-6),
         }
+        pesq = self.pesq.score(pred_wav, trgt_wav, sample_rate=self.sample_rate)
+        # A count, not a per-sample score — keep it out of `per_sample` so it
+        # can never be recorded as one sample's metric.
+        pesq_scored = pesq.pop("pesq_scored")
         scores = {
             **self.utmos.score(pred_wav, sample_rate=self.sample_rate),
             **self.nisqa.score(pred_wav, sample_rate=self.sample_rate),
             **self.stoi.score(pred_wav, trgt_wav, sample_rate=self.sample_rate),
-            **self.pesq.score(pred_wav, trgt_wav, sample_rate=self.sample_rate),
+            **pesq,
         }
         per_sample.update({k: v.reshape(-1) for k, v in scores.items()})
-        metrics = {k: v.mean().item() for k, v in per_sample.items()}
+        # PESQ reports refusals as NaN, so the reduction must be nan-aware —
+        # which would equally hide an unexpected NaN from any other metric.
+        # Name what dropped, so a quiet mean is never a silent one.
+        dropped = {
+            k: int(v.isnan().sum()) for k, v in per_sample.items() if v.isnan().any()
+        }
+        if dropped:
+            print(f"[step {self.step:>7}] NaN excluded from valid means: {dropped}")
+        metrics = {k: v.nanmean().item() for k, v in per_sample.items()}
+        metrics["pesq_scored"] = float(pesq_scored)
         self.logger.log_metrics(metrics, self.step, prefix="valid")
 
         # Per-sample records under the sample's index in the validation batch

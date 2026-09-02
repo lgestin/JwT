@@ -35,6 +35,9 @@ dependencies = [
     # [audio] pulls pesq/pystoi for the validation-time perceptual metrics;
     # >=1.6 is the floor for NISQA (non_intrusive_speech_quality_assessment).
     "torchmetrics[audio]>=1.6",
+    # imported directly by training/metrics/pesq.py for its `on_error` flag,
+    # which torchmetrics does not expose.
+    "pesq>=0.0.4",
     # Capped at 2.12 until wheels.astral.sh publishes torch-2.13 flash-attn builds.
     "torch>=2.12,<2.13",
     "torchaudio>=2.11.0",

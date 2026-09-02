@@ -147,8 +147,9 @@ def test_pesq_scores_and_resamples_non_16khz_input() -> None:
     near PESQ's 4.64 ceiling, noisy ones lower."""
     pred, target = _wavs(n_samples=S_PERC)
     out = PESQ().score(target, target.clone(), sample_rate=SAMPLE_RATE)
-    assert set(out) == {"pesq"}
+    assert set(out) == {"pesq", "pesq_scored"}
     assert out["pesq"].shape == (2,)
+    assert out["pesq_scored"].item() == 2.0
     assert (out["pesq"] > 4.0).all()
 
     noisy = PESQ().score(pred, target, sample_rate=SAMPLE_RATE)

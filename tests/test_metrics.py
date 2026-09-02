@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from jwt.training.metrics.pesq import PESQ
 from jwt.training.metrics.utils import (
     binned_loss_stats,
     masked_mean_std,
@@ -126,3 +127,55 @@ def test_sampled_generation_stats_nothing_stopped_omits_len_ratio() -> None:
 
     assert stats["eos_rate"].item() == 0.0
     assert "len_ratio" not in stats
+
+
+def test_pesq_marks_unscorable_rows_nan_and_counts_the_rest() -> None:
+    """An unscorable row stays in place as NaN, so it keeps its index in the
+    batch; `pesq_scored` reports how many actually scored."""
+    torch.manual_seed(0)
+    target = torch.randn(3, 16_000) * 0.1
+    pred = target.clone()
+    pred[0] = 0.0  # silence — no utterance for PESQ to score
+
+    out = PESQ().score(pred, target, sample_rate=16_000)
+
+    assert out["pesq"].shape == (3,)  # row-aligned with the batch
+    assert torch.isnan(out["pesq"][0])
+    assert torch.isfinite(out["pesq"][1:]).all()
+    assert out["pesq_scored"].item() == 2.0
+    assert torch.isfinite(out["pesq"].nanmean())  # what _log_audio_metrics logs
+
+
+@pytest.mark.parametrize(
+    "pred, target",
+    [
+        (torch.zeros(2, 16_000), torch.zeros(2, 16_000)),  # -7, no utterances
+        (torch.randn(2, 300) * 0.1, torch.randn(2, 300) * 0.1),  # -6, too short
+    ],
+    ids=["no_utterances", "too_short"],
+)
+def test_pesq_error_codes_become_nan_not_scores(
+    pred: torch.Tensor, target: torch.Tensor
+) -> None:
+    """PESQ signals failure as a negative code as well as NaN; averaging a -7
+    in would be worse than the crash this replaced."""
+    out = PESQ().score(pred, target, sample_rate=16_000)
+
+    assert torch.isnan(out["pesq"]).all()
+    assert out["pesq_scored"].item() == 0.0
+    assert torch.isnan(out["pesq"].nanmean())  # nothing scored, nothing to log
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_pesq_accepts_cuda_inputs() -> None:
+    torch.manual_seed(0)
+    target = (torch.randn(2, 16_000) * 0.1).cuda()
+    pred = target.clone()
+    pred[0] = 0.0
+
+    out = PESQ().score(pred, target, sample_rate=16_000)
+
+    assert out["pesq"].shape == (2,)
+    assert torch.isnan(out["pesq"][0])
+    assert torch.isfinite(out["pesq"][1])
+    assert out["pesq_scored"].item() == 1.0
