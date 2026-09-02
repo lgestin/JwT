@@ -23,12 +23,14 @@ model:
   n_denoising_steps: 32
   noise_scale: 1.0
   parametrization: JWT
+  # 15.25 phonemes/s on LJSpeech over the codec's patch rate
+  # (RAWAUDIO_512 @ 22.05 kHz); recompute it for another codec or rate.
+  phoneme_per_audio_patch: 0.354
   timestep_schedule: LOG_NORM_SD3
   transformer_config:
     adaln_rank: null
     n_registers: 16
     dim: 256
-    max_seq_len: 8192
     mlp_ratio: 2.67
     num_heads: 4
     num_layers: 10

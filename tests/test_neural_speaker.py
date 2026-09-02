@@ -494,3 +494,64 @@ def test_adaln_rank_matching_denoising_steps_is_silent(
 def test_adaln_rank_none_is_silent(capsys: pytest.CaptureFixture[str]) -> None:
     RollingFlowSpeaker(_speaker_cfg(adaln_rank=None, n_denoising_steps=128))
     assert "adaln_rank" not in capsys.readouterr().out
+
+
+def test_phoneme_per_audio_patch_buffer_round_trips(codec: StubCodec) -> None:
+    """The ratio is a persistent buffer, so a checkpoint carries it."""
+    cfg = RollingFlowConfig(
+        transformer_config=TransformerConfig(dim=32, num_heads=4, num_layers=2),
+        vocabulary_size=20,
+        acoustic_dim=N_MELS,
+        phoneme_per_audio_patch=0.2,
+    )
+    model = RollingFlowSpeaker(cfg)
+    assert "phoneme_per_audio_patch" in model.state_dict()
+
+    reloaded = RollingFlowSpeaker(
+        RollingFlowConfig(
+            transformer_config=cfg.transformer_config,
+            vocabulary_size=20,
+            acoustic_dim=N_MELS,
+            phoneme_per_audio_patch=1.0,
+        )
+    )
+    reloaded.load_state_dict(model.state_dict())
+    assert reloaded.phoneme_per_audio_patch is not None
+    assert reloaded.phoneme_per_audio_patch.item() == pytest.approx(0.2)
+
+
+def test_phoneme_per_audio_patch_is_text_padding_invariant() -> None:
+    """Positions are built in packed coords from the real text length, so text
+    padding must not shift the ramp."""
+    torch.manual_seed(0)
+    T_ac = 6
+    model = RollingFlowSpeaker(
+        RollingFlowConfig(
+            transformer_config=TransformerConfig(dim=32, num_heads=4, num_layers=2),
+            vocabulary_size=20,
+            acoustic_dim=N_MELS,
+            phoneme_per_audio_patch=0.25,
+        )
+    ).eval()
+
+    text_ids = torch.randint(0, model.cfg.vocabulary_size, (B, 2))
+    acoustic = MaskedTensor(
+        values=torch.randn(B, model.cfg.acoustic_dim, T_ac),
+        mask=torch.ones(B, T_ac, dtype=torch.bool),
+    )
+    t = torch.full((B, T_ac), 0.5)
+
+    text_unpadded = MaskedTensor(
+        values=text_ids.unsqueeze(1), mask=torch.ones(B, 2, dtype=torch.bool)
+    )
+    text_padded = MaskedTensor(
+        values=torch.cat([text_ids, torch.zeros(B, 3, dtype=torch.long)], dim=1)
+        .unsqueeze(1),
+        mask=torch.tensor([[True, True, False, False, False]] * B),
+    )
+
+    with torch.no_grad():
+        v_unpadded = model.forward(text_unpadded, acoustic, t)
+        v_padded = model.forward(text_padded, acoustic, t)
+
+    assert torch.allclose(v_unpadded, v_padded, atol=1e-5)

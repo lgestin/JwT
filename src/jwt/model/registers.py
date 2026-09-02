@@ -32,8 +32,10 @@ class Registers(nn.Module):
         t_emb = torch.cat((t_emb_reg, t_emb), dim=1)
         if seq_mask is not None:
             seq_mask = F.pad(seq_mask, (self.n, 0), value=True)
-        freqs_cis_reg = freqs_cis.new_ones((self.n, freqs_cis.size(1)))
-        freqs_cis = torch.cat((freqs_cis_reg, freqs_cis), dim=0)
+        freqs_cis_reg = freqs_cis.new_ones(
+            (*freqs_cis.shape[:-2], self.n, freqs_cis.size(-1))
+        )
+        freqs_cis = torch.cat((freqs_cis_reg, freqs_cis), dim=-2)
         return x, t_emb, seq_mask, freqs_cis
 
     @torch.compiler.disable

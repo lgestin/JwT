@@ -21,12 +21,12 @@ model:
   max_acoustic_len: 2048
   n_denoising_steps: 128
   parametrization: JWT
+  phoneme_per_audio_patch: 0.177
   timestep_schedule: LOG_NORM_SD3
   transformer_config:
     adaln_rank: 128
     n_registers: 0
     dim: 512
-    max_seq_len: 8192
     mlp_ratio: 4.0
     num_heads: 8
     num_layers: 12

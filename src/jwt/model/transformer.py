@@ -21,18 +21,24 @@ class TransformerConfig(Serializable):
     num_heads: int = 4
     num_layers: int = 10
     mlp_ratio: float = 2.67
-    max_seq_len: int = 8192
     rope_theta: float = 10000.0
     time_freq_embed_dim: int = 256
     adaln_rank: int | None = None
     n_registers: int = 16
 
 
-def precompute_freqs_cis(seq_len: int, dim: int, theta: float) -> torch.Tensor:
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    t = torch.arange(seq_len, device=freqs.device)
-    freqs = torch.outer(t, freqs).float()
-    return torch.polar(torch.ones_like(freqs), freqs)  # complex64
+def rope_inv_freqs(dim: int, theta: float) -> torch.Tensor:
+    return 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+
+
+def freqs_cis_at(positions: torch.Tensor, inv_freqs: torch.Tensor) -> torch.Tensor:
+    """RoPE factors at arbitrary — possibly fractional — positions.
+
+    `positions`: (B, L). Returns (B, 1, L, dim // 2); the singleton head axis
+    broadcasts against q/k in `apply_rope`.
+    """
+    angles = positions.float().unsqueeze(-1) * inv_freqs
+    return torch.polar(torch.ones_like(angles), angles).unsqueeze(1)
 
 
 def apply_rope(
@@ -279,7 +285,7 @@ class TransformerBlock(nn.Module):
 
 
 class Transformer(nn.Module):
-    freqs_cis: torch.Tensor
+    inv_freqs: torch.Tensor
 
     def __init__(self, config: TransformerConfig):
         super().__init__()
@@ -296,10 +302,11 @@ class Transformer(nn.Module):
         )
         self.final_norm = RMSNorm(config.dim, affine=False)
         self.final_modulation = AdaLN(config.dim, config.adaln_rank, n_chunks=2)
-        freqs_cis = precompute_freqs_cis(
-            config.max_seq_len, config.dim // config.num_heads, config.rope_theta
+        self.register_buffer(
+            "inv_freqs",
+            rope_inv_freqs(config.dim // config.num_heads, config.rope_theta),
+            persistent=False,
         )
-        self.register_buffer("freqs_cis", freqs_cis, persistent=False)
 
         registers = None
         if config.n_registers > 0:
@@ -310,12 +317,14 @@ class Transformer(nn.Module):
         self,
         x: torch.Tensor,
         t: torch.Tensor,
+        positions: torch.Tensor,
         seq_mask: torch.Tensor | None = None,
         attention_implementation: type[AttentionImplementation] = SDPAAttention,
     ) -> torch.Tensor:
         """x: (B, L, D), t: (B, L) per-position timestep,
+        positions: (B, L) RoPE positions,
         seq_mask: optional (B, L) bool, True = visible key."""
-        freqs_cis = self.freqs_cis[: x.shape[1]]
+        freqs_cis = freqs_cis_at(positions, self.inv_freqs)
         t_emb = self.time_embedder(t)
         if self.registers is not None:
             x, t_emb, seq_mask, freqs_cis = self.registers.prepend(

@@ -8,15 +8,28 @@ from jwt.model.transformer import (
     Transformer,
     TransformerBlock,
     TransformerConfig,
-    precompute_freqs_cis,
+    freqs_cis_at,
+    rope_inv_freqs,
 )
+
+
+def _pos(x: torch.Tensor) -> torch.Tensor:
+    """Plain 0..L-1 RoPE positions for an (B, L, D) input."""
+    return torch.arange(x.shape[1], device=x.device).float().expand(x.shape[0], -1)
+
+
+def _freqs(T: int, head_dim: int, B: int = 1) -> torch.Tensor:
+    """RoPE factors at 0..T-1, in the (B, 1, T, head_dim // 2) model shape."""
+    return freqs_cis_at(
+        torch.arange(T).float().expand(B, T), rope_inv_freqs(head_dim, 10000.0)
+    )
 
 
 def test_transformer_shape() -> None:
     model = Transformer(TransformerConfig(dim=64, num_heads=4, num_layers=2))
     x = torch.randn(2, 16, 64)
     t = torch.rand(2, 16)
-    y = model(x, t)
+    y = model(x, t, _pos(x))
     assert y.shape == (2, 16, 64)
 
 
@@ -24,13 +37,13 @@ def test_transformer_backward() -> None:
     model = Transformer(TransformerConfig(dim=32, num_heads=4, num_layers=2))
     x = torch.randn(1, 8, 32, requires_grad=True)
     t = torch.rand(1, 8)
-    model(x, t).sum().backward()
+    model(x, t, _pos(x)).sum().backward()
     assert x.grad is not None
 
 
 def test_transformer_block_shape() -> None:
     block = TransformerBlock(dim=32, num_heads=4)
-    freqs_cis = precompute_freqs_cis(seq_len=8, dim=8, theta=10000.0)
+    freqs_cis = _freqs(8, 8, B=2)
     x = torch.randn(2, 8, 32)
     t_emb = torch.randn(2, 8, 32)
     y = block(x, freqs_cis, t_emb)
@@ -53,8 +66,8 @@ def test_seq_mask_changes_output() -> None:
     x = torch.randn(1, 8, 32)
     t = torch.rand(1, 8)
     seq_mask = torch.arange(8)[None] < 4  # hide the last 4 keys
-    y_masked = model(x, t, seq_mask=seq_mask)
-    y_unmasked = model(x, t)
+    y_masked = model(x, t, _pos(x), seq_mask=seq_mask)
+    y_unmasked = model(x, t, _pos(x))
     assert y_masked.shape == y_unmasked.shape
     assert not torch.allclose(y_masked, y_unmasked)
 
@@ -66,7 +79,7 @@ def test_zero_init_adaLN_is_identity_path() -> None:
     model = Transformer(TransformerConfig(dim=32, num_heads=4, num_layers=2))
     x = torch.randn(1, 8, 32)
     t = torch.rand(1, 8)
-    y = model(x, t)
+    y = model(x, t, _pos(x))
     assert torch.allclose(y, model.final_norm(x), atol=1e-5)
 
 
@@ -91,7 +104,7 @@ def test_transformer_block_clamps_gates() -> None:
     """Gates are tanh-clamped inside the block, so a block's contribution to the
     residual stream cannot grow without bound as adaLN's pre-activations grow."""
     dim = 32
-    freqs_cis = precompute_freqs_cis(seq_len=8, dim=8, theta=10000.0)
+    freqs_cis = _freqs(8, 8, B=2)
     torch.manual_seed(0)
     x = torch.randn(2, 8, dim)
     t_emb = torch.randn(2, 8, dim)
@@ -122,8 +135,8 @@ def test_timesteps_change_output() -> None:
     x = torch.randn(1, 8, 32)
     t1 = torch.zeros(1, 8)
     t2 = torch.ones(1, 8)
-    y1 = model(x, t1)
-    y2 = model(x, t2)
+    y1 = model(x, t1, _pos(x))
+    y2 = model(x, t2, _pos(x))
     assert not torch.allclose(y1, y2)
 
 
@@ -245,7 +258,7 @@ def test_transformer_adaln_rank_forward_and_backward() -> None:
     )
     x = torch.randn(2, 16, 32, requires_grad=True)
     t = torch.rand(2, 16)
-    y = model(x, t)
+    y = model(x, t, _pos(x))
     assert y.shape == (2, 16, 32)
     y.sum().backward()
     assert x.grad is not None
@@ -257,7 +270,7 @@ def test_transformer_adaln_rank_still_starts_as_identity_path() -> None:
         TransformerConfig(dim=32, num_heads=4, num_layers=2, adaln_rank=4)
     )
     x = torch.randn(1, 8, 32)
-    y = model(x, torch.rand(1, 8))
+    y = model(x, torch.rand(1, 8), _pos(x))
     assert torch.allclose(y, model.final_norm(x), atol=1e-5)
 
 
@@ -302,7 +315,7 @@ def test_final_modulation_is_identity_at_init() -> None:
     torch.manual_seed(0)
     model = Transformer(TransformerConfig(dim=32, num_heads=4, num_layers=2))
     x = torch.randn(1, 8, 32)
-    y = model(x, torch.rand(1, 8))
+    y = model(x, torch.rand(1, 8), _pos(x))
     assert torch.allclose(y, model.final_norm(x), atol=1e-5)
 
 
@@ -314,10 +327,12 @@ def test_final_modulation_alone_makes_output_timestep_dependent() -> None:
     x = torch.randn(1, 8, 32)
     t1, t2 = torch.zeros(1, 8), torch.ones(1, 8)
 
-    assert torch.allclose(model(x, t1), model(x, t2), atol=1e-6)
+    assert torch.allclose(model(x, t1, _pos(x)), model(x, t2, _pos(x)), atol=1e-6)
 
     nn.init.normal_(model.final_modulation.linear.weight, std=0.05)
-    assert not torch.allclose(model(x, t1), model(x, t2), atol=1e-6)
+    assert not torch.allclose(
+        model(x, t1, _pos(x)), model(x, t2, _pos(x)), atol=1e-6
+    )
 
 
 def test_final_modulation_honours_adaln_rank() -> None:
@@ -339,3 +354,15 @@ def test_rmsnorm_output_dtype_matches_input(dtype: torch.dtype, affine: bool) ->
     """
     x = torch.randn(4, 64, dtype=dtype)
     assert RMSNorm(64, affine=affine)(x).dtype == dtype
+
+
+def test_freqs_cis_at_handles_fractional_positions() -> None:
+    inv_freqs = rope_inv_freqs(dim=8, theta=10000.0)
+    freqs = freqs_cis_at(torch.tensor([[0.0, 2.5, 5.0]]), inv_freqs)
+    assert freqs.shape == (1, 1, 3, 4)
+    assert torch.allclose(freqs.abs(), torch.ones_like(freqs.abs()))
+    # Halfway between two positions is half their rotation.
+    assert torch.allclose(freqs[0, 0, 1] ** 2, freqs[0, 0, 2], atol=1e-6)
+    # An integer position is exactly the analytic rotation.
+    expected = torch.polar(torch.ones_like(inv_freqs), 5.0 * inv_freqs)
+    assert torch.allclose(freqs[0, 0, 2], expected, atol=1e-6)

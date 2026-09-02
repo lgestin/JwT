@@ -32,6 +32,13 @@ class RollingFlowConfig:
     max_acoustic_len: int = 2048
     eos_n_frames: int = 8
     noise_scale: float = 1.0
+    # Phonemes per audio patch: text tokens sit on the audio clock at
+    # j / phoneme_per_audio_patch and acoustic frame i at i, so a frame and its
+    # aligned phoneme share a RoPE position. It is 15.25 phonemes/s (measured
+    # on LJSpeech) over the codec's patch rate, so it tracks both hop size and
+    # sample rate: the default matches this config's default codec
+    # (RAWAUDIO_512 at 22.05 kHz) and every config in `configs/` sets its own.
+    phoneme_per_audio_patch: float = 0.354
 
 
 @dataclass
@@ -69,6 +76,8 @@ class TrainingStepOutput:
 
 
 class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
+    phoneme_per_audio_patch: torch.Tensor
+
     def __init__(self, cfg: RollingFlowConfig):
         nn.Module.__init__(self)
         self.cfg = cfg
@@ -90,6 +99,10 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         self.text_modality = nn.Parameter(torch.randn(dim) * 0.02)
         self.acoustic_modality = nn.Parameter(torch.randn(dim) * 0.02)
         self.transformer = Transformer(cfg.transformer_config)
+        self.register_buffer(
+            "phoneme_per_audio_patch",
+            torch.tensor(cfg.phoneme_per_audio_patch, dtype=torch.float32),
+        )
 
     def forward(
         self,
@@ -158,8 +171,15 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         is_zero_real = (t_packed == 0.0) & in_ac_packed
         keep_first_zero = is_zero_real.cumsum(-1) <= 1
         seq_mask = in_real_packed & keep_first_zero  # (B, T)
+
+        positions = torch.where(
+            arange < text_lens.unsqueeze(1),
+            arange / self.phoneme_per_audio_patch,
+            (arange - text_lens.unsqueeze(1)).float(),
+        )
+
         out_packed = self.transformer(
-            x_packed, t_packed, seq_mask, attention_implementation
+            x_packed, t_packed, positions, seq_mask, attention_implementation
         )
         pred_packed = self.acoustic_out(out_packed)  # (B, T, acoustic_dim)
 

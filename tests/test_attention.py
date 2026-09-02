@@ -153,6 +153,7 @@ def test_transformer_outputs_match_across_backends() -> None:
             out = model(
                 x,
                 t,
+                torch.arange(T, device=device).float().expand(B, T),
                 seq_mask=seq_mask,
                 attention_implementation=impl,
             )

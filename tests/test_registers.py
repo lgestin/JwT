@@ -11,7 +11,8 @@ from jwt.model.registers import Registers
 from jwt.model.transformer import (
     Transformer,
     TransformerConfig,
-    precompute_freqs_cis,
+    freqs_cis_at,
+    rope_inv_freqs,
 )
 
 
@@ -20,6 +21,18 @@ def _skip_unless_cuda_flash() -> None:
         pytest.skip("CUDA not available")
     if flash_attn_varlen_func is None:
         pytest.skip("flash-attn not installed")
+
+
+def _pos(x: torch.Tensor) -> torch.Tensor:
+    """Plain 0..L-1 RoPE positions for an (B, L, D) input."""
+    return torch.arange(x.shape[1], device=x.device).float().expand(x.shape[0], -1)
+
+
+def _freqs(T: int, head_dim: int, B: int = 1) -> torch.Tensor:
+    """RoPE factors at 0..T-1, in the (B, 1, T, head_dim // 2) model shape."""
+    return freqs_cis_at(
+        torch.arange(T).float().expand(B, T), rope_inv_freqs(head_dim, 10000.0)
+    )
 
 
 def _seq_mask(lens: list[int], T: int, device: str = "cpu") -> torch.Tensor:
@@ -76,7 +89,7 @@ def test_prepend_shapes_and_values() -> None:
     registers = Registers(n=n, dim=dim)
     x = torch.randn(B, T, dim)
     t_emb = torch.randn(B, T, dim)
-    freqs_cis = precompute_freqs_cis(seq_len=T, dim=head_dim, theta=10000.0)
+    freqs_cis = _freqs(T, head_dim, B=B)
     seq_mask = _seq_mask([3, 6], T=T)
 
     x_p, t_emb_p, mask_p, freqs_p = registers.prepend(x, t_emb, seq_mask, freqs_cis)
@@ -84,12 +97,12 @@ def test_prepend_shapes_and_values() -> None:
     assert x_p.shape == (B, T + n, dim)
     assert t_emb_p.shape == (B, T + n, dim)
     assert mask_p is not None and mask_p.shape == (B, T + n)
-    assert freqs_p.shape == (T + n, head_dim // 2)
+    assert freqs_p.shape == (B, 1, T + n, head_dim // 2)
 
     # The real sequence is carried through untouched, only shifted right by n.
     assert torch.equal(x_p[:, n:], x)
     assert torch.equal(t_emb_p[:, n:], t_emb)
-    assert torch.equal(freqs_p[n:], freqs_cis)
+    assert torch.equal(freqs_p[..., n:, :], freqs_cis)
     assert mask_p is not None and torch.equal(mask_p[:, n:], seq_mask)
 
     # Registers are the learned parameter, shared across the batch.
@@ -103,7 +116,7 @@ def test_prepend_none_mask_stays_none() -> None:
         torch.randn(1, 6, 32),
         torch.randn(1, 6, 32),
         None,
-        precompute_freqs_cis(6, 8, 10000.0),
+        _freqs(6, 8),
     )
     assert mask_p is None
 
@@ -118,7 +131,7 @@ def test_prepend_registers_are_always_visible() -> None:
         torch.randn(2, T, 32),
         torch.randn(2, T, 32),
         seq_mask,
-        precompute_freqs_cis(T, 8, 10000.0),
+        _freqs(T, 8),
     )
     assert mask_p is not None and mask_p.dtype == torch.bool
     assert bool(mask_p[:, :n].all())
@@ -131,13 +144,13 @@ def test_prepend_registers_get_identity_rope() -> None:
     phases they had before insertion."""
     n, T, head_dim = 4, 6, 8
     registers = Registers(n=n, dim=32)
-    freqs_cis = precompute_freqs_cis(seq_len=T, dim=head_dim, theta=10000.0)
+    freqs_cis = _freqs(T, head_dim)
     _, _, _, freqs_p = registers.prepend(
         torch.randn(1, T, 32), torch.randn(1, T, 32), None, freqs_cis
     )
     assert freqs_p.dtype == freqs_cis.dtype
-    assert torch.equal(freqs_p[:n], torch.ones_like(freqs_p[:n]))
-    assert torch.equal(freqs_p[n:], freqs_cis)
+    assert torch.equal(freqs_p[..., :n, :], torch.ones_like(freqs_p[..., :n, :]))
+    assert torch.equal(freqs_p[..., n:, :], freqs_cis)
 
 
 def test_prepend_registers_get_zero_t_emb() -> None:
@@ -147,7 +160,7 @@ def test_prepend_registers_get_zero_t_emb() -> None:
     registers = Registers(n=n, dim=dim)
     t_emb = torch.randn(2, T, dim)
     _, t_emb_p, _, _ = registers.prepend(
-        torch.randn(2, T, dim), t_emb, None, precompute_freqs_cis(T, 8, 10000.0)
+        torch.randn(2, T, dim), t_emb, None, _freqs(T, 8)
     )
     assert torch.equal(t_emb_p[:, :n], torch.zeros_like(t_emb_p[:, :n]))
 
@@ -159,7 +172,7 @@ def test_prepend_follows_input_dtype() -> None:
     registers = Registers(n=n, dim=dim)
     x = torch.randn(2, T, dim, dtype=torch.bfloat16)
     x_p, _, _, _ = registers.prepend(
-        x, torch.randn(2, T, dim), None, precompute_freqs_cis(T, 8, 10000.0)
+        x, torch.randn(2, T, dim), None, _freqs(T, 8)
     )
     assert x_p.dtype == torch.bfloat16
 
@@ -171,12 +184,13 @@ def test_registers_are_stripped_from_output() -> None:
     model = _model(n=8)
     x = torch.randn(2, 16, 32)
     t = torch.rand(2, 16)
-    assert model(x, t).shape == x.shape
+    assert model(x, t, _pos(x)).shape == x.shape
 
 
 def test_registers_receive_gradient() -> None:
     model = _model(n=4)
-    model(torch.randn(2, 12, 32), torch.rand(2, 12)).sum().backward()
+    x = torch.randn(2, 12, 32)
+    model(x, torch.rand(2, 12), _pos(x)).sum().backward()
     grad = model.registers.registers.grad
     assert grad is not None
     assert grad.abs().sum() > 0
@@ -193,7 +207,9 @@ def test_registers_change_the_output() -> None:
     without.load_state_dict(with_registers.state_dict(), strict=False)
 
     x, t = torch.randn(2, 12, 32), torch.rand(2, 12)
-    assert not torch.allclose(with_registers(x, t), without(x, t), atol=1e-4)
+    assert not torch.allclose(
+        with_registers(x, t, _pos(x)), without(x, t, _pos(x)), atol=1e-4
+    )
 
 
 def test_output_is_invariant_to_extra_padding() -> None:
@@ -204,10 +220,12 @@ def test_output_is_invariant_to_extra_padding() -> None:
     seq_mask = _seq_mask([12, 7, 4], T=T)
     x, t = torch.randn(3, T, 32), torch.rand(3, T)
 
-    out = model(x, t, seq_mask)
+    out = model(x, t, _pos(x), seq_mask)
+    x_padded = torch.cat((x, torch.randn(3, pad, 32)), dim=1)
     out_padded = model(
-        torch.cat((x, torch.randn(3, pad, 32)), dim=1),
+        x_padded,
         torch.cat((t, torch.rand(3, pad)), dim=1),
+        _pos(x_padded),
         _seq_mask([12, 7, 4], T=T + pad),
     )
 
@@ -230,7 +248,7 @@ def test_registers_match_across_backends() -> None:
     outs = {}
     for impl in (SDPAAttention, FlashVarlenAttention):
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
-            outs[impl.__name__] = model(x, t, seq_mask, impl).float()
+            outs[impl.__name__] = model(x, t, _pos(x), seq_mask, impl).float()
 
     valid = seq_mask.unsqueeze(-1).expand_as(outs["SDPAAttention"])
     diff = (outs["SDPAAttention"] - outs["FlashVarlenAttention"])[valid].abs().max()
