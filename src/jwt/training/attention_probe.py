@@ -37,13 +37,24 @@ class AttentionCollector:
     - `registers_to_seq_maps` — `(B, n, T)`, register queries over real keys:
       what each register reads.
 
-    `images` and `scalars` render these per sample given the text/audio
-    lengths.
+    `images` renders these per sample; `position_metrics` ->
+    `utterance_metrics` -> `metrics` reduce them axis by axis, given the
+    lengths bound at construction.
     """
 
-    def __init__(self, n_registers: int = 0) -> None:
+    def __init__(
+        self,
+        text_lens: torch.Tensor,
+        acoustic_lens: torch.Tensor,
+        n_registers: int = 0,
+    ) -> None:
         self._maps: torch.Tensor | None = None
+        self._entropy: torch.Tensor | None = None
+        self._text_argmax: torch.Tensor | None = None
         self._seq_mask: torch.Tensor | None = None
+        self._in_text: torch.Tensor | None = None
+        self.text_lens = text_lens
+        self.acoustic_lens = acoustic_lens
         self.n_registers = n_registers
 
     def record(
@@ -57,11 +68,17 @@ class AttentionCollector:
         `maps` crops them, but the two register properties report them, and
         they are gone for good once discarded.
         """
-        attn_weights = attn_weights.mean(dim=1)
-        if torch.is_tensor(self._maps):
-            self._maps = torch.cat((self._maps, attn_weights.unsqueeze(0)))
-        else:
-            self._maps = attn_weights.unsqueeze(0)
+        n = self.n_registers
+        p = attn_weights.float()
+        entropy = -(p * p.clamp_min(1e-12).log()).sum(-1)  # (B, H, n + T)
+        self._entropy = _append(self._entropy, entropy)
+        if self._in_text is None:
+            pos = torch.arange(p.shape[-1] - n, device=p.device).unsqueeze(0)
+            self._in_text = pos < self.text_lens.to(p.device).unsqueeze(1)  # (B, T)
+        # Reduced at record time: keeping full per-head maps would be ~GBs.
+        text_only = p[..., n:, n:].masked_fill(~self._in_text[:, None, None, :], -1.0)
+        self._text_argmax = _append(self._text_argmax, text_only.argmax(-1))
+        self._maps = _append(self._maps, p.mean(dim=1))
         if seq_mask is not None:
             self._seq_mask = seq_mask[:, self.n_registers :]
 
@@ -96,39 +113,173 @@ class AttentionCollector:
         assert n > 0
         return self._maps[..., :n, n:].mean(dim=0)
 
-    def images(
-        self, text_lens: torch.Tensor, acoustic_lens: torch.Tensor
-    ) -> dict[int, dict[str, torch.Tensor]]:
+    @property
+    def images(self) -> dict[int, dict[str, torch.Tensor]]:
         """Per-sample heatmaps by sample index: the text->audio map, plus the
         register read/write maps when registers are on."""
         images = {
             i: {"attention": img}
-            for i, img in attention_images(self.maps, text_lens, acoustic_lens).items()
+            for i, img in attention_images(
+                self.maps, self.text_lens, self.acoustic_lens
+            ).items()
         }
         if self.n_registers:
             for i, imgs in registers_attention_images(
                 self.registers_to_seq_maps,
                 self.seq_to_registers_maps,
-                text_lens,
-                acoustic_lens,
+                self.text_lens,
+                self.acoustic_lens,
             ).items():
                 images.setdefault(i, {}).update(imgs)
         return images
 
-    def scalars(
-        self, text_lens: torch.Tensor, acoustic_lens: torch.Tensor
-    ) -> dict[str, torch.Tensor]:
-        """Register-mass scalars (see `register_mass`); empty without registers."""
-        if not self.n_registers:
-            return {}
-        return registers_mass(
-            self.seq_to_registers_maps, text_lens, acoustic_lens, self.seq_mask
-        )
+    @property
+    def position_metrics(self) -> dict[str, torch.Tensor]:
+        """Per-query metric values, `(B, T)` in packed coordinates, unreduced —
+        no query mask is applied, the reductions below choose one. Entropies
+        are normalized by `log(n_real_keys + n_registers)` per sample:
+
+        - `attn_entropy` / `attn_entropy_min_head` / `attn_entropy_max_head` —
+          mean / min / max over heads of the row entropy, averaged over layers
+        - `attn_head_jsd` — entropy of the head-averaged row minus the mean of
+          the heads': the generalized Jensen-Shannon divergence across heads
+        - `attn_mass_to_text` / `attn_mass_to_audio` — the row's mass on the
+          real text / audio keys
+        - `register_mass` — mass parked on the register keys (with registers)
+        """
+        maps = self.maps  # raises the informative error on an empty collector
+        assert self._maps is not None and self._entropy is not None
+        n = self.n_registers
+        in_text, in_audio = self._masks()
+        n_keys = (in_text | in_audio).sum(1) + n
+        scale = 1.0 / n_keys.float().clamp(min=2).log()[:, None]  # (B, 1)
+        per_head = self._entropy[..., n:] * scale[:, None]  # (L, B, H, T)
+        rows = self._maps[..., n:, :].float()  # (L, B, T, n + T) head-averaged
+        head_avg = -(rows * rows.clamp_min(1e-12).log()).sum(-1) * scale
+        mean_heads = per_head.mean(2)  # (L, B, T)
+        p = maps.float()
+        out = {
+            "attn_entropy": mean_heads.mean(0),
+            "attn_entropy_min_head": per_head.amin(2).mean(0),
+            "attn_entropy_max_head": per_head.amax(2).mean(0),
+            "attn_head_jsd": (head_avg - mean_heads).mean(0),
+            "attn_mass_to_text": (p * in_text[:, None, :]).sum(-1),
+            "attn_mass_to_audio": (p * in_audio[:, None, :]).sum(-1),
+        }
+        if n:
+            out["register_mass"] = self.seq_to_registers_maps.sum(-1)
+        return out
+
+    @property
+    def utterance_metrics(self) -> dict[int, dict[str, float]]:
+        """`position_metrics` with the time axis reduced, by sample index:
+        each metric averaged over the sample's real queries plus `_text` /
+        `_audio` splits, the mass metrics named by their query modality
+        (`attn_mass_audio_to_text` ...), and the alignment pair — monotonicity
+        and coverage are path-level properties of the whole utterance, so they
+        join here rather than in `position_metrics`. Splits with no queries
+        are omitted; samples with no real positions are skipped."""
+        dense = self.position_metrics
+        assert self._text_argmax is not None
+        in_text, in_audio = self._masks()
+        align = _alignment_per_sample(self._text_argmax, in_text, in_audio)
+        splittable = [k for k in dense if not k.startswith("attn_mass")]
+        out: dict[int, dict[str, float]] = {}
+        for b in range(in_text.shape[0]):
+            text_b, audio_b = in_text[b], in_audio[b]
+            real = text_b | audio_b
+            if not bool(real.any()):
+                continue
+            m: dict[str, float] = {}
+            for key in splittable:
+                v = dense[key][b]
+                m[key] = float(v[real].mean())
+                for suffix, mask in (("_text", text_b), ("_audio", audio_b)):
+                    if bool(mask.any()):
+                        m[key + suffix] = float(v[mask].mean())
+            for qname, qmask in (("text", text_b), ("audio", audio_b)):
+                if not bool(qmask.any()):
+                    continue
+                for kname in ("text", "audio"):
+                    m[f"attn_mass_{qname}_to_{kname}"] = float(
+                        dense[f"attn_mass_to_{kname}"][b, qmask].mean()
+                    )
+            if b in align:
+                mono, cov = align[b]
+                m["attn_align_monotonic"] = float(mono)
+                m["attn_align_coverage"] = float(cov)
+            out[b] = m
+        return out
+
+    @property
+    def metrics(self) -> dict[str, torch.Tensor]:
+        """The batch axis reduced too: the uniform mean over samples of
+        `utterance_metrics`, per key, skipping samples that lack it. One value
+        per step, for the logged panels."""
+        per = self.utterance_metrics
+        keys: dict[str, None] = {}
+        for m in per.values():
+            for k in m:
+                keys.setdefault(k)
+        return {
+            k: torch.tensor(sum(vs) / len(vs))
+            for k in keys
+            for vs in [[m[k] for m in per.values() if k in m]]
+        }
+
+    def _masks(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """`(in_text, in_audio)` — `(B, T)` bool masks of the real text / audio
+        queries in packed `[text | audio | pad]` coordinates.
+
+        "Real" is `seq_mask` when recorded — the model's own mask, which also
+        drops the pure-noise frames past the rolling frontier — else the
+        `[0, text + audio)` range from the lengths. Text is always the leading
+        `text_lens` positions; audio is the rest of the real ones.
+        """
+        in_text = self._in_text
+        assert in_text is not None
+        if self._seq_mask is not None:
+            real = self._seq_mask.to(in_text.device)
+        else:
+            T = in_text.shape[1]
+            pos = torch.arange(T, device=in_text.device).unsqueeze(0)
+            lens = (self.text_lens + self.acoustic_lens).to(in_text.device)
+            real = pos < lens.unsqueeze(1)
+        return in_text, real & ~in_text
+
+
+def _append(stack: torch.Tensor | None, layer: torch.Tensor) -> torch.Tensor:
+    """Stack `layer` onto the per-layer leading axis."""
+    layer = layer.unsqueeze(0)
+    return layer if stack is None else torch.cat((stack, layer))
+
+
+def _alignment_per_sample(
+    text_argmax: torch.Tensor, in_text: torch.Tensor, in_audio: torch.Tensor
+) -> dict[int, tuple[torch.Tensor, torch.Tensor]]:
+    """Best-head `(monotonic, coverage)` per qualifying sample index."""
+    L, N, H, _T = text_argmax.shape
+    per: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+    for b in range(N):
+        tl = int(in_text[b].sum())
+        path = text_argmax[:, b, :, in_audio[b]]  # (L, H, n_audio)
+        if tl == 0 or path.shape[-1] < 2:
+            continue
+        mono = (path.diff(dim=-1) >= 0).float().mean(-1)  # (L, H)
+        hit = torch.zeros(L, H, tl, device=path.device)
+        hit.scatter_(2, path, 1.0)
+        cov = hit.sum(-1) / tl
+        best = (mono * cov).flatten().argmax()
+        per[b] = (mono.flatten()[best], cov.flatten()[best])
+    return per
 
 
 @contextmanager
-def capture_attention(model: torch.nn.Module) -> Iterator[AttentionCollector]:
-    """Hook every self-attention layer and yield an `AttentionCollector`.
+def capture_attention(
+    model: torch.nn.Module, text_lens: torch.Tensor, acoustic_lens: torch.Tensor
+) -> Iterator[AttentionCollector]:
+    """Hook every self-attention layer and yield an `AttentionCollector` bound
+    to the batch's `(B,)` text/audio lengths.
 
     Inside the block, run the model with `attention_implementation=TorchAttention`
     so the hooks have weights to observe. The compiled `forward` is swapped out
@@ -136,7 +287,9 @@ def capture_attention(model: torch.nn.Module) -> Iterator[AttentionCollector]:
     hooks — the model is left exactly as it was found.
     """
     registers = [m for m in model.modules() if isinstance(m, Registers)]
-    collector = AttentionCollector(n_registers=sum(r.n for r in registers))
+    collector = AttentionCollector(
+        text_lens, acoustic_lens, n_registers=sum(r.n for r in registers)
+    )
 
     def hook(_module: torch.nn.Module, args: tuple, output: object) -> None:
         # SelfAttention.forward returns (out, attn_weights); TorchAttention
@@ -196,38 +349,6 @@ def attention_images(
             block = block.repeat_interleave(k, 0).repeat_interleave(k, 1)
         images[i] = colorize(block, cmap="viridis")
     return images
-
-
-def registers_mass(
-    seq_to_reg: torch.Tensor,
-    text_lens: torch.Tensor,
-    acoustic_lens: torch.Tensor,
-    seq_mask: torch.Tensor | None = None,
-) -> dict[str, torch.Tensor]:
-    """Mean attention mass real queries park on the registers.
-
-    `seq_to_reg` is `(N, T, n)` in packed `[text | audio | pad]` coordinates.
-    Summing over registers gives each query's parked mass (the complement of
-    its row sum in `AttentionCollector.maps`); it is averaged over the text
-    queries, the audio queries, and both together.
-
-    "Real" queries are `seq_mask` when given — the model's own `(N, T)` mask,
-    which also drops the pure-noise frames past the rolling frontier — else
-    the `[0, text + audio)` range from the lengths. Text is always the
-    leading `text_lens` positions; audio is the rest of the real ones.
-    """
-    T = seq_to_reg.shape[1]
-    pos = torch.arange(T, device=seq_to_reg.device).unsqueeze(0)
-    tl = text_lens.unsqueeze(1)
-    in_text = pos < tl
-    real = seq_mask if seq_mask is not None else pos < tl + acoustic_lens.unsqueeze(1)
-    in_audio = real & ~in_text
-    mass = seq_to_reg.float().sum(-1)  # (N, T)
-    return {
-        "register_mass": mass[in_text | in_audio].mean(),
-        "register_mass_text": mass[in_text].mean(),
-        "register_mass_audio": mass[in_audio].mean(),
-    }
 
 
 def _registers_image(block: torch.Tensor) -> torch.Tensor:
