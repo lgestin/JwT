@@ -122,6 +122,16 @@ def test_metric_tag_routes_by_question() -> None:
     assert metric_tag("sampled", "utmos") == "quality_gen/utmos"
     assert metric_tag("sampled", "eos_rate") == "quality_gen/eos_rate"
 
+    # Attention-probe scalars get their own section, keeping the split in the
+    # metric name so valid/sampled stay side by side.
+    assert metric_tag("valid", "attn_entropy") == "attention/valid_attn_entropy"
+    assert metric_tag("sampled", "attn_align_monotonic") == (
+        "attention/sampled_attn_align_monotonic"
+    )
+    assert metric_tag("valid", "register_mass_audio") == (
+        "attention/valid_register_mass_audio"
+    )
+
 
 def _records() -> list[SampleRecord]:
     return [

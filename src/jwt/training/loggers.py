@@ -40,13 +40,16 @@ def metric_tag(prefix: str, key: str) -> str:
     Sections group panels by the question they answer: `loss/` (is it
     optimizing?), `optim/` (is optimization healthy?), `quality_tf/`
     (teacher-forced quality), `quality_gen/` (free-run quality and stopping
-    health). Backends group panels by the prefix before the last "/".
+    health), `attention/` (probe scalars, teacher- and self-forced side by
+    side). Backends group panels by the prefix before the last "/".
     """
     if key == "loss" or key.endswith("_loss") or key == "logmel_l1":
         name = prefix if key == "loss" else f"{prefix}_{key.removesuffix('_loss')}"
         return f"loss/{name}"
     if key.endswith("_norm"):
         return f"optim/{key}"
+    if key.startswith(("attn_", "register_mass")):
+        return f"attention/{prefix}_{key}"
     if prefix == "sampled":
         return f"quality_gen/{key}"
     return f"quality_tf/{prefix}_{key}"
