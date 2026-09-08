@@ -30,7 +30,7 @@ class RollingFlowConfig:
     acoustic_dim: int = 100
     n_denoising_steps: int = 32
     max_acoustic_len: int = 2048
-    eos_n_frames: int = 8
+    eos_n_frames: int = 32  # must equal n_denoising_steps, see __post_init__
     noise_scale: float = 1.0
     # Phonemes per audio patch: text tokens sit on the audio clock at
     # j / phoneme_per_audio_patch and acoustic frame i at i, so a frame and its
@@ -39,6 +39,18 @@ class RollingFlowConfig:
     # sample rate: the default matches this config's default codec
     # (RAWAUDIO_512 at 22.05 kHz) and every config in `configs/` sets its own.
     phoneme_per_audio_patch: float = 0.354
+
+    def __post_init__(self) -> None:
+        if self.eos_n_frames != self.n_denoising_steps:
+            raise ValueError(
+                f"eos_n_frames={self.eos_n_frames} must equal "
+                f"n_denoising_steps={self.n_denoising_steps}. A clean frame attends "
+                "to at most n_denoising_steps frames ahead, so with a shorter EOS "
+                "span the only frames whose window is cut short are the ones inside "
+                "the sentinel: the EOS probe learns that mask-boundary shortcut "
+                "(teacher-forced AUC 1.0) and never fires free-running, where the "
+                "window is never cut."
+            )
 
 
 @dataclass

@@ -20,7 +20,7 @@ def _model(num_layers: int = 3, n_registers: int = 0) -> RollingFlowSpeaker:
         vocabulary_size=20,
         acoustic_dim=8,
         n_denoising_steps=4,
-        eos_n_frames=2,
+        eos_n_frames=4,
     )
     return RollingFlowSpeaker(cfg).eval()
 

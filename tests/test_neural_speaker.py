@@ -77,7 +77,7 @@ def model(codec: StubCodec) -> RollingFlowSpeaker:
         acoustic_dim=N_MELS,
         n_denoising_steps=4,
         max_acoustic_len=MAX_AC_LEN,
-        eos_n_frames=2,
+        eos_n_frames=4,
     )
     return RollingFlowSpeaker(cfg).eval()
 
@@ -337,7 +337,7 @@ def test_training_step_finite_for_both_parametrizations(
         acoustic_dim=N_MELS,
         n_denoising_steps=4,
         max_acoustic_len=MAX_AC_LEN,
-        eos_n_frames=2,
+        eos_n_frames=4,
     )
     m = RollingFlowSpeaker(cfg).eval()
     txt = MaskedTensor(
@@ -380,7 +380,7 @@ def test_speak_finite_for_both_parametrizations(
         acoustic_dim=N_MELS,
         n_denoising_steps=4,
         max_acoustic_len=MAX_AC_LEN,
-        eos_n_frames=2,
+        eos_n_frames=4,
     )
     m = RollingFlowSpeaker(cfg).eval()
     txt = MaskedTensor(
@@ -412,7 +412,7 @@ def test_lognorm_schedule_runs_end_to_end() -> None:
         acoustic_dim=N_MELS,
         n_denoising_steps=4,
         max_acoustic_len=MAX_AC_LEN,
-        eos_n_frames=2,
+        eos_n_frames=4,
     )
     m = RollingFlowSpeaker(cfg).eval()
     txt = MaskedTensor(
@@ -447,7 +447,7 @@ def test_sample_noise_applies_cfg_noise_scale() -> None:
         acoustic_dim=N_MELS,
         n_denoising_steps=4,
         max_acoustic_len=MAX_AC_LEN,
-        eos_n_frames=2,
+        eos_n_frames=4,
         noise_scale=0.3,
     )
     speaker = RollingFlowSpeaker(cfg).eval()
@@ -469,6 +469,7 @@ def _speaker_cfg(adaln_rank: int | None, n_denoising_steps: int) -> RollingFlowC
         vocabulary_size=8,
         acoustic_dim=N_MELS,
         n_denoising_steps=n_denoising_steps,
+        eos_n_frames=n_denoising_steps,
         max_acoustic_len=MAX_AC_LEN,
     )
 
@@ -545,8 +546,9 @@ def test_phoneme_per_audio_patch_is_text_padding_invariant() -> None:
         values=text_ids.unsqueeze(1), mask=torch.ones(B, 2, dtype=torch.bool)
     )
     text_padded = MaskedTensor(
-        values=torch.cat([text_ids, torch.zeros(B, 3, dtype=torch.long)], dim=1)
-        .unsqueeze(1),
+        values=torch.cat(
+            [text_ids, torch.zeros(B, 3, dtype=torch.long)], dim=1
+        ).unsqueeze(1),
         mask=torch.tensor([[True, True, False, False, False]] * B),
     )
 
