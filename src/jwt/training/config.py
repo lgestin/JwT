@@ -18,7 +18,7 @@ from simple_parsing.helpers.serialization import load, save
 from jwt.data.audio.codecs import Codecs
 from jwt.model.neural_speaker import RollingFlowConfig
 from jwt.training.ema import EMAConfig
-from jwt.training.optimizer import OptimizerConfig
+from jwt.training.optimizer import OptimizerConfig, Optimizers
 from jwt.training.trainer import TrainerConfig
 
 
@@ -73,6 +73,10 @@ class Args:
                 "flow-matching loss is already computed in mel space, so the "
                 "auxiliary mel loss is redundant and not supported "
                 f"(got aux_mel_weight={self.trainer.aux_mel_weight})"
+            )
+        if self.optimizer.name is Optimizers.SF_NORMUON and self.ema.enabled:
+            raise ValueError(
+                "ema must be disabled for SF_NORMUON: it already averages iterates"
             )
 
 
