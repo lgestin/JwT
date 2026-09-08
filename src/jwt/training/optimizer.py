@@ -16,12 +16,12 @@ class Optimizers(StrEnum):
 
 @dataclass
 class OptimizerConfig:
-    name: Optimizers = Optimizers.ADAMW
+    name: Optimizers = Optimizers.SF_NORMUON
     # Shared: the whole model under ADAMW, the Adam group under SF_NORMUON.
-    lr: float = 1e-3
-    weight_decay: float = 1e-2
-    betas: tuple[float, float] = (0.9, 0.999)
-    warmup_steps: int = 0  # linear LR warmup, applied by the trainer
+    lr: float = 3e-4
+    weight_decay: float = 0.0
+    betas: tuple[float, float] = (0.9, 0.95)
+    warmup_steps: int = 1000  # linear LR warmup, applied by the trainer
     # SF_NORMUON only: the hidden-matrix group.
     muon_lr: float = 5e-3
     muon_momentum: float = 0.8

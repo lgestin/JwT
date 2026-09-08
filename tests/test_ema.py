@@ -15,9 +15,9 @@ def _const_model(value: float) -> nn.Module:
 
 
 def test_config_defaults() -> None:
-    """EMA is enabled by default with the agreed decay."""
+    """EMA is off by default (the default optimizer averages iterates itself)."""
     cfg = EMAConfig()
-    assert cfg.enabled is True
+    assert cfg.enabled is False
     assert cfg.decay == 0.9995
 
 

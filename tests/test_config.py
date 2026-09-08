@@ -13,6 +13,7 @@ from jwt.training.config import (
     dump_config,
     parse_args,
 )
+from jwt.training.optimizer import Optimizers
 from jwt.training.trainer import TrainerConfig
 
 
@@ -23,8 +24,9 @@ def test_args_defaults_survive_the_move() -> None:
     assert args.codec == Codecs.BIGVGAN
     assert args.model.parametrization == FlowParametrizations.JWT
     assert args.trainer.max_steps == 200_001
-    assert args.optimizer.lr == 1e-3
-    assert args.ema.enabled is True
+    assert args.optimizer.name == Optimizers.SF_NORMUON
+    assert args.optimizer.lr == 3e-4
+    assert args.ema.enabled is False
 
 
 def test_n_train_defaults_to_none() -> None:

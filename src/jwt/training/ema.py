@@ -11,9 +11,8 @@ from torch.nn import Module
 
 @dataclass
 class EMAConfig:
-    # EMA almost always improves flow-matching sample quality at near-zero
-    # training cost, so it is on by default.
-    enabled: bool = True
+    # Off by default: the default optimizer (SF_NORMUON) averages iterates itself.
+    enabled: bool = False
     decay: float = 0.9995
 
 

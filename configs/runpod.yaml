@@ -37,6 +37,7 @@ n_train: null
 n_valid: 64
 num_workers: 6
 optimizer:
+  name: ADAMW
   betas:
     - 0.9
     - 0.998

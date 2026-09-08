@@ -14,7 +14,7 @@ codec: BIGVGAN
 compile: true
 ema:
   decay: 0.9995
-  enabled: true
+  enabled: false
 model:
   acoustic_dim: 100
   codec: RAWAUDIO_512
@@ -41,12 +41,16 @@ n_train: null
 n_valid: 64
 num_workers: 6
 optimizer:
+  name: SF_NORMUON
   betas:
   - 0.9
-  - 0.999
-  lr: 0.001
-  warmup_steps: 0
-  weight_decay: 0.01
+  - 0.95
+  lr: 0.0003
+  weight_decay: 0.0
+  warmup_steps: 1000
+  muon_lr: 0.005
+  muon_momentum: 0.8
+  muon_weight_decay: 0.0
 output_dir: outputs/run0
 resume: false
 trainer:
