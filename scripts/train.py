@@ -4,7 +4,6 @@ import warnings
 from pathlib import Path
 
 import torch
-from torch.optim import AdamW
 from torch.utils.data import DataLoader, Subset
 
 from jwt.data.audio.codecs import check_sample_rate
@@ -103,12 +102,7 @@ def main() -> None:
         torch._dynamo.config.capture_scalar_outputs = True
         model.forward = torch.compile(model.forward, dynamic=True)
 
-    optimizer = AdamW(
-        model.parameters(),
-        lr=args.optimizer.lr,
-        betas=args.optimizer.betas,
-        weight_decay=args.optimizer.weight_decay,
-    )
+    optimizer = args.optimizer.build(model, head=model.acoustic_out)
 
     ema = EMA(model, decay=args.ema.decay) if args.ema.enabled else None
 
@@ -158,6 +152,7 @@ def main() -> None:
         sample_rate=sample_rate,
         model=model,
         optimizer=optimizer,
+        warmup_steps=args.optimizer.warmup_steps,
         scaler=None,
         logger=logger,
         train_dloader=train_dl,

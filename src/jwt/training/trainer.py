@@ -39,6 +39,8 @@ from jwt.training.metrics.utils import (
     sampled_generation_stats,
 )
 from jwt.training.metrics.utmos import UTMOS
+from jwt.training.muon import NorMuonScheduleFree
+from jwt.training.optimizer import warmup_scale
 
 # Free generations shorter than this are zero-padded up to it before MOS
 # scoring — the predictors need a minimum of signal, and padding (unlike
@@ -183,6 +185,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         state: TrainerState | None,
         checkpoint_manager: CheckpointManager | None,
         ema: EMA | None = None,
+        warmup_steps: int = 0,
     ):
         super().__init__(config=config, state=state)
         self.codec = codec
@@ -198,6 +201,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self.smp_dloader = smp_dloader
         self.checkpoint_manager = checkpoint_manager
         self.ema = ema
+        self.warmup_steps = warmup_steps
         self.mel_spectrogram = MelSpectrogram(
             n_fft=1024,
             hop_length=256,
@@ -220,6 +224,16 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         """EMA weights installed for the block, or a no-op when EMA is off."""
         return self.ema.swapped(self.model) if self.ema is not None else nullcontext()
 
+    def _optimizer_eval(self) -> None:
+        """Put a schedule-free optimizer on its averaged iterate; else a no-op."""
+        if isinstance(self.optimizer, NorMuonScheduleFree):
+            self.optimizer.eval()
+
+    def _optimizer_train(self) -> None:
+        """Put a schedule-free optimizer back on its gradient iterate."""
+        if isinstance(self.optimizer, NorMuonScheduleFree):
+            self.optimizer.train()
+
     def train(self):
         self._log_initial_samples()
         self._log_timestep_schedule()
@@ -241,18 +255,24 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         while self.step < self.max_steps:
             for batch in self.train_dloader:
                 if micro == 0:
-                    if self.step % self.smp_steps == 0:
-                        with self._ema_weights():
-                            self._log_samples()
-                            self._log_sampled_metrics()
-                    if self.step % self.valid_steps == 0:
-                        with self._ema_weights():
-                            self.validation()
-                    if (
+                    log_smp = self.step % self.smp_steps == 0
+                    log_valid = self.step % self.valid_steps == 0
+                    save_ckpt = (
                         self.checkpoint_manager is not None
                         and self.step % self.checkpoint_steps == 0
                         and self.step > 0
-                    ):
+                    )
+                    if log_smp or log_valid or save_ckpt:
+                        self._optimizer_eval()
+                    if log_smp:
+                        with self._ema_weights():
+                            self._log_samples()
+                            self._log_sampled_metrics()
+                    if log_valid:
+                        with self._ema_weights():
+                            self.validation()
+                    if save_ckpt:
+                        assert self.checkpoint_manager is not None
                         self.checkpoint_manager.save(
                             step=self.step,
                             model=self.model,
@@ -267,8 +287,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                         )
                         self.checkpoint_manager.cleanup_old_checkpoints()
 
-                if hasattr(self.optimizer, "train"):
-                    self.optimizer.train()  # ty: ignore[call-non-callable]
+                self._optimizer_train()
                 self.model.train()
 
                 metrics, scalars, bins = self.training_step(batch)
@@ -574,6 +593,10 @@ class TTSRollingFlowMatchingTrainer(Trainer):
     def _optimizer_step(self) -> dict[str, torch.Tensor]:
         """Clip + step + zero_grad. Called once per accumulation window."""
         metrics: dict[str, torch.Tensor] = {}
+        scale = warmup_scale(self.step, self.warmup_steps)
+        for group in self.optimizer.param_groups:
+            group["lr"] = group["initial_lr"] * scale
+        metrics["lr"] = torch.tensor(self.optimizer.param_groups[0]["lr"])
         if self.scaler is not None:
             self.scaler.unscale_(self.optimizer)
         if self.config.clip_grad_norm is not None:
@@ -594,8 +617,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
     @torch.inference_mode()
     def validation(self):
         self.model.eval()
-        if hasattr(self.optimizer, "eval"):
-            self.optimizer.eval()  # ty: ignore[call-non-callable]
+        self._optimizer_eval()
 
         sums: dict[str, float] = {}
         diag_accum: dict[str, torch.Tensor] = {}
