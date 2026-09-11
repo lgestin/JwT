@@ -17,6 +17,7 @@ from jwt.data.audio.codecs import Codec
 from jwt.data.audio.stft import MelSpectrogram
 from jwt.data.dataset import Batch
 from jwt.model.attention import AttentionImplementations, TorchAttention
+from jwt.model.kvcache import KVCache
 from jwt.model.loss import LossFns
 from jwt.model.neural_speaker import (
     MaskedTensor,
@@ -82,9 +83,7 @@ class TrainerConfig:
     n_smp: int = 16
     grad_accum_steps: int = 1
     loss_fn: LossFns = LossFns.L1
-    attention_implementation: AttentionImplementations = (
-        AttentionImplementations.FLASH_VARLEN
-    )
+    attention_implementation: AttentionImplementations = AttentionImplementations.FLEX
     # Auxiliary log-mel L1 loss weight. 0 = monitor only (no gradient signal);
     aux_mel_weight: float = 0.0
     # Scalar diagnostics (throughput, memory, normalization stats) and the
@@ -851,7 +850,9 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                 dtype=self.amp_dtype,
                 enabled=not self.noamp,
             ):
-                acoustic_pred = self.model.speak(text, codec=self.codec, x_0=x_0)
+                acoustic_pred = self.model.speak(
+                    text, codec=self.codec, x_0=x_0, kv_cache=KVCache()
+                )
 
             gen_lens = acoustic_pred.mask.sum(-1)
             gen_lens_all.append(gen_lens)
@@ -895,7 +896,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             dtype=self.amp_dtype,
             enabled=not self.noamp,
         ):
-            acoustic_pred = self.model.speak(text, codec=self.codec)
+            acoustic_pred = self.model.speak(text, codec=self.codec, kv_cache=KVCache())
 
         # Self-forced probe: alignment read back from the generated frames.
         att: dict[int, dict[str, torch.Tensor]] = {}

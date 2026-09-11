@@ -2,6 +2,7 @@ import pytest
 import torch
 from torch import nn
 
+from jwt.model.kvcache import LayerKVCache
 from jwt.model.transformer import (
     AdaLN,
     RMSNorm,
@@ -46,7 +47,7 @@ def test_transformer_block_shape() -> None:
     freqs_cis = make_freqs(8, 8, B=2)
     x = torch.randn(2, 8, 32)
     t_emb = torch.randn(2, 8, 32)
-    y = block(x, freqs_cis, t_emb)
+    y = block(x, freqs_cis, t_emb, cache=LayerKVCache())
     assert y.shape == x.shape
 
 
@@ -117,7 +118,7 @@ def test_transformer_block_clamps_gates() -> None:
         with torch.no_grad():
             block.adaLN.linear.bias[2 * dim : 3 * dim] = gate_bias
             block.adaLN.linear.bias[5 * dim : 6 * dim] = gate_bias
-        return (block(x, freqs_cis, t_emb) - x).abs().max().item()
+        return (block(x, freqs_cis, t_emb, cache=LayerKVCache()) - x).abs().max().item()
 
     small, huge = residual_delta(10.0), residual_delta(1000.0)
 

@@ -25,7 +25,16 @@ class Registers(nn.Module):
         t_emb: torch.Tensor,
         seq_mask: torch.Tensor | None,
         freqs_cis: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
+        commit: torch.Tensor | None = None,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor,
+        torch.Tensor | None,
+    ]:
+        """Registers commit with the text prefix (`commit=0`): they are frozen
+        from the first step, see `attention.commit_rule`."""
         x_reg = self.registers.expand(x.size(0), -1, -1).to(x)
         x = torch.cat((x_reg, x), dim=1)
         t_emb_reg = t_emb.new_zeros((t_emb.size(0), self.n, t_emb.size(-1)))
@@ -36,7 +45,9 @@ class Registers(nn.Module):
             (*freqs_cis.shape[:-2], self.n, freqs_cis.size(-1))
         )
         freqs_cis = torch.cat((freqs_cis_reg, freqs_cis), dim=-2)
-        return x, t_emb, seq_mask, freqs_cis
+        if commit is not None:
+            commit = F.pad(commit, (self.n, 0), value=0.0)
+        return x, t_emb, seq_mask, freqs_cis, commit
 
     @torch.compiler.disable
     def strip(

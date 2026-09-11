@@ -26,6 +26,7 @@ from simple_parsing import ArgumentParser
 from jwt.data.audio.codecs import Codec
 from jwt.data.audio.stft import MelSpectrogram
 from jwt.data.text import Phonemizer, Tokenizer, Vocabulary
+from jwt.model.kvcache import KVCache
 from jwt.model.neural_speaker import (
     MaskedTensor,
     RollingFlowConfig,
@@ -158,7 +159,7 @@ def build_synth_fn(
             generator=gen,
         )
 
-        acoustic_pred = model.speak(text_mt, codec=codec, x_0=x_0)
+        acoustic_pred = model.speak(text_mt, codec=codec, x_0=x_0, kv_cache=KVCache())
         ac_len = int(acoustic_pred.mask[0].sum().item())
         ac = acoustic_pred.values[0, :, :ac_len]  # (acoustic_dim, ac_len), normalized
         ac_unnorm = codec.unnormalize(ac.unsqueeze(0))

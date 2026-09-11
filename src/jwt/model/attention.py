@@ -1,29 +1,34 @@
-from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
 import torch
 import torch.nn.functional as F
-
-try:
-    from flash_attn import flash_attn_varlen_func
-except ImportError:
-    flash_attn_varlen_func = None  # ty: ignore[invalid-assignment]
-
-
-@dataclass
-class FlashAttentionVarlenMask:
-    """Metadata for `flash_attn_varlen_func`: which `(b, t)` positions are
-    valid plus the cumulative-seqlen layout flash_attn expects."""
-
-    cu_seqlens: torch.Tensor  # (B+1,) int32, prefix-sum of per-sample seqlens
-    max_seqlen: int
-    indices: torch.Tensor  # int64 flat positions of valid tokens in (B*T,)
-    B: int
-    T: int
+from torch.nn.attention.flex_attention import (
+    BlockMask,
+    create_block_mask,
+    flex_attention,
+)
 
 
-type AttentionMask = torch.Tensor | FlashAttentionVarlenMask
+def commit_rule(
+    seq_mask: torch.Tensor,
+    commit_k: torch.Tensor | None,
+    commit_q: torch.Tensor | None,
+) -> torch.Tensor:
+    """Dense (B, Tq, Tk) visibility: `seq_mask[j] & commit[j] <= commit[q]`.
+
+    `commit` is a token's commit index: 0 for the text prefix, `i + 1` for a
+    clean acoustic frame `i`, `inf` for window frames and padding. A token
+    therefore only sees tokens frozen no later than itself, which is what
+    makes the frozen part of the sequence cacheable. Without `commit` every
+    query sees every visible key (a (B, 1, Tk) row).
+    """
+    if commit_k is None or commit_q is None:
+        return seq_mask[:, None, :]
+    return seq_mask[:, None, :] & (commit_k[:, None, :] <= commit_q[:, :, None])
+
+
+type AttentionMask = torch.Tensor | BlockMask
 
 
 class AttentionImplementation(Protocol):
@@ -34,9 +39,14 @@ class AttentionImplementation(Protocol):
     """
 
     @staticmethod
-    def build_mask(seq_mask: torch.Tensor) -> AttentionMask:
-        """`seq_mask`: (B, T) bool, True = visible key. Returns the mask
-        object consumed by `attention`, or None for an unmasked backend."""
+    def build_mask(
+        seq_mask: torch.Tensor,
+        commit_k: torch.Tensor | None = None,
+        commit_q: torch.Tensor | None = None,
+    ) -> AttentionMask:
+        """`seq_mask`: (B, Tk) bool, True = visible key. `commit_k` (B, Tk) and
+        `commit_q` (B, Tq) apply `commit_rule`; both None means key-only.
+        Returns the mask object consumed by `attention`."""
         ...
 
     @staticmethod
@@ -46,9 +56,9 @@ class AttentionImplementation(Protocol):
         v: torch.Tensor,
         mask: AttentionMask | None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """`q`, `k`, `v`: (B, H, T, D). Returns `(out, attn_weights)`.
+        """`q`: (B, H, Tq, D), `k`, `v`: (B, H, Tk, D). Returns `(out, attn_weights)`.
 
-        `out` is (B, H, T, D). `attn_weights` is the (B, H, T, T) softmax
+        `out` is (B, H, Tq, D). `attn_weights` is the (B, H, Tq, Tk) softmax
         matrix when the backend can expose it, else `None` (the fused SDPA
         kernel never materializes it).
         """
@@ -63,8 +73,12 @@ class SDPAAttention(AttentionImplementation):
     """
 
     @staticmethod
-    def build_mask(seq_mask: torch.Tensor) -> torch.Tensor:
-        return seq_mask[:, None, None, :]
+    def build_mask(
+        seq_mask: torch.Tensor,
+        commit_k: torch.Tensor | None = None,
+        commit_q: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return commit_rule(seq_mask, commit_k, commit_q).unsqueeze(1)
 
     @staticmethod
     def attention(
@@ -86,8 +100,12 @@ class TorchAttention(AttentionImplementation):
     """
 
     @staticmethod
-    def build_mask(seq_mask: torch.Tensor) -> torch.Tensor:
-        return seq_mask[:, None, None, :]
+    def build_mask(
+        seq_mask: torch.Tensor,
+        commit_k: torch.Tensor | None = None,
+        commit_q: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return commit_rule(seq_mask, commit_k, commit_q).unsqueeze(1)
 
     @staticmethod
     def attention(
@@ -106,30 +124,38 @@ class TorchAttention(AttentionImplementation):
         return out, attn_weights
 
 
-class FlashVarlenAttention(AttentionImplementation):
-    """Attention via `flash_attn.flash_attn_varlen_func`.
+# Compiled once per process; both are slow reference paths in eager.
+compiled_flex_attention = torch.compile(flex_attention, dynamic=True)
+compiled_create_block_mask = torch.compile(create_block_mask)
 
-    Unpads `q`/`k`/`v` to a flat `(total_valid, H, D)` layout, runs the
-    FlashAttention varlen kernel, then scatters back. Skips all wasted compute
-    on padded positions, but pays a per-layer gather/scatter — best when the
-    mask is sparse enough that the skipped flops outweigh that cost.
 
-    Constraints: requires CUDA + fp16/bf16 `q`/`k`/`v`. `attn_weights` is
-    never materialized (returns `None`). Requires `flash-attn` installed.
+class FlexAttention(AttentionImplementation):
+    """Attention via `torch.nn.attention.flex_attention`.
+
+    The commit rule is a `mask_mod` closure over the mask tensors; the block
+    mask skips fully masked tiles, so one fused call covers the whole
+    block-causal layout. `attn_weights` is never materialized (returns
+    `None`). Requires CUDA and a head dim >= 16.
     """
 
     @staticmethod
-    def build_mask(seq_mask: torch.Tensor) -> FlashAttentionVarlenMask:
-        B, T = seq_mask.shape
-        seqlens = seq_mask.sum(dim=-1, dtype=torch.int32)  # (B,)
-        cu_seqlens = F.pad(seqlens.cumsum(0, dtype=torch.int32), (1, 0))
-        indices = seq_mask.reshape(-1).nonzero(as_tuple=False).squeeze(-1)
-        return FlashAttentionVarlenMask(
-            cu_seqlens=cu_seqlens,
-            max_seqlen=int(seqlens.max().item()),
-            indices=indices,
-            B=B,
-            T=T,
+    @torch.compiler.disable  # built outside any outer compiled graph
+    def build_mask(
+        seq_mask: torch.Tensor,
+        commit_k: torch.Tensor | None = None,
+        commit_q: torch.Tensor | None = None,
+    ) -> BlockMask:
+        B, Tk = seq_mask.shape
+        Tq = Tk if commit_q is None else commit_q.shape[1]
+
+        def mask_mod(b, h, q_idx, kv_idx):
+            visible = seq_mask[b, kv_idx]
+            if commit_k is None or commit_q is None:
+                return visible
+            return visible & (commit_k[b, kv_idx] <= commit_q[b, q_idx])
+
+        return compiled_create_block_mask(
+            mask_mod, B, None, Tq, Tk, device=seq_mask.device
         )
 
     @staticmethod
@@ -139,27 +165,11 @@ class FlashVarlenAttention(AttentionImplementation):
         v: torch.Tensor,
         mask: AttentionMask | None,
     ) -> tuple[torch.Tensor, None]:
-        if not isinstance(mask, FlashAttentionVarlenMask):
-            raise TypeError("FlashVarlenAttention requires a FlashAttentionVarlenMask")
-        B, H, T, D = q.shape
-
-        def pack(x: torch.Tensor) -> torch.Tensor:
-            # (B, H, T, D) -> (total_valid, H, D)
-            return x.transpose(1, 2).reshape(B * T, H, D).index_select(0, mask.indices)
-
-        out = flash_attn_varlen_func(
-            pack(q),
-            pack(k),
-            pack(v),
-            cu_seqlens_q=mask.cu_seqlens,
-            cu_seqlens_k=mask.cu_seqlens,
-            max_seqlen_q=mask.max_seqlen,
-            max_seqlen_k=mask.max_seqlen,
-        )  # (total_valid, H, D)
-
-        out_padded = q.new_zeros(B * T, H, D)
-        out_padded.index_copy_(0, mask.indices, out)
-        return out_padded.reshape(B, T, H, D).transpose(1, 2), None
+        if mask is not None and not isinstance(mask, BlockMask):
+            raise TypeError("FlexAttention requires a BlockMask")
+        out = compiled_flex_attention(q, k, v, block_mask=mask)
+        assert isinstance(out, torch.Tensor)
+        return out, None
 
 
 class AttentionImplementations(StrEnum):
@@ -168,6 +178,7 @@ class AttentionImplementations(StrEnum):
     TORCH = "torch"
     SDPA = "sdpa"
     FLASH_VARLEN = "flash_varlen"
+    FLEX = "flex"
 
     @property
     def implementation(self) -> type[AttentionImplementation]:
@@ -177,6 +188,9 @@ class AttentionImplementations(StrEnum):
             case AttentionImplementations.SDPA:
                 return SDPAAttention
             case AttentionImplementations.FLASH_VARLEN:
-                if flash_attn_varlen_func is None:
-                    raise ImportError("flash-attn is not installed")
-                return FlashVarlenAttention
+                raise ValueError(
+                    "FLASH_VARLEN is not available on this branch: flash-attn "
+                    "cannot express the commit-rule mask, use FLEX"
+                )
+            case AttentionImplementations.FLEX:
+                return FlexAttention

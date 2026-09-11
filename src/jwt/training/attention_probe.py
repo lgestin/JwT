@@ -297,7 +297,8 @@ def capture_attention(
         if attn_weights is None:
             return
         mask = args[2] if len(args) > 2 else None
-        seq_mask = None if mask is None else mask.reshape(mask.shape[0], -1)
+        # The dense mask is (B, 1, Tq, Tk); a key is real if any query sees it.
+        seq_mask = None if mask is None else mask.any(dim=2).reshape(mask.shape[0], -1)
         collector.record(attn_weights.detach(), seq_mask)  # ty: ignore[unresolved-attribute]
 
     handles = [

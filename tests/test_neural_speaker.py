@@ -5,6 +5,7 @@ from jwt.data.audio.audio import AudioFile
 from jwt.data.audio.codecs import Codec, Codecs
 from jwt.data.audio.stft import MelSpectrogram
 from jwt.model.flow import FlowParametrizations
+from jwt.model.kvcache import KVCache
 from jwt.model.neural_speaker import (
     MaskedTensor,
     RollingFlowConfig,
@@ -67,6 +68,26 @@ class StubCodec:
 
 # Make StubCodec satisfy the runtime_checkable Codec protocol.
 assert isinstance(StubCodec(), Codec)
+
+
+class ConstantHead(torch.nn.Module):
+    """Stand-in output head that predicts one constant everywhere."""
+
+    def __init__(self, head: torch.nn.Module, value: float):
+        super().__init__()
+        self.head, self.value = head, value
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.full_like(self.head(x), self.value)
+
+
+def open_gates(model: RollingFlowSpeaker) -> RollingFlowSpeaker:
+    """Zero-init adaLN gates and output head hide attention; randomize them."""
+    for block in model.transformer.blocks:
+        torch.nn.init.normal_(block.adaLN.linear.weight, std=0.02)
+        torch.nn.init.normal_(block.adaLN.linear.bias, std=0.02)
+    torch.nn.init.normal_(model.acoustic_out.weight, std=0.02)
+    return model
 
 
 @pytest.fixture
@@ -180,20 +201,8 @@ def test_speak_stops_on_sentinel(
 ) -> None:
     """speak() must stop before max_acoustic_len when the sentinel fires."""
     eos_norm = (codec.eos_value - codec.mean) / codec.std
-
-    original_forward = model.forward
-
-    def always_eos(
-        text: MaskedTensor, acoustic: MaskedTensor, t: torch.Tensor
-    ) -> torch.Tensor:
-        v = original_forward(text, acoustic, t)
-        return torch.full_like(v, float(eos_norm) * 10)
-
-    model.forward = always_eos
-    try:
-        out = model.speak(text, codec=codec)
-    finally:
-        model.forward = original_forward
+    model.acoustic_out = ConstantHead(model.acoustic_out, float(eos_norm) * 10)
+    out = model.speak(text, codec=codec)
 
     assert out.values.shape[2] < model.cfg.max_acoustic_len
 
@@ -202,18 +211,8 @@ def test_speak_respects_max_acoustic_len_cap(
     model: RollingFlowSpeaker, text: MaskedTensor, codec: StubCodec
 ) -> None:
     """Output must never exceed max_acoustic_len even if the sentinel never fires."""
-    original_forward = model.forward
-
-    def never_eos(
-        text: MaskedTensor, acoustic: MaskedTensor, t: torch.Tensor
-    ) -> torch.Tensor:
-        return torch.full_like(original_forward(text, acoustic, t), 10.0)
-
-    model.forward = never_eos
-    try:
-        out = model.speak(text, codec=codec)
-    finally:
-        model.forward = original_forward
+    model.acoustic_out = ConstantHead(model.acoustic_out, 10.0)
+    out = model.speak(text, codec=codec)
 
     assert out.values.shape[2] <= model.cfg.max_acoustic_len
 
@@ -568,3 +567,109 @@ def test_phoneme_per_audio_patch_is_text_padding_invariant() -> None:
         v_padded = model.forward(text_padded, acoustic, t)
 
     assert torch.allclose(v_unpadded, v_padded, atol=1e-5)
+
+
+# --- block-causal mask and KV cache -----------------------------------------
+
+
+def window_variant(acoustic: MaskedTensor, n: int) -> MaskedTensor:
+    """Same clean frames, different window contents (last n frames)."""
+    values = acoustic.values.clone()
+    values[..., -n:] = torch.randn_like(values[..., -n:])
+    return MaskedTensor(values=values, mask=acoustic.mask)
+
+
+def clean_then_window_t(acoustic: MaskedTensor, n: int) -> torch.Tensor:
+    B_, _, T = acoustic.values.shape
+    t = torch.ones(B_, T)
+    t[:, -n:] = torch.linspace(0.9, 0.0, n)
+    return t
+
+
+def test_clean_frames_ignore_window(
+    model: RollingFlowSpeaker, text: MaskedTensor, acoustic: MaskedTensor
+) -> None:
+    """Clean-frame outputs do not depend on the window contents."""
+    open_gates(model)
+    n = model.cfg.n_denoising_steps
+    t = clean_then_window_t(acoustic, n)
+    a = model.forward(text, acoustic, t)
+    b = model.forward(text, window_variant(acoustic, n), t)
+    torch.testing.assert_close(a[:, :-n], b[:, :-n])
+    assert not torch.allclose(a[:, -n:], b[:, -n:])
+
+
+def test_speak_with_cache_matches_full_recompute(
+    model: RollingFlowSpeaker, codec: StubCodec
+) -> None:
+    """The KV cache is exact: the rolling sampler gives the same frames
+    whether it recomputes the whole sequence or only the window."""
+    open_gates(model)
+    text = MaskedTensor(
+        values=torch.randint(0, model.cfg.vocabulary_size, (B, 1, T_TEXT)),
+        mask=torch.tensor([[True] * T_TEXT, [True] * (T_TEXT - 1) + [False]]),
+    )
+    x_0 = torch.randn(B, N_MELS, model.cfg.max_acoustic_len)
+    cached = model.speak(text, codec=codec, x_0=x_0, kv_cache=KVCache())
+    full = model.speak(text, codec=codec, x_0=x_0, kv_cache=None)
+    assert torch.equal(cached.mask, full.mask)
+    torch.testing.assert_close(cached.values, full.values, atol=1e-5, rtol=1e-4)
+
+
+def skip_unless_cuda() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+
+def test_training_step_flex_matches_sdpa(
+    model: RollingFlowSpeaker, text: MaskedTensor, acoustic: MaskedTensor
+) -> None:
+    """A training step gives the same loss with Flex and SDPA."""
+    skip_unless_cuda()
+    from dataclasses import replace
+
+    from jwt.model.attention import FlexAttention, SDPAAttention
+
+    # Flex needs head_dim >= 16; the shared fixture has 8.
+    cfg = replace(
+        model.cfg,
+        transformer_config=TransformerConfig(dim=64, num_heads=4, num_layers=2),
+    )
+    torch.manual_seed(0)
+    model = open_gates(RollingFlowSpeaker(cfg)).cuda()
+    text = MaskedTensor(text.values.cuda(), text.mask.cuda())
+    acoustic = MaskedTensor(acoustic.values.cuda(), acoustic.mask.cuda())
+    front = torch.tensor([3, 9], device="cuda")
+    x_0 = torch.randn(B, acoustic.values.shape[-1], N_MELS, device="cuda")
+    losses = {}
+    for impl in (SDPAAttention, FlexAttention):
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            out = model.training_step(
+                text,
+                acoustic,
+                acoustic_front=front,  # ty: ignore[invalid-argument-type]
+                x_0=x_0,
+                attention_implementation=impl,
+            )
+        losses[impl.__name__] = out.per_pos_loss[out.v_mask].float()
+    torch.testing.assert_close(
+        losses["FlexAttention"], losses["SDPAAttention"], atol=5e-2, rtol=5e-2
+    )
+
+
+def test_speak_cache_under_autocast(
+    model: RollingFlowSpeaker, codec: StubCodec
+) -> None:
+    """Cached and full-recompute sampling agree under bf16 autocast."""
+    skip_unless_cuda()
+    open_gates(model).cuda()
+    text = MaskedTensor(
+        values=torch.randint(0, model.cfg.vocabulary_size, (B, 1, T_TEXT)).cuda(),
+        mask=torch.ones(B, T_TEXT, dtype=torch.bool).cuda(),
+    )
+    x_0 = torch.randn(B, N_MELS, model.cfg.max_acoustic_len, device="cuda")
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        cached = model.speak(text, codec=codec, x_0=x_0, kv_cache=KVCache())
+        full = model.speak(text, codec=codec, x_0=x_0, kv_cache=None)
+    assert torch.equal(cached.mask, full.mask)
+    torch.testing.assert_close(cached.values, full.values, atol=5e-2, rtol=5e-2)
