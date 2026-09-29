@@ -37,7 +37,7 @@ def test_diagnostics_emit_unreweighted_x1_error_curve() -> None:
     trainer = TTSRollingFlowMatchingTrainer.__new__(TTSRollingFlowMatchingTrainer)
     trainer.config = TrainerConfig(device="cpu", n_loss_bins=2)
     logger = _RecordingLogger()
-    trainer.logger = logger  # type: ignore[assignment]
+    trainer.logger = logger  # ty: ignore[invalid-assignment]
 
     # Bin 0 (t=0.25): big prediction error, small reweighted FM loss.
     # Bin 1 (t=0.75): tiny prediction error, big reweighted FM loss.
@@ -92,7 +92,7 @@ def test_loss_curves_are_plotted_on_the_bin_centre_grid() -> None:
     trainer = TTSRollingFlowMatchingTrainer.__new__(TTSRollingFlowMatchingTrainer)
     trainer.config = TrainerConfig(device="cpu", n_loss_bins=4)
     logger = _RecordingLogger()
-    trainer.logger = logger  # type: ignore[assignment]
+    trainer.logger = logger  # ty: ignore[invalid-assignment]
 
     _, bins = trainer.step_diagnostics(*diag_inputs())
     trainer.emit_loss_curves(bins, step=0, prefix="train")
@@ -109,7 +109,7 @@ def test_empty_t_bins_stay_nan_so_the_curve_gaps() -> None:
     trainer = TTSRollingFlowMatchingTrainer.__new__(TTSRollingFlowMatchingTrainer)
     trainer.config = TrainerConfig(device="cpu", n_loss_bins=4)
     logger = _RecordingLogger()
-    trainer.logger = logger  # type: ignore[assignment]
+    trainer.logger = logger  # ty: ignore[invalid-assignment]
 
     # Samples land at t=0.25 and t=0.75 only — bins 0 and 2 stay empty.
     _, bins = trainer.step_diagnostics(*diag_inputs())
@@ -130,7 +130,7 @@ def metrics_trainer(hop: int = 256) -> TTSRollingFlowMatchingTrainer:
     trainer = TTSRollingFlowMatchingTrainer.__new__(TTSRollingFlowMatchingTrainer)
     trainer.config = TrainerConfig(device="cpu")
     trainer.codec = RawAudioPatcher(patch_size=hop)
-    trainer.model = torch.nn.Linear(1, 1)  # type: ignore[assignment] — only .training is read
+    trainer.model = torch.nn.Linear(1, 1)  # ty: ignore[invalid-assignment] — only .training is read
     trainer.mel_spectrogram = MelSpectrogram(
         n_fft=1024,
         hop_length=256,
@@ -242,13 +242,13 @@ def test_valid_unseen_logs_mean_loss_under_its_own_prefix() -> None:
     trainer.config = TrainerConfig(device="cpu")
     trainer.state = TrainerState(step=5)
     logger = MetricsLogger()
-    trainer.logger = logger  # type: ignore[assignment]
+    trainer.logger = logger  # ty: ignore[invalid-assignment]
     losses = iter([1.0, 3.0])
-    trainer.training_step = lambda batch: (  # type: ignore[method-assign]
+    trainer.training_step = lambda batch: (  # ty: ignore[invalid-assignment]
         {"loss": torch.tensor(next(losses))},
         {},
         {},
     )
-    trainer.valid_unseen_dloader = [object(), object()]  # type: ignore[assignment]
+    trainer.valid_unseen_dloader = [object(), object()]  # ty: ignore[invalid-assignment]
     trainer.log_valid_unseen()
     assert logger.logged == [("valid_unseen", {"loss": 2.0})]

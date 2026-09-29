@@ -7,7 +7,7 @@ from torch import nn
 from jwt.model.attention import (
     FlashVarlenAttention,
     SDPAAttention,
-    flash_attn_varlen_func,  # type: ignore[attr-defined]
+    flash_attn_varlen_func,  # ty: ignore[unresolved-attribute]
 )
 from jwt.model.registers import Registers
 from jwt.model.transformer import (
