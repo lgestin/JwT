@@ -541,10 +541,13 @@ def test_position_metrics_shapes_and_reduction_chain() -> None:
     per = collector.utterance_metrics
     ent0 = dense["attn_entropy"][0, :6].mean()  # sample 0 real = all 6
     assert abs(per[0]["attn_entropy"] - float(ent0)) < 1e-6
-    assert abs(
-        per[1]["attn_mass_audio_to_text"]
-        - float(dense["attn_mass_to_text"][1, 3:6].mean())
-    ) < 1e-6
+    assert (
+        abs(
+            per[1]["attn_mass_audio_to_text"]
+            - float(dense["attn_mass_to_text"][1, 3:6].mean())
+        )
+        < 1e-6
+    )
 
     m = collector.metrics
     assert torch.allclose(

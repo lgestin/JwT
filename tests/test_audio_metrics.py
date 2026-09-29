@@ -46,7 +46,7 @@ def test_snr_is_scale_sensitive() -> None:
 
 
 def test_si_snr_identical_signals_is_large_and_finite() -> None:
-    pred, target = _wavs()
+    _, target = _wavs()
     mask = _full_mask()
     out = si_snr(target, target.clone(), mask)
     assert torch.isfinite(out).all()
@@ -104,9 +104,7 @@ def test_mag_snr_ignores_samples_outside_mask() -> None:
     clean = mag_snr(pred, target, mask, _STFT)
     pred_corrupt = pred.clone()
     pred_corrupt[:, S // 2 :] = 10.0
-    assert torch.allclose(
-        clean, mag_snr(pred_corrupt, target, mask, _STFT), atol=1e-4
-    )
+    assert torch.allclose(clean, mag_snr(pred_corrupt, target, mask, _STFT), atol=1e-4)
 
 
 def test_si_snr_and_snr_match_torchmetrics_on_unmasked_input() -> None:
@@ -157,7 +155,7 @@ def test_pesq_scores_and_resamples_non_16khz_input() -> None:
 
 
 def test_stoi_scores_identical_signals_at_one() -> None:
-    pred, target = _wavs(n_samples=S_PERC)
+    _, target = _wavs(n_samples=S_PERC)
     out = STOI().score(target, target.clone(), sample_rate=SAMPLE_RATE)
     assert set(out) == {"stoi"}
     assert out["stoi"].shape == (2,)

@@ -330,9 +330,7 @@ def test_final_modulation_alone_makes_output_timestep_dependent() -> None:
     assert torch.allclose(model(x, t1, _pos(x)), model(x, t2, _pos(x)), atol=1e-6)
 
     nn.init.normal_(model.final_modulation.linear.weight, std=0.05)
-    assert not torch.allclose(
-        model(x, t1, _pos(x)), model(x, t2, _pos(x)), atol=1e-6
-    )
+    assert not torch.allclose(model(x, t1, _pos(x)), model(x, t2, _pos(x)), atol=1e-6)
 
 
 def test_final_modulation_honours_adaln_rank() -> None:

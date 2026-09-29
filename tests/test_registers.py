@@ -171,9 +171,7 @@ def test_prepend_follows_input_dtype() -> None:
     n, T, dim = 4, 6, 32
     registers = Registers(n=n, dim=dim)
     x = torch.randn(2, T, dim, dtype=torch.bfloat16)
-    x_p, _, _, _ = registers.prepend(
-        x, torch.randn(2, T, dim), None, _freqs(T, 8)
-    )
+    x_p, _, _, _ = registers.prepend(x, torch.randn(2, T, dim), None, _freqs(T, 8))
     assert x_p.dtype == torch.bfloat16
 
 
