@@ -53,6 +53,9 @@ SAMPLED_NOISE_SEED = 20_260_814
 class TrainerState:
     step: int
     best_loss: float = float("inf")
+    # Loss a checkpoint saved now is tagged with. Not `best_loss`: valid_steps
+    # need not divide checkpoint_steps, so the best may be an unsaved step.
+    last_val_loss: float = float("inf")
 
 
 class AMPDtype(StrEnum):
@@ -251,19 +254,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                         and self.step % self.checkpoint_steps == 0
                         and self.step > 0
                     ):
-                        self.checkpoint_manager.save(
-                            step=self.step,
-                            model=self.model,
-                            optimizer=self.optimizer,
-                            scaler=self.scaler,
-                            best_loss=self.best_loss,
-                            additional_state=(
-                                {"ema": self.ema.state_dict()}
-                                if self.ema is not None
-                                else None
-                            ),
-                        )
-                        self.checkpoint_manager.cleanup_old_checkpoints()
+                        self.save_checkpoint()
 
                 if hasattr(self.optimizer, "train"):
                     self.optimizer.train()  # ty: ignore[call-non-callable]
@@ -637,8 +628,25 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self.log_audio_metrics(self.attention_images())
 
         loss_val = val_metrics.get("loss", float("inf"))
+        self.state.last_val_loss = loss_val
         if loss_val < self.best_loss:
             self.state.best_loss = loss_val
+
+    def save_checkpoint(self) -> None:
+        """Save a checkpoint tagged with the latest validation loss, then prune."""
+        assert self.checkpoint_manager is not None
+        self.checkpoint_manager.save(
+            step=self.step,
+            model=self.model,
+            optimizer=self.optimizer,
+            scaler=self.scaler,
+            best_loss=self.best_loss,
+            val_loss=self.state.last_val_loss,
+            additional_state=(
+                {"ema": self.ema.state_dict()} if self.ema is not None else None
+            ),
+        )
+        self.checkpoint_manager.cleanup_old_checkpoints()
 
     @torch.inference_mode()
     def probe_attention(

@@ -170,7 +170,13 @@ def main() -> None:
                 "checkpoint has no stored model config; skipping the consistency check",
                 stacklevel=2,
             )
-        state = TrainerState(step=meta["step"], best_loss=meta["best_loss"])
+        # The resumed checkpoint's own loss, so a save before the next validation
+        # is tagged correctly (inf for checkpoints saved before the field existed).
+        state = TrainerState(
+            step=meta["step"],
+            best_loss=meta["best_loss"],
+            last_val_loss=meta["val_loss"],
+        )
         print(f"Resumed from step {state.step} (best_loss={meta['best_loss']})")
 
     trainer = TTSRollingFlowMatchingTrainer(
