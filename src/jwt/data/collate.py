@@ -32,6 +32,12 @@ def collate(samples: list[Sample]) -> Batch:
     padded_tokens, tokens_lengths = pad_sequences_longest(tokens)
     stacked_tokens = torch.stack(padded_tokens).long()
     tokens_mask = mask_from_lengths(tokens_lengths)
+    prompts = [sample.audio_prompt for sample in samples]
+    audio_prompt = audio_prompt_mask = None
+    if prompts[0] is not None:  # AudioDataset sets all or none
+        padded_prompts, prompt_lengths = pad_sequences_longest(prompts)  # ty: ignore[invalid-argument-type]
+        audio_prompt = torch.stack(padded_prompts)
+        audio_prompt_mask = mask_from_lengths(prompt_lengths)
     return Batch(
         idxs=idxs,
         audios=audios,
@@ -39,4 +45,6 @@ def collate(samples: list[Sample]) -> Batch:
         acoustic_mask=acoustic_mask,
         tokens=stacked_tokens,  # ty: ignore[invalid-argument-type]
         tokens_mask=tokens_mask,
+        audio_prompt=audio_prompt,
+        audio_prompt_mask=audio_prompt_mask,
     )

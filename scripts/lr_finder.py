@@ -21,7 +21,7 @@ from simple_parsing import ArgumentParser
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
-from jwt.data.audio.codecs import Codec, Codecs, check_sample_rate
+from jwt.data.audio.codecs import Codec, Codecs, RawAudioPatcher
 from jwt.data.collate import collate
 from jwt.data.dataset import AudioDataset
 from jwt.data.source import ArrowTTSSource
@@ -41,11 +41,11 @@ from jwt.training.trainer import prepare_acoustic_batch
 class Args:
     # Data (defaults mirror scripts/train.py)
     vocab_path: str = "data/vocabulary.json"
-    arrow_path: str = "data/ljspeech_24khz_bigvgan.arrow"
+    dataset_path: str = "data/prepared/ljspeech_22.050khz"
     batch_size: int = 64
     num_workers: int = 6
-    # Codec
-    codec: Codecs = Codecs.BIGVGAN
+    # Codec (raw audio only: its patch size reshapes the prepared waveform)
+    codec: Codecs = Codecs.RAWAUDIO_512
     # Flow-matching parametrization
     parametrization: FlowParametrizations = FlowParametrizations.RECTIFIED_FLOW
     # Model (defaults mirror scripts/train.py)
@@ -98,11 +98,11 @@ def main() -> None:
     vocab = Vocabulary.from_json(args.vocab_path)
     tokenizer = Tokenizer(vocab)
     codec = args.codec.codec.to(device)
-    codec_name = str(args.codec).lower()
-    source = ArrowTTSSource(args.arrow_path, tokenizer=tokenizer, codec_name=codec_name)
+    if not isinstance(codec, RawAudioPatcher):
+        raise ValueError(f"prepared data is raw audio; got codec {args.codec}")
+    source = ArrowTTSSource(args.dataset_path, tokenizer, codec.patch_size)
     print(f"Source size: {len(source)}")
     sample_rate = source.sample_rate
-    check_sample_rate(codec, sample_rate)
     dataset = AudioDataset(tts_source=source, sample_rate=sample_rate)
 
     pin = device.type == "cuda"

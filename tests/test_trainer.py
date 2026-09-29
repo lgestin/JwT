@@ -6,7 +6,11 @@ import torch
 from jwt.data.audio.codecs import RawAudioPatcher
 from jwt.data.audio.stft import MelSpectrogram
 from jwt.model.neural_speaker import MaskedTensor, TrainingStepOutput
-from jwt.training.trainer import TrainerConfig, TTSRollingFlowMatchingTrainer
+from jwt.training.trainer import (
+    TrainerConfig,
+    TrainerState,
+    TTSRollingFlowMatchingTrainer,
+)
 
 
 class _RecordingLogger:
@@ -218,3 +222,29 @@ def test_reconstruction_metrics_respect_the_mask() -> None:
     assert m_half["mag_snr"] > m_full["mag_snr"]
     for key in _SPECTRAL_KEYS:
         assert m_half[key] < m_full[key]
+
+
+class MetricsLogger:
+    def __init__(self) -> None:
+        self.logged: list[tuple[str, dict[str, float]]] = []
+
+    def log_metrics(self, metrics, step, prefix="train") -> None:
+        self.logged.append((prefix, metrics))
+
+
+def test_valid_unseen_logs_mean_loss_under_its_own_prefix() -> None:
+    """Held-out speakers get their own `valid_unseen` loss, averaged over batches."""
+    trainer = TTSRollingFlowMatchingTrainer.__new__(TTSRollingFlowMatchingTrainer)
+    trainer.config = TrainerConfig(device="cpu")
+    trainer.state = TrainerState(step=5)
+    logger = MetricsLogger()
+    trainer.logger = logger  # type: ignore[assignment]
+    losses = iter([1.0, 3.0])
+    trainer.training_step = lambda batch: (  # type: ignore[method-assign]
+        {"loss": torch.tensor(next(losses))},
+        {},
+        {},
+    )
+    trainer.valid_unseen_dloader = [object(), object()]  # type: ignore[assignment]
+    trainer.log_valid_unseen()
+    assert logger.logged == [("valid_unseen", {"loss": 2.0})]

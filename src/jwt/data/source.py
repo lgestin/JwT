@@ -1,11 +1,15 @@
+import bisect
 import csv
+import itertools
 from pathlib import Path
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 import pyarrow as pa
 import torch
 
 from jwt.data.audio import Audio, AudioFile
+from jwt.data.audio.codecs import RawAudioPatcher
+from jwt.data.prepared import read_meta, shard_paths
 from jwt.data.text.text import Text
 from jwt.data.text.tokenizer import Tokenizer
 
@@ -45,60 +49,90 @@ class LJTTSSource(TTSSource):
         return audio, Text(text=text, tokenizer=self.tokenizer)
 
 
+class Word(NamedTuple):
+    """One aligned word: times in seconds, offsets into the text and phonemes."""
+
+    start: float
+    end: float
+    text_start: int
+    phoneme_start: int
+
+
 class ArrowTTSSource(TTSSource):
-    """Reads a pre-processed PyArrow IPC file produced by
-    ``scripts/data/create_arrow_ljspeech.py``.
+    """Reads a prepared dataset directory (see ``jwt.data.prepared``).
 
-    Each row carries the waveform (int16 PCM, already resampled and
-    loudness-normalized), text, phonemes, tokenizer ids, and the codec-encoded
-    acoustic features — so ``__getitem__`` is pure decode + tensor construction.
-
-    ``codec_name`` selects which ``acoustic_{codec_name}`` column to read, so
-    one arrow file per codec keeps schemas explicit on disk.
+    Shards are memory-mapped; light columns stay in memory for splits and audio
+    prompt selection, audio is decoded per item and reshaped into `patch_size`
+    raw-audio patches. Items are located by bisect over record batches, so
+    access stays O(log n) across many shards.
     """
 
-    def __init__(self, arrow_path: str, tokenizer: Tokenizer, codec_name: str):
-        source = pa.memory_map(arrow_path, "r")
-        reader = pa.ipc.open_file(source)
-        self._table = reader.read_all()
+    def __init__(self, folder: str, tokenizer: Tokenizer | None, patch_size: int):
+        self.meta = read_meta(Path(folder))
         self.tokenizer = tokenizer
-        self._codec_name = codec_name.lower()
-        self._acoustic_field = f"acoustic_{self._codec_name}"
+        self.patcher = RawAudioPatcher(patch_size)
+        self.batches: list[pa.RecordBatch] = []
+        for path in shard_paths(Path(folder)):
+            reader = pa.ipc.open_file(pa.memory_map(str(path), "r"))
+            self.batches += [
+                reader.get_batch(i) for i in range(reader.num_record_batches)
+            ]
+        if not self.batches:
+            raise ValueError(f"no arrow shards in {folder}")
+        self.batch_starts = list(
+            itertools.accumulate((b.num_rows for b in self.batches), initial=0)
+        )
+        light = pa.Table.from_batches(self.batches)
+        self.utt_ids: list[str] = light["utt_id"].to_pylist()
+        self.speakers: list[str] = light["speaker"].to_pylist()
+        self.sessions: list[str | None] = light["session"].to_pylist()
+        self.session_idxs: list[int | None] = light["session_idx"].to_pylist()
+        self.durations: list[float] = light["duration"].to_pylist()
 
     def __len__(self) -> int:
-        return self._table.num_rows
+        return self.batch_starts[-1]
 
     @property
     def sample_rate(self) -> int:
-        """Sample rate of the stored audio. create_arrow_ljspeech.py resamples
-        every clip to one rate, so the first row's value holds for the file."""
-        if self._table.num_rows == 0:
-            raise ValueError("arrow file is empty; cannot read its sample rate")
-        return self._table.column("sample_rate")[0].as_py()
+        return self.meta.sample_rate
+
+    @property
+    def hop_length(self) -> int:
+        return self.patcher.hop_length
+
+    def cell(self, idx: int, name: str):
+        b = bisect.bisect_right(self.batch_starts, idx) - 1
+        return self.batches[b].column(name)[idx - self.batch_starts[b]].as_py()
+
+    def words(self, idx: int) -> list[Word]:
+        """The aligned words of item `idx`, rebuilt from the per-word columns."""
+        columns = [self.cell(idx, f"word_{field}") for field in Word._fields]
+        return [Word(*values) for values in zip(*columns, strict=True)]
 
     def __getitem__(self, idx: int) -> tuple[Audio, Text]:
-        row = {name: self._table.column(name)[idx] for name in self._table.column_names}
-
-        sample_rate = row["sample_rate"].as_py()
-        loudness = row["loudness"].as_py()
-        acoustic_dim = row["acoustic_dim"].as_py()
-        n_frames = row["n_frames"].as_py()
-
-        waveform_i16 = torch.frombuffer(
-            bytearray(row["waveform_i16"].as_py()), dtype=torch.int16
+        waveform = torch.frombuffer(
+            bytearray(self.cell(idx, "waveform_i16")), dtype=torch.int16
         )
-        waveform = waveform_i16.view(1, -1).float() / 32768.0
-
-        acoustic = torch.frombuffer(
-            bytearray(row[self._acoustic_field].as_py()), dtype=torch.float
-        )
-        acoustic = acoustic.view(1, acoustic_dim, n_frames).float()
-
+        waveform = waveform.view(1, -1).float() / 32768.0
         audio = Audio(
             waveform=waveform,  # ty: ignore[invalid-argument-type]
-            sample_rate=sample_rate,
-            loudness=loudness,
-            acoustic=acoustic,  # ty: ignore[invalid-argument-type]
+            sample_rate=self.cell(idx, "sample_rate"),
+            loudness=self.cell(idx, "loudness"),
+            acoustic=self.patcher.encode(waveform),  # ty: ignore[invalid-argument-type]
         )
-        text = Text(text=row["text"].as_py(), tokenizer=self.tokenizer)
+        text = Text(
+            text=self.cell(idx, "text"),
+            tokenizer=self.tokenizer,
+            stored_phonemes=self.cell(idx, "phonemes"),
+        )
         return audio, text
+
+
+def check_same_sample_rate(sources: list[ArrowTTSSource], paths: list[str]) -> None:
+    """Raise unless every source has the first source's sample rate."""
+    sample_rate = sources[0].sample_rate
+    for source, path in zip(sources, paths, strict=True):
+        if source.sample_rate != sample_rate:
+            raise ValueError(
+                f"{path}: sample_rate={source.sample_rate}, expected {sample_rate}"
+            )

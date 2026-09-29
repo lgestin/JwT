@@ -183,6 +183,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         state: TrainerState | None,
         checkpoint_manager: CheckpointManager | None,
         ema: EMA | None = None,
+        valid_unseen_dloader: DataLoader | None = None,
     ):
         super().__init__(config=config, state=state)
         self.codec = codec
@@ -196,6 +197,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self.train_dloader = train_dloader
         self.valid_dloader = valid_dloader
         self.smp_dloader = smp_dloader
+        self.valid_unseen_dloader = valid_unseen_dloader
         self.checkpoint_manager = checkpoint_manager
         self.ema = ema
         self.mel_spectrogram = MelSpectrogram(
@@ -591,24 +593,37 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self.optimizer.zero_grad()
         return metrics
 
-    @torch.inference_mode()
-    def validation(self):
-        self.model.eval()
-        if hasattr(self.optimizer, "eval"):
-            self.optimizer.eval()  # ty: ignore[call-non-callable]
-
+    def valid_pass(self, dloader) -> tuple[dict[str, float], dict, dict, int]:
+        """Sum training_step metrics and diagnostics over a validation loader."""
         sums: dict[str, float] = {}
         diag_accum: dict[str, torch.Tensor] = {}
         bin_accum: dict[str, torch.Tensor] = {}
         count = 0
-        for vbatch in self.valid_dloader:
+        for vbatch in dloader:
             metrics, scalars, bins = self.training_step(vbatch)
             for k, v in metrics.items():
                 sums[k] = sums.get(k, 0.0) + float(v)
             self._accumulate_diagnostics(diag_accum, scalars)
             self._accumulate_diagnostics(bin_accum, bins)
             count += 1
+        return sums, diag_accum, bin_accum, count
 
+    def log_valid_unseen(self) -> None:
+        """Mean validation metrics on held-out speakers, logged as valid_unseen."""
+        if self.valid_unseen_dloader is None:
+            return
+        sums, _, _, count = self.valid_pass(self.valid_unseen_dloader)
+        if count:
+            metrics = {k: v / count for k, v in sums.items()}
+            self.logger.log_metrics(metrics, self.step, prefix="valid_unseen")
+
+    @torch.inference_mode()
+    def validation(self):
+        self.model.eval()
+        if hasattr(self.optimizer, "eval"):
+            self.optimizer.eval()  # ty: ignore[call-non-callable]
+
+        sums, diag_accum, bin_accum, count = self.valid_pass(self.valid_dloader)
         if count == 0:
             return
 
@@ -620,6 +635,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             self._reduce_diagnostics(diag_accum, count), self.step, "data/valid"
         )
         self._emit_loss_curves(bin_accum, self.step, "valid")
+        self.log_valid_unseen()
         self._log_audio_metrics(self._attention_images())
 
         loss_val = val_metrics.get("loss", float("inf"))

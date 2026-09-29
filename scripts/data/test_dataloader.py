@@ -1,4 +1,6 @@
-"""Smoke test: load a few batches of LJSpeech via AudioDataset + DataLoader."""
+"""Smoke test: load a few batches of a prepared dataset (argv[1], raw512)."""
+
+import sys
 
 from torch.utils.data import DataLoader
 
@@ -11,10 +13,10 @@ from jwt.data.text import Tokenizer, Vocabulary
 def main() -> None:
     vocab = Vocabulary.from_json("data/vocabulary.json")
     tokenizer = Tokenizer(vocab)
-    source = ArrowTTSSource("data/ljspeech_24khz.arrow", tokenizer=tokenizer)
+    source = ArrowTTSSource(sys.argv[1], tokenizer, patch_size=512)
     print(f"Source size: {len(source)}")
 
-    dataset = AudioDataset(tts_source=source, sample_rate=24000)
+    dataset = AudioDataset(tts_source=source, sample_rate=source.sample_rate)
     loader = DataLoader(
         dataset,
         batch_size=2,
@@ -26,8 +28,8 @@ def main() -> None:
     for i, batch in enumerate(loader):
         print(
             f"batch {i}: idxs={batch.idxs} "
-            f"mels={tuple(batch.mels.shape)} dtype={batch.mels.dtype} "
-            f"tokens={tuple(batch.tokens.shape)} dtype={batch.tokens.dtype}"
+            f"acoustic={tuple(batch.acoustic.shape)} "
+            f"tokens={tuple(batch.tokens.shape)}"
         )
         if i >= 2:
             break

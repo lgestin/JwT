@@ -1,10 +1,12 @@
+import random
 from dataclasses import dataclass, fields
 
 import torch
 from torch.utils.data import Dataset
 
 from jwt.data.audio import Audio, AudioFile
-from jwt.data.source import TTSSource
+from jwt.data.audio_prompt import AudioPromptConfig, AudioPromptSampler
+from jwt.data.source import ArrowTTSSource, TTSSource
 from jwt.data.text import Text
 
 
@@ -13,6 +15,7 @@ class Sample:
     idx: int
     audio: Audio
     text: Text
+    audio_prompt: torch.Tensor | None = None
 
 
 @dataclass
@@ -23,6 +26,8 @@ class Batch:
     acoustic_mask: torch.BoolTensor
     tokens: torch.LongTensor
     tokens_mask: torch.BoolTensor
+    audio_prompt: torch.Tensor | None = None
+    audio_prompt_mask: torch.BoolTensor | None = None
 
     def to(self, device: str | torch.device, non_blocking: bool = False):
         for field in fields(self):
@@ -53,15 +58,43 @@ class FlowMatchingBatch:
 
 
 class AudioDataset(Dataset):
-    def __init__(self, tts_source: TTSSource, sample_rate: int):
+    """A split of a source; audio prompts are drawn from the same split."""
+
+    def __init__(
+        self,
+        tts_source: TTSSource,
+        sample_rate: int,
+        indices: list[int] | None = None,
+        audio_prompt: AudioPromptConfig | None = None,
+        seed: int | None = None,
+    ):
+        """indices: source rows in this split (default: all).
+        seed: fixed per-item RNG (validation); None draws fresh randomness."""
         self.tts_source = tts_source
         self.sample_rate = sample_rate
+        self.indices = list(range(len(tts_source))) if indices is None else indices
+        self.seed = seed
+        self.audio_prompts = None
+        if audio_prompt is not None:
+            if not isinstance(tts_source, ArrowTTSSource):
+                raise TypeError(
+                    f"audio prompts need an ArrowTTSSource (speaker and word "
+                    f"columns), got {type(tts_source).__name__}"
+                )
+            self.audio_prompts = AudioPromptSampler(
+                tts_source, audio_prompt, self.indices
+            )
 
     def __len__(self):
-        return len(self.tts_source)
+        return len(self.indices)
 
     def __getitem__(self, index: int) -> Sample:
-        audio, text = self.tts_source[index]
+        row = self.indices[index]
+        audio, text = self.tts_source[row]
         if isinstance(audio, AudioFile):
             audio = audio.resample(self.sample_rate).normalize(-24.0).audio
-        return Sample(idx=index, audio=audio, text=text)
+        if self.audio_prompts is None:
+            return Sample(idx=row, audio=audio, text=text)
+        rng = random.Random(None if self.seed is None else self.seed + row)
+        audio, text, prompt = self.audio_prompts.apply(row, audio, text, rng)
+        return Sample(idx=row, audio=audio, text=text, audio_prompt=prompt)

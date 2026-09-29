@@ -16,6 +16,7 @@ from simple_parsing import ArgumentParser
 from simple_parsing.helpers.serialization import load, save
 
 from jwt.data.audio.codecs import Codecs
+from jwt.data.audio_prompt import AudioPromptConfig
 from jwt.model.neural_speaker import RollingFlowConfig
 from jwt.training.ema import EMAConfig
 from jwt.training.optimizer import OptimizerConfig
@@ -37,12 +38,26 @@ class WandbConfig:
 
 
 @dataclass
+class DatasetConfig:
+    path: str  # prepared dataset directory (scripts/data/create_arrow.py)
+    weight: float = 1.0  # relative sampling weight; weight ∝ hours = concatenation
+    n_valid: int = 64  # held-out utterances of training speakers
+    n_valid_speakers: int = 0  # whole speakers held out (valid_unseen)
+
+
+@dataclass
 class Args:
-    # Data
+    # Data — `datasets` is file-only: simple_parsing can't put a list of
+    # dataclasses on the CLI, so parse_args copies it from the config file.
     vocab_path: str = "data/vocabulary.json"
-    arrow_path: str = "data/ljspeech_24khz_bigvgan.arrow"
-    n_valid: int = 64
-    n_train: int | None = None
+    datasets: list[DatasetConfig] = field(
+        default_factory=lambda: [
+            DatasetConfig(path="data/prepared/ljspeech_22.050khz")
+        ],
+        metadata={"cmd": False},
+    )
+    audio_prompt: AudioPromptConfig | None = None
+    n_train: int | None = None  # caps each dataset's training split
     # Run
     output_dir: str = "outputs/run0"
     resume: bool = False  # load the latest checkpoint from output_dir/checkpoints
@@ -52,9 +67,9 @@ class Args:
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     # EMA (exponential moving average of weights)
     ema: EMAConfig = field(default_factory=EMAConfig)
-    # Codec — selects the arrow acoustic column and the codec object; also
-    # copied into `model.codec`.
-    codec: Codecs = Codecs.BIGVGAN
+    # Codec — prepared data is raw waveform, so this must be a RAWAUDIO_* codec
+    # (its patch size reshapes the waveform); also copied into `model.codec`.
+    codec: Codecs = Codecs.RAWAUDIO_512
     # Logging — configs saved before the LoggerBackend switch need their
     # `use_tensorboard: true` line replaced with `logger: TENSORBOARD`.
     logger: LoggerBackend = LoggerBackend.WANDB
@@ -105,8 +120,10 @@ def parse_args(argv: list[str] | None = None) -> Args:
         parser.parse_args(argv)  # exits here if -h/--help was passed
         parser.error("--config_path is required")
 
-    parser.add_arguments(Args, dest="args", default=load(Args, known.config_path))
+    defaults = load(Args, known.config_path)
+    parser.add_arguments(Args, dest="args", default=defaults)
     args = parser.parse_args(argv).args
+    args.datasets = defaults.datasets  # file-only field, see Args.datasets
     if args.wandb.group is None:
         args.wandb.group = Path(known.config_path).stem
     return args

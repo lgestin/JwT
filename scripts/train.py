@@ -5,12 +5,13 @@ from pathlib import Path
 
 import torch
 from torch.optim import AdamW
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import ConcatDataset, DataLoader, Subset, WeightedRandomSampler
 
-from jwt.data.audio.codecs import check_sample_rate
+from jwt.data.audio.codecs import RawAudioPatcher
 from jwt.data.collate import collate
 from jwt.data.dataset import AudioDataset
-from jwt.data.source import ArrowTTSSource
+from jwt.data.source import ArrowTTSSource, check_same_sample_rate
+from jwt.data.splits import split_indices
 from jwt.data.text import Tokenizer, Vocabulary
 from jwt.model.neural_speaker import RollingFlowSpeaker
 from jwt.training.checkpoint_manager import CheckpointManager
@@ -37,33 +38,46 @@ def main() -> None:
 
     vocab = Vocabulary.from_json(args.vocab_path)
     tokenizer = Tokenizer(vocab)
-    codec_name = str(args.codec).lower()
-    source = ArrowTTSSource(args.arrow_path, tokenizer=tokenizer, codec_name=codec_name)
-    print(f"Source size: {len(source)}")
-
+    if not args.datasets:
+        raise ValueError("config needs at least one entry under `datasets:`")
     codec = args.codec.codec.to(device)
-    # Sample rate comes from the datafile; the codec only constrains it.
-    sample_rate = source.sample_rate
-    check_sample_rate(codec, sample_rate)
+    if not isinstance(codec, RawAudioPatcher):
+        raise ValueError(f"prepared data is raw audio; got codec {args.codec}")
+    paths = [d.path for d in args.datasets]
+    sources = [ArrowTTSSource(p, tokenizer, codec.patch_size) for p in paths]
+    check_same_sample_rate(sources, paths)
+    sample_rate = sources[0].sample_rate
     print(f"Sample rate: {sample_rate} Hz")
 
-    full = AudioDataset(tts_source=source, sample_rate=sample_rate)
-    N = len(full)
+    train_parts, valid_parts, unseen_parts, weights = [], [], [], []
+    for d, source in zip(args.datasets, sources, strict=True):
+        train_idx, valid_idx, unseen_idx = split_indices(
+            source.speakers, source.utt_ids, d.n_valid, d.n_valid_speakers
+        )
+        if args.n_train is not None:
+            train_idx = train_idx[: args.n_train]
+        prompt = args.audio_prompt
+        train_parts.append(AudioDataset(source, sample_rate, train_idx, prompt))
+        valid_parts.append(AudioDataset(source, sample_rate, valid_idx, prompt, 0))
+        unseen_parts.append(AudioDataset(source, sample_rate, unseen_idx, prompt, 0))
+        weights += [d.weight / len(train_idx)] * len(train_idx)
+        print(
+            f"{d.path}: train={len(train_idx)} valid={len(valid_idx)} "
+            f"valid_unseen={len(unseen_idx)}"
+        )
+    train_ds = ConcatDataset(train_parts)
+    valid_ds = ConcatDataset(valid_parts)
+    unseen_ds = ConcatDataset(unseen_parts)
     n_smp = args.trainer.n_smp
-    if args.n_valid + n_smp >= N:
-        raise ValueError("dataset too small for the requested splits")
-    smp_ds = Subset(full, list(range(n_smp)))
-    valid_ds = Subset(full, list(range(N - args.n_valid, N)))
-    train_idx = list(range(n_smp, N - args.n_valid))
-    if args.n_train is not None:
-        train_idx = train_idx[: args.n_train]
-    train_ds = Subset(full, train_idx)
+    if len(valid_ds) < n_smp:
+        raise ValueError(f"need n_smp={n_smp} valid items, got {len(valid_ds)}")
+    smp_ds = Subset(valid_ds, list(range(n_smp)))
 
     pin = device.type == "cuda"
     train_dl = DataLoader(
         train_ds,
         batch_size=args.batch_size,
-        shuffle=True,
+        sampler=WeightedRandomSampler(weights, len(train_ds), replacement=True),
         num_workers=args.num_workers,
         collate_fn=collate,
         pin_memory=pin,
@@ -77,6 +91,16 @@ def main() -> None:
         collate_fn=collate,
         pin_memory=pin,
     )
+    valid_unseen_dl = None
+    if len(unseen_ds):
+        valid_unseen_dl = DataLoader(
+            unseen_ds,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            collate_fn=collate,
+            pin_memory=pin,
+        )
     smp_dl = DataLoader(
         smp_ds,
         batch_size=n_smp,
@@ -165,6 +189,7 @@ def main() -> None:
         smp_dloader=smp_dl,
         state=state,
         checkpoint_manager=checkpoint_manager,
+        valid_unseen_dloader=valid_unseen_dl,
         ema=ema,
     )
 

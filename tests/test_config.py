@@ -4,10 +4,12 @@ import pytest
 from simple_parsing.helpers.serialization import load
 
 from jwt.data.audio.codecs import Codecs
+from jwt.data.audio_prompt import AudioPromptConfig
 from jwt.model.flow import FlowParametrizations
 from jwt.model.neural_speaker import RollingFlowConfig
 from jwt.training.config import (
     Args,
+    DatasetConfig,
     LoggerBackend,
     check_model_config_consistency,
     dump_config,
@@ -20,7 +22,7 @@ def test_args_defaults_survive_the_move() -> None:
     """Args keeps its defaults, including nested configs, after moving modules."""
     args = Args()
     assert args.batch_size == 64
-    assert args.codec == Codecs.BIGVGAN
+    assert args.codec == Codecs.RAWAUDIO_512
     assert args.model.parametrization == FlowParametrizations.JWT
     assert args.trainer.max_steps == 200_001
     assert args.optimizer.lr == 1e-3
@@ -149,3 +151,35 @@ def test_logger_backend_round_trips(tmp_path: Path) -> None:
     dump_config(args, tmp_path / "config.yaml")
     loaded = load(Args, tmp_path / "config.yaml")
     assert loaded.logger is LoggerBackend.TENSORBOARD
+
+
+def test_datasets_load_from_file_and_survive_cli_overrides(tmp_path: Path) -> None:
+    """`datasets` is file-only; a CLI override of another field must keep it."""
+    cfg = tmp_path / "run.yaml"
+    cfg.write_text(
+        "datasets:\n"
+        "  - path: data/prepared/a\n    weight: 0.9\n    n_valid_speakers: 3\n"
+        "  - path: data/prepared/b\n"
+    )
+    parsed = parse_args(["--config_path", str(cfg), "--batch_size", "7"])
+    assert parsed.batch_size == 7
+    assert parsed.datasets == [
+        DatasetConfig(path="data/prepared/a", weight=0.9, n_valid_speakers=3),
+        DatasetConfig(path="data/prepared/b"),
+    ]
+
+
+def test_audio_prompt_is_optional(tmp_path: Path) -> None:
+    """audio_prompt defaults to None and loads and overrides like other configs."""
+    cfg = tmp_path / "run.yaml"
+    cfg.write_text("audio_prompt:\n  p_drop: 0.3\n")
+    parsed = parse_args(["--config_path", str(cfg), "--p_other", "0.1"])
+    assert parsed.audio_prompt == AudioPromptConfig(p_drop=0.3, p_other=0.1)
+    assert Args().audio_prompt is None
+
+
+def test_datasets_round_trip(tmp_path: Path) -> None:
+    """A datasets list survives dump and load."""
+    args = Args(datasets=[DatasetConfig(path="x", weight=2.0)])
+    dump_config(args, tmp_path / "c.yaml")
+    assert load(Args, tmp_path / "c.yaml").datasets == args.datasets
