@@ -232,11 +232,8 @@ def test_adaln_low_rank_trains_both_factors() -> None:
 
 def test_adaln_rank_must_be_positive() -> None:
     for bad in (0, -1):
-        try:
+        with pytest.raises(AssertionError, match="adaLN rank must be positive"):
             AdaLN(dim=32, rank=bad)
-        except AssertionError:
-            continue
-        raise AssertionError(f"AdaLN accepted rank={bad}")
 
 
 def test_transformer_adaln_rank_reduces_parameters() -> None:

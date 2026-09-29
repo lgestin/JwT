@@ -152,7 +152,7 @@ def main() -> None:
         for step in range(args.num_steps):
             try:
                 batch = next(train_iter)
-            except StopIteration:
+            except StopIteration:  # loader exhausted: restart it for the next epoch
                 train_iter = iter(train_dl)
                 batch = next(train_iter)
 
@@ -213,7 +213,7 @@ def main() -> None:
                     f"min {best_smoothed:.4f})"
                 )
                 break
-    except KeyboardInterrupt:
+    except KeyboardInterrupt:  # Ctrl-C ends the sweep but keeps the data so far
         print("interrupted; plotting collected data")
     finally:
         tb.close()

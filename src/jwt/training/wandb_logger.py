@@ -6,7 +6,6 @@ out-of-order logging — reference audio at step 0, resumed runs — just works
 and every panel plots against the trainer step.
 """
 
-import contextlib
 import itertools
 import math
 from collections.abc import Mapping
@@ -124,12 +123,10 @@ class WandbLogger:
         if "loss" not in tag or math.isfinite(value) or tag in self._alerted:
             return
         self._alerted.add(tag)
-        # Alerts are unsupported offline — never kill a run over one.
-        with contextlib.suppress(Exception):
-            self.run.alert(
-                title=f"{tag} diverged",
-                text=f"{tag}={value} at step {step} ({self.run.name})",
-            )
+        self.run.alert(
+            title=f"{tag} diverged",
+            text=f"{tag}={value} at step {step} ({self.run.name})",
+        )
 
     def log_scalar(self, tag: str, value: float, step: int) -> None:
         value = float(value)
