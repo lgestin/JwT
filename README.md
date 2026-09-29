@@ -151,7 +151,10 @@ Loss values establish that training is stable but say nothing about perceptual q
 
 ```bash
 uv sync --all-extras
-# data: LJSpeech preprocessed to a pyarrow file (see scripts/data/)
+# data: prepare LJSpeech into data/prepared/ (HiFiTTS-2: --dataset hifitts2, see scripts/data/create_arrow.py)
+uv run python scripts/data/create_arrow.py --dataset ljspeech --source_path data/LJSpeech-1.1 \
+  --output_dir data/prepared/ljspeech_24khz --sample_rate 24000
+uv run python scripts/data/create_vocabulary.py --dataset_paths data/prepared/ljspeech_24khz --output data/vocabulary.json
 uv run python scripts/train.py --config_path configs/small.yaml
 # resume from a saved run
 uv run python scripts/train.py --config_path outputs/<run>/config.yaml

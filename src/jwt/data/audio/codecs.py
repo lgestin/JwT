@@ -213,7 +213,7 @@ class RawAudioPatcher(nn.Module):
         self.eos_threshold: float = 1e-4
 
         # In __init__: waveform is RMS-normalized to -24 dBFS upstream
-        # (create_arrow_ljspeech.py target_loudness), so per-sample std ~ 10**(-24/20).
+        # (create_arrow.py target_loudness), so per-sample std ~ 10**(-24/20).
         wav_std = 10 ** (-24.0 / 20)  # ~0.0631
         self.register_buffer("wav_std", torch.tensor(wav_std, dtype=torch.float32))
 

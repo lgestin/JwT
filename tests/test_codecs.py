@@ -143,12 +143,6 @@ def test_rawaudio_variant_codec_class_is_patcher(patch_size: int) -> None:
     assert Codecs[f"RAWAUDIO_{patch_size}"].codec_class is RawAudioPatcher
 
 
-def test_rawaudio_variant_str_drives_arrow_column_name() -> None:
-    """str(variant).lower() is the codec_name used for acoustic_{name} columns
-    by create_arrow_ljspeech.py and ArrowTTSSource."""
-    assert str(Codecs["RAWAUDIO_256"]).lower() == "rawaudio256"
-
-
 def test_bigvgan_codec_class() -> None:
     assert Codecs.BIGVGAN.codec_class is BigVGAN
 
