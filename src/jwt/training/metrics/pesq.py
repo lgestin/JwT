@@ -1,7 +1,7 @@
 import torch
-import torch.nn as nn
 from pesq import PesqError
 from pesq import pesq as pesq_score
+from torch import nn
 
 from jwt.training.metrics.metric import ComparativeMetric
 from jwt.training.metrics.utils import _to_16khz_mono

@@ -2,8 +2,8 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 from jwt.data.audio.codecs import Codec, Codecs
 from jwt.model.attention import AttentionImplementation, SDPAAttention

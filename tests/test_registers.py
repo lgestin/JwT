@@ -1,6 +1,6 @@
 import pytest
 import torch
-import torch.nn as nn
+from torch import nn
 
 from jwt.model.attention import (
     FlashVarlenAttention,

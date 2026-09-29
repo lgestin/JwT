@@ -1,5 +1,5 @@
 import torch
-import torch.nn as nn
+from torch import nn
 
 from jwt.training.metrics.metric import AbsoluteMetric
 from jwt.training.metrics.utils import _to_16khz_mono

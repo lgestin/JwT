@@ -2,9 +2,9 @@ from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from torch import nn
 
 from jwt.data.audio.stft import MelSpectrogram
 

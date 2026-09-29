@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from jwt.training.ema import EMA
 

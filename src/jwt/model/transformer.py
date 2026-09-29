@@ -2,10 +2,10 @@ import math
 from dataclasses import dataclass
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from simple_parsing import Serializable
+from torch import nn
 
 from jwt.model.attention import (
     AttentionImplementation,

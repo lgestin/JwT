@@ -1,5 +1,5 @@
 import torch
-import torch.nn as nn
+from torch import nn
 from torchmetrics.functional.audio.nisqa import (
     non_intrusive_speech_quality_assessment,
 )

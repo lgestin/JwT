@@ -1,5 +1,5 @@
 import torch
-import torch.nn as nn
+from torch import nn
 from torchmetrics.functional.audio import (
     short_time_objective_intelligibility,
 )
