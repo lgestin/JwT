@@ -11,15 +11,10 @@ def load_waveform(
     end: int | None = None,
 ) -> tuple[np.ndarray, int]:
     num_frames = -1 if end is None else end - start
-    with open(path, "rb") as audio_file:
-        waveform, sr = sf.read(
-            audio_file,
-            start=start,
-            frames=num_frames,
-            dtype="int16",
-            always_2d=True,
-        )
-        waveform = np.transpose(waveform)
+    waveform, sr = sf.read(
+        path, start=start, frames=num_frames, dtype="int16", always_2d=True
+    )
+    waveform = np.transpose(waveform)
     if sample_rate:
         waveform = resample(waveform, orig_sr=sr, targ_sr=sample_rate)
     return waveform, int(sr)
