@@ -58,6 +58,11 @@ def select_hifitts2_chapters(chapters_path: Path, hours: float | None) -> list[d
         return [json.loads(line) for i, line in enumerate(f) if i in keep]
 
 
+def chapter_mp3(cache_dir: Path, chapter: dict) -> Path:
+    """Where a chapter's MP3 is cached: its manifest path with an .mp3 suffix."""
+    return Path(cache_dir) / Path(chapter["chapter_filepath"]).with_suffix(".mp3")
+
+
 def download(url: str, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     part = path.with_suffix(".part")
@@ -88,7 +93,7 @@ def read_hifitts2(
             if row["audio_filepath"] in wanted:
                 rows[row["audio_filepath"]] = row
     for chapter in chapters:
-        mp3 = Path(cache_dir) / Path(chapter["chapter_filepath"]).with_suffix(".mp3")
+        mp3 = chapter_mp3(cache_dir, chapter)
         if not mp3.exists():
             try:
                 download(chapter["url"], mp3)

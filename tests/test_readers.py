@@ -7,7 +7,12 @@ from typing import Self
 import pytest
 
 from jwt.data import readers
-from jwt.data.readers import read_hifitts2, read_ljspeech, select_hifitts2_chapters
+from jwt.data.readers import (
+    chapter_mp3,
+    read_hifitts2,
+    read_ljspeech,
+    select_hifitts2_chapters,
+)
 
 
 def test_read_ljspeech_namespaces_speaker_and_sessions(tmp_path: Path) -> None:
@@ -129,3 +134,9 @@ def test_download_failures_skip_the_chapter(
         utts = list(read_hifitts2(manifest, chapters, cache, 24000))
     assert [u.utt_id for u in utts] == ["b_0"]
     assert timeouts and all(t is not None for t in timeouts)
+
+
+def test_chapter_mp3_mirrors_the_manifest_layout(tmp_path: Path) -> None:
+    """The cached MP3 keeps the chapter's path, with an .mp3 suffix."""
+    chapter = {"chapter_filepath": "92/1234/92_1234_book-ch01.flac"}
+    assert chapter_mp3(tmp_path, chapter) == tmp_path / "92/1234/92_1234_book-ch01.mp3"
