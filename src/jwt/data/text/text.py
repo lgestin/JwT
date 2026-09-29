@@ -11,6 +11,7 @@ from jwt.data.text.tokenizer import Tokenizer
 class Text:
     text: str
     tokenizer: Tokenizer | None = None
+    stored_phonemes: str | None = None  # set by prepared data; skips G2P
 
     @cached_property
     def phonemes_tokens(self) -> tuple[str, list[MToken]]:
@@ -18,6 +19,8 @@ class Text:
 
     @property
     def phonemes(self) -> str:
+        if self.stored_phonemes is not None:
+            return self.stored_phonemes
         return self.phonemes_tokens[0]
 
     @property

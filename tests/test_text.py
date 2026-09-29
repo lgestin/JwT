@@ -16,7 +16,7 @@ def phonemizer() -> Phonemizer:
 def test_text_is_dataclass_with_expected_fields() -> None:
     assert is_dataclass(Text)
     names = {f.name for f in fields(Text)}
-    assert names == {"text", "tokenizer"}
+    assert names == {"text", "tokenizer", "stored_phonemes"}
 
 
 def test_get_phonemizer_is_cached() -> None:
@@ -180,3 +180,16 @@ def test_tokenizer_encode_unknown_symbol_raises_key_error() -> None:
     tokenizer = Tokenizer(Vocabulary({"a": 0}))
     with pytest.raises(KeyError):
         tokenizer.encode("z")
+
+
+def test_stored_phonemes_skip_g2p(monkeypatch) -> None:
+    """Prepared data stores phonemes; loading must not run G2P in workers."""
+
+    def boom():
+        raise AssertionError("G2P must not run")
+
+    monkeypatch.setattr(text_mod, "get_phonemizer", boom)
+    vocab = Vocabulary({"a": 0, "b": 1, " ": 2})
+    t = Text(text="ignored", tokenizer=Tokenizer(vocab), stored_phonemes="ab a")
+    assert t.phonemes == "ab a"
+    assert t.tokens == [0, 1, 2, 0]
