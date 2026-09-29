@@ -1,3 +1,5 @@
+import json
+import os
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +28,23 @@ class CheckpointManager:
         self.exp_path.mkdir(parents=True, exist_ok=True)
         self.best_checkpoint_path = self.exp_path / "checkpoint.best.pt"
         self.latest_checkpoint_path = self.exp_path / "checkpoint.latest.pt"
+        # The manager owns the `best` symlink, so it also persists the loss behind
+        # it: a resumed run reads this sidecar instead of loading a 1 GB checkpoint.
+        self.best_meta_path = self.exp_path / "checkpoint.best.json"
+        self.best_val_loss = self.read_best_val_loss()
+
+    def read_best_val_loss(self) -> float:
+        """Loss of the `best` target, or inf if unknown (pre-fix run, stale sidecar)."""
+        if not (
+            self.best_checkpoint_path.is_symlink() and self.best_meta_path.exists()
+        ):
+            return float("inf")
+        meta = json.loads(self.best_meta_path.read_text())
+        # The sidecar is written after the symlink: a crash in between leaves it
+        # naming the previous target, and the next save with a real loss wins.
+        if os.readlink(self.best_checkpoint_path) != meta["checkpoint"]:
+            return float("inf")
+        return meta["val_loss"]
 
     @staticmethod
     def point_symlink(link_path: Path, target_name: str) -> None:
@@ -41,6 +60,7 @@ class CheckpointManager:
         optimizer: torch.optim.Optimizer,
         scaler: torch.amp.GradScaler | None,
         best_loss: float,
+        val_loss: float = float("inf"),
         additional_state: dict[str, Any] | None = None,
     ) -> Path:
         """Save a checkpoint.
@@ -50,7 +70,9 @@ class CheckpointManager:
             model: Model to save
             optimizer: Optimizer state to save
             scaler: GradScaler state to save (if using AMP)
-            best_loss: Best validation loss so far
+            best_loss: Best validation loss so far (trainer state for resume)
+            val_loss: This checkpoint's own validation loss; `best` moves here
+                only if it beats the current best target, never while unknown
             additional_state: Additional state dict to save
 
         Returns:
@@ -60,6 +82,7 @@ class CheckpointManager:
         checkpoint_data: dict[str, Any] = {
             "step": step,
             "best_loss": best_loss,
+            "val_loss": val_loss,
             "opt": optimizer.state_dict(),
         }
 
@@ -93,9 +116,16 @@ class CheckpointManager:
         # Point the "latest" symlink at the checkpoint just written.
         self.point_symlink(self.latest_checkpoint_path, checkpoint_path.name)
 
-        # Point the "best" symlink here if this is the best loss so far.
-        if self.save_best and best_loss < float("inf"):
+        # Compare this checkpoint's own loss, not the trainer's best-so-far: that
+        # is finite after the first validation, so `best` followed every save and
+        # cleanup deleted the real best. inf (no validation yet) never wins.
+        if self.save_best and val_loss < self.best_val_loss:
             self.point_symlink(self.best_checkpoint_path, checkpoint_path.name)
+            meta = {"checkpoint": checkpoint_path.name, "val_loss": val_loss}
+            tmp = self.best_meta_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(meta))
+            tmp.replace(self.best_meta_path)
+            self.best_val_loss = val_loss
 
         return checkpoint_path
 
@@ -236,6 +266,8 @@ class CheckpointManager:
         metadata = {
             "step": checkpoint_data.get("step", 0),
             "best_loss": checkpoint_data.get("best_loss", float("inf")),
+            # Absent in checkpoints saved before per-checkpoint losses.
+            "val_loss": checkpoint_data.get("val_loss", float("inf")),
         }
 
         # Add dims if available

@@ -252,3 +252,37 @@ def test_valid_unseen_logs_mean_loss_under_its_own_prefix() -> None:
     trainer.valid_unseen_dloader = [object(), object()]  # ty: ignore[invalid-assignment]
     trainer.log_valid_unseen()
     assert logger.logged == [("valid_unseen", {"loss": 2.0})]
+
+
+class RecordingCheckpointManager:
+    """Captures `save` kwargs and counts cleanups."""
+
+    def __init__(self) -> None:
+        self.saves: list[dict] = []
+        self.cleanups = 0
+
+    def save(self, **kwargs: object) -> None:
+        self.saves.append(kwargs)
+
+    def cleanup_old_checkpoints(self) -> None:
+        self.cleanups += 1
+
+
+def test_save_checkpoint_tags_the_last_validation_loss() -> None:
+    """Checkpoints carry the latest validation loss, not the best-so-far."""
+    trainer = TTSRollingFlowMatchingTrainer.__new__(TTSRollingFlowMatchingTrainer)
+    trainer.state = TrainerState(step=300, best_loss=0.3, last_val_loss=0.4)
+    trainer.model = torch.nn.Linear(2, 2)  # ty: ignore[invalid-assignment]
+    trainer.optimizer = torch.optim.AdamW(trainer.model.parameters())
+    trainer.scaler = None
+    trainer.ema = None
+    manager = RecordingCheckpointManager()
+    trainer.checkpoint_manager = manager  # ty: ignore[invalid-assignment]
+
+    trainer.save_checkpoint()
+
+    (saved,) = manager.saves
+    assert saved["step"] == 300
+    assert saved["val_loss"] == pytest.approx(0.4)
+    assert saved["best_loss"] == pytest.approx(0.3)
+    assert manager.cleanups == 1
