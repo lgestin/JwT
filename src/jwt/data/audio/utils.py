@@ -9,7 +9,7 @@ def load_waveform(
     sample_rate: int | None = None,
     start: int = 0,
     end: int | None = None,
-):
+) -> tuple[np.ndarray, int]:
     num_frames = -1 if end is None else end - start
     with open(path, "rb") as audio_file:
         waveform, sr = sf.read(
@@ -25,7 +25,7 @@ def load_waveform(
     return waveform, int(sr)
 
 
-def av_resampler_layout_from_waveform(waveform: np.ndarray):
+def av_resampler_layout_from_waveform(waveform: np.ndarray) -> str:
     assert 1 <= waveform.shape[0] <= 2
     if waveform.shape[0] == 1:
         layout = "mono"
@@ -36,7 +36,7 @@ def av_resampler_layout_from_waveform(waveform: np.ndarray):
     return layout
 
 
-def resample(waveform: np.ndarray, orig_sr: int, targ_sr: int):
+def resample(waveform: np.ndarray, orig_sr: int, targ_sr: int) -> np.ndarray:
     assert isinstance(waveform, np.ndarray)
     assert waveform.dtype == np.int16
     assert waveform.ndim == 2

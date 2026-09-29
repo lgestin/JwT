@@ -26,6 +26,7 @@ import torch
 import torchaudio
 from simple_parsing import ArgumentParser
 
+from jwt.data.audio.codecs import Codec
 from jwt.data.text import Phonemizer, Tokenizer, Vocabulary
 from jwt.model.neural_speaker import (
     MaskedTensor,
@@ -153,7 +154,7 @@ def normalize_text(text: str) -> str:
 @torch.inference_mode()
 def synthesize(
     model: RollingFlowSpeaker,
-    codec,
+    codec: Codec,
     phonemizer: Phonemizer,
     tokenizer: Tokenizer,
     text: str,

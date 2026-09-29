@@ -1,5 +1,7 @@
 import json
 from dataclasses import fields, is_dataclass
+from pathlib import Path
+from typing import NoReturn
 
 import pytest
 from misaki.token import MToken
@@ -65,7 +67,7 @@ def test_text_phonemes_tokens_is_cached(monkeypatch: pytest.MonkeyPatch) -> None
     calls = {"n": 0}
 
     class FakePhonemizer:
-        def phonemize(self, text: str):
+        def phonemize(self, text: str) -> tuple[str, list[str]]:
             calls["n"] += 1
             return ("FAKE", [text])
 
@@ -82,7 +84,7 @@ def test_text_instances_have_independent_caches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakePhonemizer:
-        def phonemize(self, text: str):
+        def phonemize(self, text: str) -> tuple[str, list[str]]:
             return (text.upper(), list(text))
 
     monkeypatch.setattr(text_mod, "get_phonemizer", lambda: FakePhonemizer())
@@ -112,7 +114,7 @@ def test_text_tokens_uses_tokenizer_to_encode_phonemes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakePhonemizer:
-        def phonemize(self, text: str):
+        def phonemize(self, text: str) -> tuple[str, list[str]]:
             return (text, [])
 
     monkeypatch.setattr(text_mod, "get_phonemizer", lambda: FakePhonemizer())
@@ -137,14 +139,14 @@ def test_vocabulary_is_dict_subclass() -> None:
     assert len(v) == 2
 
 
-def test_vocabulary_to_json_writes_mapping(tmp_path) -> None:
+def test_vocabulary_to_json_writes_mapping(tmp_path: Path) -> None:
     path = tmp_path / "vocab.json"
     Vocabulary({"a": 1, "b": 2}).to_json(str(path))
     with open(path) as f:
         assert json.load(f) == {"a": 1, "b": 2}
 
 
-def test_vocabulary_from_json_loads_mapping(tmp_path) -> None:
+def test_vocabulary_from_json_loads_mapping(tmp_path: Path) -> None:
     path = tmp_path / "vocab.json"
     path.write_text(json.dumps({"x": 0, "y": 1}))
     v = Vocabulary.from_json(str(path))
@@ -152,7 +154,7 @@ def test_vocabulary_from_json_loads_mapping(tmp_path) -> None:
     assert v == {"x": 0, "y": 1}
 
 
-def test_vocabulary_json_roundtrip_preserves_unicode_phonemes(tmp_path) -> None:
+def test_vocabulary_json_roundtrip_preserves_unicode_phonemes(tmp_path: Path) -> None:
     path = tmp_path / "vocab.json"
     original = Vocabulary({"ə": 0, "ʃ": 1, "θ": 2})
     original.to_json(str(path))
@@ -182,10 +184,10 @@ def test_tokenizer_encode_unknown_symbol_raises_key_error() -> None:
         tokenizer.encode("z")
 
 
-def test_stored_phonemes_skip_g2p(monkeypatch) -> None:
+def test_stored_phonemes_skip_g2p(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prepared data stores phonemes; loading must not run G2P in workers."""
 
-    def boom():
+    def boom() -> NoReturn:
         raise AssertionError("G2P must not run")
 
     monkeypatch.setattr(text_mod, "get_phonemizer", boom)

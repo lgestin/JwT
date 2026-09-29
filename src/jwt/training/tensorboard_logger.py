@@ -9,7 +9,7 @@ from jwt.training.plots import render_curve
 
 
 class TensorBoardLogger:
-    def __init__(self, log_dir: Path | str):
+    def __init__(self, log_dir: Path | str) -> None:
         self.writer = SummaryWriter(log_dir=str(log_dir))
 
     def log_scalar(self, tag: str, value: float, step: int) -> None:

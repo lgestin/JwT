@@ -20,7 +20,9 @@ class _RecordingLogger:
         self.curves: dict[str, list[float]] = {}
         self.grids: dict[str, list[float]] = {}
 
-    def log_curve(self, tag, x, y, step, xlabel="t") -> None:
+    def log_curve(
+        self, tag: str, x: list[float], y: list[float], step: int, xlabel: str = "t"
+    ) -> None:
         assert len(x) == len(y)
         self.curves[tag] = y
         self.grids[tag] = x
@@ -228,7 +230,9 @@ class MetricsLogger:
     def __init__(self) -> None:
         self.logged: list[tuple[str, dict[str, float]]] = []
 
-    def log_metrics(self, metrics, step, prefix="train") -> None:
+    def log_metrics(
+        self, metrics: dict[str, float], step: int, prefix: str = "train"
+    ) -> None:
         self.logged.append((prefix, metrics))
 
 

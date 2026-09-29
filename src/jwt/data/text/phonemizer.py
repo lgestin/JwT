@@ -5,7 +5,7 @@ from misaki.token import MToken
 
 
 class Phonemizer:
-    def __init__(self):
+    def __init__(self) -> None:
 
         fallback = espeak.EspeakFallback(british=False)
         self.g2p = en.G2P(trf=False, british=False, fallback=fallback)
@@ -13,7 +13,7 @@ class Phonemizer:
     def phonemize(self, text: str) -> tuple[str, list[MToken]]:
         return self.g2p(text)
 
-    def __call__(self, text: str):
+    def __call__(self, text: str) -> tuple[str, list[MToken]]:
         return self.phonemize(text)
 
 

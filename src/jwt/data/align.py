@@ -61,7 +61,7 @@ class MMSFAligner(Aligner):
     by hand.
     """
 
-    def __init__(self, device: str = "cuda"):
+    def __init__(self, device: str = "cuda") -> None:
         bundle = torchaudio.pipelines.MMS_FA
         self.device = torch.device(device)
         model = bundle.get_model(with_star=True).model  # inner model, no wrapper

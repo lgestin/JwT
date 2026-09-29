@@ -22,7 +22,7 @@ class LinearWarmup:
     The base LR is captured per param group at construction.
     """
 
-    def __init__(self, optimizer: Optimizer, warmup_steps: int):
+    def __init__(self, optimizer: Optimizer, warmup_steps: int) -> None:
         self.optimizer = optimizer
         self.warmup_steps = warmup_steps
         self._base_lrs = [group["lr"] for group in optimizer.param_groups]

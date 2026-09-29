@@ -35,7 +35,7 @@ _ARCHITECTURAL_FIELDS = frozenset(
 )
 
 
-def cast_value(field_type: Any, raw: str):
+def cast_value(field_type: Any, raw: str) -> Any:
     if isinstance(field_type, type) and issubclass(field_type, Enum):
         return field_type[raw]
     if field_type is bool:

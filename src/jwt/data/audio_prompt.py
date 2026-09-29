@@ -44,7 +44,7 @@ class AudioPromptSampler:
         source: ArrowTTSSource,
         cfg: AudioPromptConfig,
         indices: list[int] | None = None,
-    ):
+    ) -> None:
         """indices: the split to draw other-utterance prompts from (default: all)."""
         self.source = source
         self.cfg = cfg
@@ -133,10 +133,10 @@ class AudioPromptSampler:
         f = int(first.start * audio.sample_rate / hop)
         trim = rng.randint(0, self.frames(self.cfg.max_trim_s, audio.sample_rate))
         target = Audio(
-            waveform=audio.waveform[..., f * hop :],  # ty: ignore[invalid-argument-type]
+            waveform=audio.waveform[..., f * hop :],
             sample_rate=audio.sample_rate,
             loudness=audio.loudness,
-            acoustic=acoustic[..., f:],  # ty: ignore[invalid-argument-type]
+            acoustic=acoustic[..., f:],
         )
         text = Text(
             text=text.text[first.text_start :],

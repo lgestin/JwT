@@ -13,7 +13,7 @@ class Registers(nn.Module):
     head, so the block stack is the only part of the model that sees them.
     """
 
-    def __init__(self, n: int, dim: int):
+    def __init__(self, n: int, dim: int) -> None:
         super().__init__()
         self.n = n
         self.registers = nn.Parameter(torch.randn(n, dim) * 0.02)

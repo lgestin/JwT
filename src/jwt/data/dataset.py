@@ -1,5 +1,6 @@
 import random
 from dataclasses import dataclass, fields
+from typing import Self
 
 import torch
 from torch.utils.data import Dataset
@@ -29,7 +30,7 @@ class Batch:
     audio_prompt: torch.Tensor | None = None
     audio_prompt_mask: torch.BoolTensor | None = None
 
-    def to(self, device: str | torch.device, non_blocking: bool = False):
+    def to(self, device: str | torch.device, non_blocking: bool = False) -> Self:
         for field in fields(self):
             value = getattr(self, field.name)
             if torch.is_tensor(value):
@@ -37,7 +38,7 @@ class Batch:
                 setattr(self, field.name, value)
         return self
 
-    def pin_memory(self):
+    def pin_memory(self) -> Self:
         for field in fields(self):
             value = getattr(self, field.name)
             if torch.is_tensor(value):
@@ -51,7 +52,7 @@ class FlowMatchingBatch:
     x_0: torch.Tensor
     x_1: torch.Tensor
 
-    def record_stream(self, stream: torch.cuda.Stream):
+    def record_stream(self, stream: torch.cuda.Stream) -> None:
         self.timestep.record_stream(stream)
         self.x_0.record_stream(stream)
         self.x_1.record_stream(stream)
@@ -67,7 +68,7 @@ class AudioDataset(Dataset):
         indices: list[int] | None = None,
         audio_prompt: AudioPromptConfig | None = None,
         seed: int | None = None,
-    ):
+    ) -> None:
         """indices: source rows in this split (default: all).
         seed: fixed per-item RNG (validation); None draws fresh randomness."""
         self.tts_source = tts_source
@@ -85,7 +86,7 @@ class AudioDataset(Dataset):
                 tts_source, audio_prompt, self.indices
             )
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.indices)
 
     def __getitem__(self, index: int) -> Sample:

@@ -37,7 +37,7 @@ class Codecs(StrEnum):
                 return RawAudioPatcher
 
     @property
-    def codec(self):
+    def codec(self) -> "Codec":
         match self:
             case Codecs.BIGVGAN:
                 return BigVGAN()
@@ -108,7 +108,9 @@ class BigVGAN(nn.Module):
     mel_mean: torch.Tensor
     mel_std: torch.Tensor
 
-    def __init__(self, version: BigVGANVersions = BigVGANVersions.V2_24KHz_100MEL_256X):
+    def __init__(
+        self, version: BigVGANVersions = BigVGANVersions.V2_24KHz_100MEL_256X
+    ) -> None:
         nn.Module.__init__(self)
         # local: avoid heavy bigvgan import at module load
         from bigvgan.bigvgan import BigVGAN as _BigVGAN
@@ -205,7 +207,7 @@ class RawAudioPatcher(nn.Module):
     required_sample_rate: int | None = None
     wav_std: torch.Tensor
 
-    def __init__(self, patch_size: int = 256):
+    def __init__(self, patch_size: int = 256) -> None:
         nn.Module.__init__(self)
         self.patch_size = patch_size
         self.acoustic_dim = patch_size

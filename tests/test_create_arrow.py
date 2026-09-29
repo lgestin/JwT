@@ -1,8 +1,10 @@
 import importlib.util
 import sys
 from collections import Counter
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import ModuleType
 
 import pyarrow as pa
 import pytest
@@ -15,7 +17,7 @@ ASSETS_FOLDER = Path(__file__).parent / "assets"
 SCRIPT = Path(__file__).parent.parent / "scripts" / "data" / "create_arrow.py"
 
 
-def load_script():
+def load_script() -> ModuleType:
     spec = importlib.util.spec_from_file_location("create_arrow", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -35,7 +37,7 @@ def lj_folder(tmp_path: Path, n_wavs: int, metadata: str) -> Path:
     return lj
 
 
-def run_create_arrow(script, lj: Path, out: Path):
+def run_create_arrow(script: ModuleType, lj: Path, out: Path) -> Counter[str]:
     return script.main(
         script.Args(
             dataset="ljspeech",
@@ -48,7 +50,7 @@ def run_create_arrow(script, lj: Path, out: Path):
     )
 
 
-def test_create_arrow_ljspeech_end_to_end(tmp_path) -> None:
+def test_create_arrow_ljspeech_end_to_end(tmp_path: Path) -> None:
     """LJSpeech clips become aligned rows with speaker, session and meta.json."""
     metadata = "LJ001-0001|r|Physics works.\nLJ001-0002|r| It works in 1905.\n"
     lj = lj_folder(tmp_path, 2, metadata)
@@ -71,7 +73,7 @@ def test_create_arrow_ljspeech_end_to_end(tmp_path) -> None:
     assert table["num_samples"][0].as_py() == 3 * 16000
 
 
-def test_incomplete_data_is_reported(tmp_path) -> None:
+def test_incomplete_data_is_reported(tmp_path: Path) -> None:
     """Dropped utterances raise a warning and are recorded in meta.json."""
     metadata = "LJ001-0001|r|Physics works.\nLJ001-0002|r|Missing wav.\n"
     lj = lj_folder(tmp_path, 1, metadata)
@@ -82,7 +84,7 @@ def test_incomplete_data_is_reported(tmp_path) -> None:
     assert read_meta(out).dropped == dict(drops)
 
 
-def test_missing_dataset_arguments_raise(tmp_path) -> None:
+def test_missing_dataset_arguments_raise(tmp_path: Path) -> None:
     """Each dataset reader needs its own paths; a missing one fails up front."""
     script = load_script()
     args = script.Args(dataset="ljspeech", output_dir=tmp_path, sample_rate=16000)
@@ -95,7 +97,7 @@ def test_bounded_map_keeps_a_bounded_window_in_flight() -> None:
     script = load_script()
     consumed = []
 
-    def items():
+    def items() -> Iterator[int]:
         for i in range(20):
             consumed.append(i)
             yield i

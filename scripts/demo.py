@@ -14,10 +14,12 @@ Usage:
         --sample-rate 22050
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
+import numpy as np
 import torch
 from simple_parsing import ArgumentParser
 
@@ -106,6 +108,9 @@ def plot_mel(
     return fig
 
 
+type SynthOutput = tuple[tuple[int, np.ndarray], plt.Figure, str, str]
+
+
 def build_synth_fn(
     model: RollingFlowSpeaker,
     codec: Codec,
@@ -113,7 +118,7 @@ def build_synth_fn(
     tokenizer: Tokenizer,
     device: torch.device,
     sample_rate: int,
-):
+) -> Callable[[str, int], SynthOutput]:
     sr = sample_rate
     hop = codec.hop_length
     viz_mel = MelSpectrogram(
@@ -127,7 +132,7 @@ def build_synth_fn(
     ).to(device)
 
     @torch.inference_mode()
-    def synthesize(text: str, seed: int):
+    def synthesize(text: str, seed: int) -> SynthOutput:
         if not text or not text.strip():
             raise ValueError("Please enter some text.")
 

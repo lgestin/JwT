@@ -27,7 +27,7 @@ class EMA:
     so a compiled forward graph is left untouched.
     """
 
-    def __init__(self, model: Module, decay: float = 0.9995):
+    def __init__(self, model: Module, decay: float = 0.9995) -> None:
         self.decay = decay
         self._shadow: dict[str, torch.Tensor] = {
             name: param.detach().clone().float()

@@ -2,7 +2,7 @@ import bisect
 import csv
 import itertools
 from pathlib import Path
-from typing import NamedTuple, Protocol
+from typing import Any, NamedTuple, Protocol
 
 import pyarrow as pa
 import torch
@@ -25,7 +25,7 @@ class LJTTSSource(TTSSource):
         folder_path: str,
         tokenizer: Tokenizer | None = None,
         sample_rate: int | None = None,
-    ):
+    ) -> None:
         """sample_rate: resample on load (int16, see AudioFile); None keeps native."""
         folder = Path(folder_path)
         items: list[tuple[Path, str]] = []
@@ -67,7 +67,9 @@ class ArrowTTSSource(TTSSource):
     access stays O(log n) across many shards.
     """
 
-    def __init__(self, folder: str, tokenizer: Tokenizer | None, patch_size: int):
+    def __init__(
+        self, folder: str, tokenizer: Tokenizer | None, patch_size: int
+    ) -> None:
         self.meta = read_meta(Path(folder))
         self.tokenizer = tokenizer
         self.patcher = RawAudioPatcher(patch_size)
@@ -100,7 +102,7 @@ class ArrowTTSSource(TTSSource):
     def hop_length(self) -> int:
         return self.patcher.hop_length
 
-    def cell(self, idx: int, name: str):
+    def cell(self, idx: int, name: str) -> Any:
         b = bisect.bisect_right(self.batch_starts, idx) - 1
         return self.batches[b].column(name)[idx - self.batch_starts[b]].as_py()
 
@@ -115,10 +117,10 @@ class ArrowTTSSource(TTSSource):
         )
         waveform = waveform.view(1, -1).float() / 32768.0
         audio = Audio(
-            waveform=waveform,  # ty: ignore[invalid-argument-type]
+            waveform=waveform,
             sample_rate=self.cell(idx, "sample_rate"),
             loudness=self.cell(idx, "loudness"),
-            acoustic=self.patcher.encode(waveform),  # ty: ignore[invalid-argument-type]
+            acoustic=self.patcher.encode(waveform),
         )
         text = Text(
             text=self.cell(idx, "text"),

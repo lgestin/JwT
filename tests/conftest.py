@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ AUDIO_TEST_FILES = [fpath.as_posix() for fpath in sorted(ASSETS_FOLDER.glob("*.w
 
 
 @pytest.fixture(params=AUDIO_TEST_FILES)
-def audio_from_file(request) -> AudioFile:
+def audio_from_file(request: pytest.FixtureRequest) -> AudioFile:
     return AudioFile(request.param)
 
 
@@ -25,7 +26,7 @@ def audio_from_file(request) -> AudioFile:
         (1, 8000, 4000),
     ]
 )
-def random_audio(request) -> AudioFile:
+def random_audio(request: pytest.FixtureRequest) -> AudioFile:
     channels, sample_rate, num_samples = request.param
     generator = torch.Generator().manual_seed(TEST_SEED)
     waveform = torch.randn(channels, num_samples, generator=generator)
@@ -33,10 +34,14 @@ def random_audio(request) -> AudioFile:
 
 
 @pytest.fixture
-def make_prepared(tmp_path):
+def make_prepared(tmp_path: Path) -> Callable[..., Path]:
     """Tiny prepared datasets: 100 Hz audio (patch 10), a word every 0.5 s."""
 
-    def make(name, utts, rows_per_shard=2):
+    def make(
+        name: str,
+        utts: list[tuple[str, str, str | None, int | None, int]],
+        rows_per_shard: int = 2,
+    ) -> Path:
         folder = tmp_path / name
         schema = build_schema()
         with ShardWriter(folder, schema, rows_per_shard, batch_size=1) as writer:

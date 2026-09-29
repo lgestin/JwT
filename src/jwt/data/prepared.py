@@ -61,7 +61,7 @@ class ShardWriter:
         schema: pa.Schema,
         rows_per_shard: int = 10_000,
         batch_size: int = 64,
-    ):
+    ) -> None:
         self.folder = Path(folder)
         self.folder.mkdir(parents=True, exist_ok=True)
         self.schema = schema
@@ -114,5 +114,5 @@ class ShardWriter:
     def __enter__(self) -> "ShardWriter":
         return self
 
-    def __exit__(self, *exc) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.close()

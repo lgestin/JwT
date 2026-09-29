@@ -116,7 +116,7 @@ def timestep_embedding(
 
 
 class TimestepEmbedder(nn.Module):
-    def __init__(self, dim: int, freq_embed_dim: int = 256):
+    def __init__(self, dim: int, freq_embed_dim: int = 256) -> None:
         super().__init__()
         assert freq_embed_dim % 2 == 0, "freq_embed_dim must be even"
         self.freq_embed_dim = freq_embed_dim
@@ -158,7 +158,7 @@ class AdaLN(nn.Module):
     `None` keeps the unfactorized projection.
     """
 
-    def __init__(self, dim: int, rank: int | None = None, n_chunks: int = 6):
+    def __init__(self, dim: int, rank: int | None = None, n_chunks: int = 6) -> None:
         super().__init__()
         assert rank is None or rank > 0, f"adaLN rank must be positive, got {rank}"
         assert n_chunks in (2, 6), f"adaLN n_chunks must be 2 or 6, got {n_chunks}"
@@ -181,7 +181,7 @@ class AdaLN(nn.Module):
 
 
 class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-6, affine: bool = True):
+    def __init__(self, dim: int, eps: float = 1e-6, affine: bool = True) -> None:
         super().__init__()
         self.eps = eps
         self.scale = nn.Parameter(torch.ones(dim)) if affine else None
@@ -196,7 +196,7 @@ class RMSNorm(nn.Module):
 
 
 class QKNorm(nn.Module):
-    def __init__(self, head_dim: int):
+    def __init__(self, head_dim: int) -> None:
         super().__init__()
         self.query_norm = RMSNorm(head_dim)
         self.key_norm = RMSNorm(head_dim)
@@ -208,7 +208,7 @@ class QKNorm(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int):
+    def __init__(self, dim: int, num_heads: int) -> None:
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
         self.num_heads = num_heads
@@ -255,7 +255,7 @@ class TransformerBlock(nn.Module):
         num_heads: int,
         mlp_ratio: float = 4.0,
         adaln_rank: int | None = None,
-    ):
+    ) -> None:
         super().__init__()
         self.norm1 = RMSNorm(dim, affine=False)
         self.attn = SelfAttention(dim, num_heads)
@@ -287,7 +287,7 @@ class TransformerBlock(nn.Module):
 class Transformer(nn.Module):
     inv_freqs: torch.Tensor
 
-    def __init__(self, config: TransformerConfig):
+    def __init__(self, config: TransformerConfig) -> None:
         super().__init__()
         assert config.dim % config.num_heads == 0, "dim must be divisible by num_heads"
         self.config = config

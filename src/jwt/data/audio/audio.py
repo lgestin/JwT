@@ -1,6 +1,7 @@
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Self
 
 import soundfile as sf
 import torch
@@ -19,10 +20,10 @@ class AudioInfo:
 
 @dataclass
 class Audio:
-    waveform: torch.FloatTensor
+    waveform: torch.Tensor
     sample_rate: int
-    stft: torch.FloatTensor | None = None
-    acoustic: torch.FloatTensor | None = None
+    stft: torch.Tensor | None = None
+    acoustic: torch.Tensor | None = None
     loudness: float | None = None
 
 
@@ -38,7 +39,7 @@ class AudioFile:
         start_s: float = 0,
         end_s: float | None = None,
         loudness: float | None = None,
-    ):
+    ) -> None:
         assert isinstance(filepath, (type(None), str, Path))
         assert waveform is None or torch.is_tensor(waveform)
         if filepath is None:
@@ -53,19 +54,19 @@ class AudioFile:
         self._loudness = loudness
         self._stft: torch.FloatTensor | None = None
 
-    def to(self, device: str | torch.device):
+    def to(self, device: str | torch.device) -> Self:
         self.waveform.to(device)
         return self
 
     @property
-    def sample_rate(self):
+    def sample_rate(self) -> int:
         if self._sample_rate is None:
             sample_rate = sf.SoundFile(self.filepath).samplerate
             self._sample_rate = sample_rate
         return self._sample_rate
 
     @property
-    def waveform(self):
+    def waveform(self) -> torch.Tensor:
         waveform = self._waveform
         if waveform is None:
             # Offsets index native frames; resample to _sample_rate happens in int16.
@@ -85,7 +86,7 @@ class AudioFile:
         return waveform
 
     @property
-    def stft(self):
+    def stft(self) -> torch.Tensor:
         stft = self._stft
         if stft is None:
             stft = AudioFile.stfter.stft(self.waveform)
@@ -93,7 +94,7 @@ class AudioFile:
         return stft
 
     @property
-    def info(self):
+    def info(self) -> AudioInfo:
         info = AudioInfo(
             filepath=self.filepath,  # ty: ignore[invalid-argument-type]
             sample_rate=self.sample_rate,
@@ -103,18 +104,18 @@ class AudioFile:
         return info
 
     @property
-    def duration_s(self):
+    def duration_s(self) -> float:
         waveform = self.waveform
         sample_rate = self.sample_rate
         duration_s = waveform.shape[-1] / sample_rate
         return duration_s
 
     @property
-    def n_frames(self):
+    def n_frames(self) -> int:
         return self.waveform.shape[-1]
 
     @property
-    def loudness(self):
+    def loudness(self) -> float:
         loudness = self._loudness
         if loudness is None:
             waveform = self.waveform
@@ -126,13 +127,13 @@ class AudioFile:
         self._loudness = loudness
         return loudness
 
-    def mono(self):
+    def mono(self) -> Self:
         waveform = self.waveform
         waveform = torch.mean(waveform, dim=0, keepdim=True)
         self._waveform = waveform
         return self
 
-    def resample(self, sample_rate: int):
+    def resample(self, sample_rate: int) -> Self:
         if self.sample_rate == sample_rate:
             return self
         waveform = self.waveform
@@ -148,7 +149,7 @@ class AudioFile:
         self._sample_rate = sample_rate
         return self
 
-    def normalize(self, db: float):
+    def normalize(self, db: float) -> Self:
         gain = db - self.loudness
         gain = math.exp(math.log(10) / 20 * gain)
         self._waveform = gain * self.waveform
@@ -157,14 +158,14 @@ class AudioFile:
         return self
 
     @classmethod
-    def from_audioinfo(cls, audioinfo: AudioInfo):
+    def from_audioinfo(cls, audioinfo: AudioInfo) -> Self:
         audio = cls(filepath=audioinfo.filepath)
         audio._sample_rate = audioinfo.sample_rate
         audio._duration_s = audioinfo.duration_s
         audio._loudness = audioinfo.loudness
         return audio
 
-    def excerpt(self, offset_s: float, duration_s: float | None = None):
+    def excerpt(self, offset_s: float, duration_s: float | None = None) -> "AudioFile":
         waveform = self._waveform
         if waveform is not None:
             start = int(offset_s * self.sample_rate)
@@ -190,7 +191,7 @@ class AudioFile:
         self,
         duration_s: float,
         generator: torch.Generator | None = None,
-    ):
+    ) -> "AudioFile":
         assert duration_s <= self.duration_s
 
         offset_s = torch.rand(tuple(), generator=generator).item()
@@ -204,7 +205,7 @@ class AudioFile:
         loudness_threshold: float = -60.0,  # -40, -60
         n_tries: int = 10,
         generator: torch.Generator | None = None,
-    ):
+    ) -> "AudioFile":
         assert 0.5 <= duration_s <= self.duration_s
         loudness = self.loudness
         excerpt = self.random_excerpt(
@@ -225,7 +226,7 @@ class AudioFile:
         return excerpt
 
     @property
-    def device(self):
+    def device(self) -> torch.device:
         return self.waveform.device
 
     @property

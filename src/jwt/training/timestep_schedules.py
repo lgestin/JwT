@@ -80,7 +80,7 @@ class LogNormTimestepSchedule(TimestepSchedule):
     ``eps = 0`` is the untrimmed logit-normal.
     """
 
-    def __init__(self, mean: float = 0.0, std: float = 1.0, eps: float = 0.0):
+    def __init__(self, mean: float = 0.0, std: float = 1.0, eps: float = 0.0) -> None:
         assert std > 0, "std must be positive"
         assert 0.0 <= eps < 0.5, "eps must be in [0, 0.5)"
         self.mean = mean

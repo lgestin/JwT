@@ -5,7 +5,9 @@ import pytest
 from jwt.data.splits import split_indices
 
 
-def speakers_and_ids(n_speakers: int = 6, per_speaker: int = 10):
+def speakers_and_ids(
+    n_speakers: int = 6, per_speaker: int = 10
+) -> tuple[list[str], list[str]]:
     speakers = [f"d/s{i // per_speaker}" for i in range(n_speakers * per_speaker)]
     utt_ids = [f"u{i}" for i in range(len(speakers))]
     return speakers, utt_ids

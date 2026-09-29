@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 import torch
 from torch import nn
@@ -42,7 +44,7 @@ def make_seq_mask(lens: list[int], T: int, device: str = "cpu") -> torch.Tensor:
     return seq_mask
 
 
-def make_model(n: int = 4, **kwargs) -> Transformer:
+def make_model(n: int = 4, **kwargs: Any) -> Transformer:
     """A small Transformer with registers and *open* adaLN gates.
 
     AdaLN is zero-init, which gates every residual to 0 and makes registers

@@ -1,3 +1,6 @@
+from collections.abc import Callable
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -16,12 +19,14 @@ UTTS = [
 ]
 
 
-def dataset_for(make_prepared, cfg, seed=0) -> AudioDataset:
+def dataset_for(
+    make_prepared: Callable[..., Path], cfg: AudioPromptConfig | None, seed: int = 0
+) -> AudioDataset:
     source = ArrowTTSSource(str(make_prepared("d", UTTS)), TOKENIZER, patch_size=10)
     return AudioDataset(source, sample_rate=100, audio_prompt=cfg, seed=seed)
 
 
-def test_prompts_off_is_unchanged(make_prepared) -> None:
+def test_prompts_off_is_unchanged(make_prepared: Callable[..., Path]) -> None:
     """Without audio_prompt, samples and batches carry no prompt."""
     sample = dataset_for(make_prepared, None)[0]
     assert sample.audio_prompt is None
@@ -29,7 +34,7 @@ def test_prompts_off_is_unchanged(make_prepared) -> None:
     assert collate([sample]).audio_prompt is None
 
 
-def test_cut_splits_audio_and_tokens(make_prepared) -> None:
+def test_cut_splits_audio_and_tokens(make_prepared: Callable[..., Path]) -> None:
     """A cut splits frames, waveform, text and phonemes at the same word."""
     cfg = AudioPromptConfig(p_drop=0.0, p_other=0.0, max_trim_s=0.0)
     sample = dataset_for(make_prepared, cfg)[0]
@@ -43,7 +48,7 @@ def test_cut_splits_audio_and_tokens(make_prepared) -> None:
     assert sample.text.text == " ".join(["word"] * (10 - k))
 
 
-def test_cut_trim_shortens_prompt_only(make_prepared) -> None:
+def test_cut_trim_shortens_prompt_only(make_prepared: Callable[..., Path]) -> None:
     """The trim removes up to 0.5 s from the prompt, never from the target."""
     cfg = AudioPromptConfig(p_drop=0.0, p_other=0.0, max_trim_s=0.5)
     sample = dataset_for(make_prepared, cfg)[0]
@@ -52,7 +57,9 @@ def test_cut_trim_shortens_prompt_only(make_prepared) -> None:
     assert 50 - target - 5 <= sample.audio_prompt.shape[-1] <= 50 - target
 
 
-def test_other_prompt_is_a_window_of_the_reference(make_prepared) -> None:
+def test_other_prompt_is_a_window_of_the_reference(
+    make_prepared: Callable[..., Path],
+) -> None:
     """An other-utterance prompt is a max_prompt_s window; the target is whole."""
     cfg = AudioPromptConfig(p_drop=0.0, p_other=1.0, max_prompt_s=2.0)
     sample = dataset_for(make_prepared, cfg)[0]
@@ -60,13 +67,15 @@ def test_other_prompt_is_a_window_of_the_reference(make_prepared) -> None:
     assert sample.audio.acoustic.shape[-1] == 50  # target untouched
 
 
-def test_seeded_prompts_are_deterministic(make_prepared) -> None:
+def test_seeded_prompts_are_deterministic(make_prepared: Callable[..., Path]) -> None:
     """A seeded dataset gives the same prompt for an item every time."""
     ds = dataset_for(make_prepared, AudioPromptConfig(), seed=3)
     assert all(torch.equal(ds[i].audio_prompt, ds[i].audio_prompt) for i in range(4))
 
 
-def test_collate_pads_prompts_including_all_empty(make_prepared) -> None:
+def test_collate_pads_prompts_including_all_empty(
+    make_prepared: Callable[..., Path],
+) -> None:
     """Prompts pad to the longest, down to zero frames when all dropped."""
     ds = dataset_for(make_prepared, AudioPromptConfig(p_drop=1.0))
     batch = collate([ds[0], ds[1]])
@@ -78,7 +87,7 @@ def test_collate_pads_prompts_including_all_empty(make_prepared) -> None:
     assert batch.audio_prompt_mask.all()
 
 
-def test_dataset_is_a_split_of_the_source(make_prepared) -> None:
+def test_dataset_is_a_split_of_the_source(make_prepared: Callable[..., Path]) -> None:
     """A dataset indexes the source through its split indices."""
     source = ArrowTTSSource(str(make_prepared("d", UTTS)), TOKENIZER, patch_size=10)
     ds = AudioDataset(source, sample_rate=100, indices=[0, 2])
@@ -87,7 +96,9 @@ def test_dataset_is_a_split_of_the_source(make_prepared) -> None:
     assert ds[1].audio.acoustic.shape[-1] == 30  # u2: 6 words
 
 
-def test_split_prompts_never_use_other_splits(make_prepared) -> None:
+def test_split_prompts_never_use_other_splits(
+    make_prepared: Callable[..., Path],
+) -> None:
     """u0's only far session mates are u2 (30 frames) and u3 (40 frames)."""
     source = ArrowTTSSource(str(make_prepared("d", UTTS)), TOKENIZER, patch_size=10)
     cfg = AudioPromptConfig(p_drop=0.0, p_other=1.0, max_prompt_s=5.0)
@@ -95,7 +106,7 @@ def test_split_prompts_never_use_other_splits(make_prepared) -> None:
     assert {ds[0].audio_prompt.shape[-1] for _ in range(20)} == {30}
 
 
-def test_audio_prompts_need_prepared_data(tmp_path) -> None:
+def test_audio_prompts_need_prepared_data(tmp_path: Path) -> None:
     """Prompt selection reads speaker and word columns only prepared data has."""
     (tmp_path / "metadata.csv").write_text("LJ001-0001|r|Hi.\n", encoding="utf-8")
     with pytest.raises(TypeError, match="ArrowTTSSource"):

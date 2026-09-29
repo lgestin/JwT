@@ -73,17 +73,17 @@ class SampleRecord:
 class Logger(Protocol):
     """Base class for all loggers."""
 
-    def log_scalar(self, tag: str, value: float, step: int): ...
+    def log_scalar(self, tag: str, value: float, step: int) -> None: ...
     def log_audio(
         self, tag: str, waveform: torch.Tensor, step: int, sample_rate: int
-    ): ...
-    def log_image(self, tag: str, image: torch.Tensor, step: int): ...
+    ) -> None: ...
+    def log_image(self, tag: str, image: torch.Tensor, step: int) -> None: ...
     def log_metrics(
         self, metrics: dict[str, float], step: int, prefix: str = "train"
-    ): ...
+    ) -> None: ...
     def log_diagnostics(
         self, metrics: dict[str, float], step: int, prefix: str = "train"
-    ):
+    ) -> None:
         """Low-frequency, high-cardinality diagnostics (e.g. binned loss).
 
         Human-facing loggers (console / progress bar) should no-op this; only
@@ -99,7 +99,7 @@ class Logger(Protocol):
         step: int,
         xlabel: str = "t",
         history: bool = True,
-    ):
+    ) -> None:
         """Log `y` sampled on the `x` grid as a line plot (equal lengths).
 
         NaN entries in `y` mark points with no data and are not drawn.
@@ -117,7 +117,7 @@ class Logger(Protocol):
         records: list[SampleRecord],
         step: int,
         join: str | None = None,
-    ):
+    ) -> None:
         """Log per-sample evaluation records under `section`.
 
         Each backend renders them its own way (table, individual entries, wav
@@ -129,29 +129,29 @@ class Logger(Protocol):
         """
         ...
 
-    def log_config(self, config: object, step: int = 0):
+    def log_config(self, config: object, step: int = 0) -> None:
         """Log the resolved run config as hparams. Human-facing loggers no-op
         it; TensorBoard sends it through `add_hparams`.
         """
         ...
 
     @abstractmethod
-    def set_description(self, description: str):
+    def set_description(self, description: str) -> None:
         """Set current status description (for progress bars)."""
         pass
 
     @abstractmethod
-    def update_progress(self, n: int = 1):
+    def update_progress(self, n: int = 1) -> None:
         """Update progress counter."""
         pass
 
     @abstractmethod
-    def set_progress(self, completed: int):
+    def set_progress(self, completed: int) -> None:
         """Set the progress counter to an absolute value (e.g. on resume)."""
         pass
 
     @abstractmethod
-    def close(self):
+    def close(self) -> None:
         """Close the logger and clean up resources."""
         pass
 
@@ -186,7 +186,7 @@ def mel_image(mel: torch.Tensor) -> torch.Tensor:
 class MultiLogger:
     """Fan out every call to a list of loggers."""
 
-    def __init__(self, *loggers: Logger):
+    def __init__(self, *loggers: Logger) -> None:
         self.loggers = loggers
 
     def log_scalar(self, tag: str, value: float, step: int) -> None:

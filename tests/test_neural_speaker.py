@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from jwt.data.audio.audio import AudioFile
 from jwt.data.audio.codecs import Codec, Codecs
 from jwt.data.audio.stft import MelSpectrogram
 from jwt.model.flow import FlowParametrizations
@@ -26,7 +27,7 @@ class StubCodec:
 
     required_sample_rate: int | None = None
 
-    def __init__(self, acoustic_dim: int = N_MELS):
+    def __init__(self, acoustic_dim: int = N_MELS) -> None:
         self.acoustic_dim = acoustic_dim
         self.hop_length = 256
         self.mean = -5.0
@@ -46,7 +47,13 @@ class StubCodec:
     def unnormalize(self, x: torch.Tensor) -> torch.Tensor:
         return x * self.std + self.mean
 
-    def eos_frames(self, n: int, *, device=None, dtype=torch.float32) -> torch.Tensor:
+    def eos_frames(
+        self,
+        n: int,
+        *,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype = torch.float32,
+    ) -> torch.Tensor:
         return torch.full(
             (self.acoustic_dim, n), self.eos_value, device=device, dtype=dtype
         )
@@ -92,7 +99,7 @@ def text(model: RollingFlowSpeaker) -> MaskedTensor:
 
 @pytest.fixture
 def acoustic(
-    model: RollingFlowSpeaker, codec: StubCodec, audio_from_file
+    model: RollingFlowSpeaker, codec: StubCodec, audio_from_file: AudioFile
 ) -> MaskedTensor:
     """Pre-EOS-extended, normalized acoustic features ready for model.training_step.
 
@@ -176,7 +183,9 @@ def test_speak_stops_on_sentinel(
 
     original_forward = model.forward
 
-    def always_eos(text, acoustic, t):
+    def always_eos(
+        text: MaskedTensor, acoustic: MaskedTensor, t: torch.Tensor
+    ) -> torch.Tensor:
         v = original_forward(text, acoustic, t)
         return torch.full_like(v, float(eos_norm) * 10)
 
@@ -195,7 +204,9 @@ def test_speak_respects_max_acoustic_len_cap(
     """Output must never exceed max_acoustic_len even if the sentinel never fires."""
     original_forward = model.forward
 
-    def never_eos(text, acoustic, t):
+    def never_eos(
+        text: MaskedTensor, acoustic: MaskedTensor, t: torch.Tensor
+    ) -> torch.Tensor:
         return torch.full_like(original_forward(text, acoustic, t), 10.0)
 
     model.forward = never_eos
@@ -324,7 +335,7 @@ def test_training_step_is_deterministic(
     "parametrization", [FlowParametrizations.RECTIFIED_FLOW, FlowParametrizations.JWT]
 )
 def test_training_step_finite_for_both_parametrizations(
-    parametrization: FlowParametrizations, audio_from_file
+    parametrization: FlowParametrizations, audio_from_file: AudioFile
 ) -> None:
     """RF and JWT should both produce finite loss + x_pred end-to-end."""
     torch.manual_seed(0)

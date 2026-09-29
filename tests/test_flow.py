@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from jwt.model.flow import (
+    FlowParametrization,
     FlowParametrizations,
     JustWaveformTransformersParametrization,
     ParametrizationLossOutput,
@@ -18,7 +19,7 @@ PARAMETRIZATIONS = [
 
 
 @pytest.fixture(params=[(2, 4, 8), (1, 1, 16), (3, 7, 5)])
-def batch(request) -> tuple[torch.Tensor, torch.Tensor]:
+def batch(request: pytest.FixtureRequest) -> tuple[torch.Tensor, torch.Tensor]:
     shape = request.param
     g = torch.Generator().manual_seed(0)
     x_0 = torch.randn(shape, generator=g)
@@ -61,28 +62,36 @@ def test_loss_output_defaults_to_none() -> None:
 
 
 @pytest.mark.parametrize("param", PARAMETRIZATIONS)
-def test_prepare_x_t_at_t_zero_returns_x_0(param, batch) -> None:
+def test_prepare_x_t_at_t_zero_returns_x_0(
+    param: type[FlowParametrization], batch: tuple[torch.Tensor, torch.Tensor]
+) -> None:
     x_0, x_1 = batch
     x_t = param.prepare_x_t(x_0, x_1, make_timestep(x_0.shape[0], 0.0))
     torch.testing.assert_close(x_t, x_0)
 
 
 @pytest.mark.parametrize("param", PARAMETRIZATIONS)
-def test_prepare_x_t_at_t_one_returns_x_1(param, batch) -> None:
+def test_prepare_x_t_at_t_one_returns_x_1(
+    param: type[FlowParametrization], batch: tuple[torch.Tensor, torch.Tensor]
+) -> None:
     x_0, x_1 = batch
     x_t = param.prepare_x_t(x_0, x_1, make_timestep(x_0.shape[0], 1.0))
     torch.testing.assert_close(x_t, x_1)
 
 
 @pytest.mark.parametrize("param", PARAMETRIZATIONS)
-def test_prepare_x_t_is_linear_at_midpoint(param, batch) -> None:
+def test_prepare_x_t_is_linear_at_midpoint(
+    param: type[FlowParametrization], batch: tuple[torch.Tensor, torch.Tensor]
+) -> None:
     x_0, x_1 = batch
     x_t = param.prepare_x_t(x_0, x_1, make_timestep(x_0.shape[0], 0.5))
     torch.testing.assert_close(x_t, 0.5 * x_0 + 0.5 * x_1)
 
 
 @pytest.mark.parametrize("param", PARAMETRIZATIONS)
-def test_loss_returns_output_dataclass(param, batch) -> None:
+def test_loss_returns_output_dataclass(
+    param: type[FlowParametrization], batch: tuple[torch.Tensor, torch.Tensor]
+) -> None:
     x_0, x_1 = batch
     t = make_timestep(x_0.shape[0], 0.3)
     x_t = param.prepare_x_t(x_0, x_1, t)
@@ -94,7 +103,9 @@ def test_loss_returns_output_dataclass(param, batch) -> None:
 
 
 @pytest.mark.parametrize("param", PARAMETRIZATIONS)
-def test_loss_is_differentiable(param, batch) -> None:
+def test_loss_is_differentiable(
+    param: type[FlowParametrization], batch: tuple[torch.Tensor, torch.Tensor]
+) -> None:
     x_0, x_1 = batch
     t = make_timestep(x_0.shape[0], 0.3)
     x_t = param.prepare_x_t(x_0, x_1, t)
@@ -106,7 +117,9 @@ def test_loss_is_differentiable(param, batch) -> None:
 
 
 @pytest.mark.parametrize("param", PARAMETRIZATIONS)
-def test_loss_uses_custom_loss_fn(param, batch) -> None:
+def test_loss_uses_custom_loss_fn(
+    param: type[FlowParametrization], batch: tuple[torch.Tensor, torch.Tensor]
+) -> None:
     x_0, x_1 = batch
     t = make_timestep(x_0.shape[0], 0.3)
     x_t = param.prepare_x_t(x_0, x_1, t)
@@ -121,7 +134,9 @@ def test_loss_uses_custom_loss_fn(param, batch) -> None:
     assert len(calls) == 1
 
 
-def test_rectified_flow_loss_zero_for_perfect_velocity(batch) -> None:
+def test_rectified_flow_loss_zero_for_perfect_velocity(
+    batch: tuple[torch.Tensor, torch.Tensor],
+) -> None:
     x_0, x_1 = batch
     t = make_timestep(x_0.shape[0], 0.3)
     x_t = RectifiedFlowParametrization.prepare_x_t(x_0, x_1, t)
@@ -131,7 +146,9 @@ def test_rectified_flow_loss_zero_for_perfect_velocity(batch) -> None:
     torch.testing.assert_close(out.x_pred, x_1)
 
 
-def test_rectified_flow_step_one_shot_reaches_x_1(batch) -> None:
+def test_rectified_flow_step_one_shot_reaches_x_1(
+    batch: tuple[torch.Tensor, torch.Tensor],
+) -> None:
     x_0, x_1 = batch
     t = make_timestep(x_0.shape[0], 0.0)
     v_pred = x_1 - x_0
@@ -139,7 +156,9 @@ def test_rectified_flow_step_one_shot_reaches_x_1(batch) -> None:
     torch.testing.assert_close(x_final, x_1)
 
 
-def test_jwt_loss_zero_for_perfect_x_1_prediction(batch) -> None:
+def test_jwt_loss_zero_for_perfect_x_1_prediction(
+    batch: tuple[torch.Tensor, torch.Tensor],
+) -> None:
     x_0, x_1 = batch
     t = make_timestep(x_0.shape[0], 0.3)
     x_t = JustWaveformTransformersParametrization.prepare_x_t(x_0, x_1, t)
@@ -148,14 +167,18 @@ def test_jwt_loss_zero_for_perfect_x_1_prediction(batch) -> None:
     torch.testing.assert_close(out.x_pred, x_1)
 
 
-def test_jwt_step_one_shot_reaches_x_1(batch) -> None:
+def test_jwt_step_one_shot_reaches_x_1(
+    batch: tuple[torch.Tensor, torch.Tensor],
+) -> None:
     x_0, x_1 = batch
     t = make_timestep(x_0.shape[0], 0.0)
     x_final = JustWaveformTransformersParametrization.step(x_0, t, x_1, dt=1.0)
     torch.testing.assert_close(x_final, x_1)
 
 
-def test_jwt_step_partial_from_midpoint_reaches_x_1(batch) -> None:
+def test_jwt_step_partial_from_midpoint_reaches_x_1(
+    batch: tuple[torch.Tensor, torch.Tensor],
+) -> None:
     x_0, x_1 = batch
     t = make_timestep(x_0.shape[0], 0.5)
     x_t = JustWaveformTransformersParametrization.prepare_x_t(x_0, x_1, t)
@@ -163,7 +186,9 @@ def test_jwt_step_partial_from_midpoint_reaches_x_1(batch) -> None:
     torch.testing.assert_close(x_final, x_1)
 
 
-def test_jwt_loss_is_finite_at_t_equals_one(batch) -> None:
+def test_jwt_loss_is_finite_at_t_equals_one(
+    batch: tuple[torch.Tensor, torch.Tensor],
+) -> None:
     # The clip(min=0.05) inside JWT loss guards the (1-t) divisor — at t=1
     # the loss must remain finite for the parametrization to be trainable.
     x_0, x_1 = batch
@@ -175,7 +200,9 @@ def test_jwt_loss_is_finite_at_t_equals_one(batch) -> None:
 
 
 @pytest.mark.parametrize("param", PARAMETRIZATIONS)
-def test_integration_with_perfect_prediction_reaches_x_1(param, batch) -> None:
+def test_integration_with_perfect_prediction_reaches_x_1(
+    param: type[FlowParametrization], batch: tuple[torch.Tensor, torch.Tensor]
+) -> None:
     x_0, x_1 = batch
     n_steps = 10
     dt = 1.0 / n_steps

@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -159,7 +160,7 @@ class _Recorder:
     ) -> None:
         self.sections.append(section)
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: str) -> Callable[..., None]:
         return lambda *a, **k: None
 
 

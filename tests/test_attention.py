@@ -19,7 +19,9 @@ def skip_unless_cuda_flash() -> None:
         pytest.skip("flash-attn not installed")
 
 
-def make_qkv(B=2, H=4, T=6, D=8):
+def make_qkv(
+    B: int = 2, H: int = 4, T: int = 6, D: int = 8
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     torch.manual_seed(0)
     return (
         torch.randn(B, H, T, D),

@@ -37,7 +37,7 @@ class ConsoleLogger:
         self,
         total: int | None = None,
         audio_dir: Path | str | None = None,
-    ):
+    ) -> None:
         self.audio_dir = Path(audio_dir) if audio_dir is not None else None
         if self.audio_dir is not None:
             self.audio_dir.mkdir(parents=True, exist_ok=True)

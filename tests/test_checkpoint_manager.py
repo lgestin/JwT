@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 import torch
 from torch import nn
@@ -15,7 +17,7 @@ def const_model(value: float) -> nn.Module:
     return model
 
 
-def test_ema_state_round_trips_through_checkpoint(tmp_path) -> None:
+def test_ema_state_round_trips_through_checkpoint(tmp_path: Path) -> None:
     """EMA shadow weights and decay survive a save / load cycle."""
     model = const_model(1.0)
     optimizer = torch.optim.AdamW(model.parameters())
@@ -43,7 +45,7 @@ def test_ema_state_round_trips_through_checkpoint(tmp_path) -> None:
         assert torch.equal(fresh_ema._shadow[name], tensor)
 
 
-def test_load_without_ema_in_checkpoint_warns(tmp_path) -> None:
+def test_load_without_ema_in_checkpoint_warns(tmp_path: Path) -> None:
     """Loading a pre-EMA checkpoint into an EMA leaves it initialized + warns."""
     model = const_model(1.0)
     optimizer = torch.optim.AdamW(model.parameters())
@@ -61,7 +63,7 @@ def test_load_without_ema_in_checkpoint_warns(tmp_path) -> None:
         assert torch.allclose(tensor, torch.full_like(tensor, 4.0))
 
 
-def test_cleanup_keeps_best_latest_and_recent(tmp_path) -> None:
+def test_cleanup_keeps_best_latest_and_recent(tmp_path: Path) -> None:
     """Cleanup keeps the best target plus the 2 most recent checkpoints."""
     model = const_model(1.0)
     optimizer = torch.optim.AdamW(model.parameters())
@@ -89,7 +91,7 @@ def test_cleanup_keeps_best_latest_and_recent(tmp_path) -> None:
     ]
 
 
-def test_cleanup_keeps_symlinks_resolvable(tmp_path) -> None:
+def test_cleanup_keeps_symlinks_resolvable(tmp_path: Path) -> None:
     """The best and latest symlinks still resolve to real files after cleanup."""
     model = const_model(1.0)
     optimizer = torch.optim.AdamW(model.parameters())
@@ -111,7 +113,7 @@ def test_cleanup_keeps_symlinks_resolvable(tmp_path) -> None:
     assert manager.latest_checkpoint_path.resolve().exists()
 
 
-def test_cleanup_keep_recent_zero_keeps_only_symlink_targets(tmp_path) -> None:
+def test_cleanup_keep_recent_zero_keeps_only_symlink_targets(tmp_path: Path) -> None:
     """keep_recent=0 keeps only the best and latest targets, without crashing."""
     model = const_model(1.0)
     optimizer = torch.optim.AdamW(model.parameters())

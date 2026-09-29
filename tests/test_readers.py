@@ -1,6 +1,8 @@
 import http.client
 import json
 from collections import Counter
+from pathlib import Path
+from typing import Self
 
 import pytest
 
@@ -8,7 +10,7 @@ from jwt.data import readers
 from jwt.data.readers import read_hifitts2, read_ljspeech, select_hifitts2_chapters
 
 
-def test_read_ljspeech_namespaces_speaker_and_sessions(tmp_path) -> None:
+def test_read_ljspeech_namespaces_speaker_and_sessions(tmp_path: Path) -> None:
     """LJSpeech is one speaker; the book is the session, the clip its position."""
     (tmp_path / "metadata.csv").write_text(
         "LJ001-0002|raw|Second.\nLJ002-0007|raw|Other book.\n", encoding="utf-8"
@@ -24,7 +26,7 @@ def utterance(path: str, offset: float, duration: float) -> dict:
     return {"audio_filepath": path, "offset": offset, "duration": duration}
 
 
-def write_hifitts2(tmp_path):
+def write_hifitts2(tmp_path: Path) -> tuple[Path, Path]:
     chapters = [
         {
             "url": "http://x/a.mp3",
@@ -54,7 +56,7 @@ def write_hifitts2(tmp_path):
     return manifest_path, chapters_path
 
 
-def cache_mp3s(tmp_path, *names):
+def cache_mp3s(tmp_path: Path, *names: str) -> Path:
     cache = tmp_path / "cache"
     for name in names:
         (cache / name).parent.mkdir(parents=True, exist_ok=True)
@@ -62,7 +64,7 @@ def cache_mp3s(tmp_path, *names):
     return cache
 
 
-def test_read_hifitts2_fields_from_cached_chapters(tmp_path) -> None:
+def test_read_hifitts2_fields_from_cached_chapters(tmp_path: Path) -> None:
     """Utterances come from cached chapter MP3s at their manifest offsets."""
     manifest, chapters = write_hifitts2(tmp_path)
     cache = cache_mp3s(tmp_path, "1/9/a.mp3", "2/9/b.mp3")
@@ -75,19 +77,21 @@ def test_read_hifitts2_fields_from_cached_chapters(tmp_path) -> None:
     assert utts["b_0"].speaker == "hifitts2/2"
 
 
-def test_select_hifitts2_chapters_stops_at_hours(tmp_path) -> None:
+def test_select_hifitts2_chapters_stops_at_hours(tmp_path: Path) -> None:
     """Chapter selection stops once the requested hours are reached."""
     _, chapters = write_hifitts2(tmp_path)
     assert len(select_hifitts2_chapters(chapters, hours=None)) == 2
     assert len(select_hifitts2_chapters(chapters, hours=1e-6)) == 1
 
 
-def test_read_hifitts2_skips_undownloadable_chapter(tmp_path, monkeypatch) -> None:
+def test_read_hifitts2_skips_undownloadable_chapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A failed download warns and counts the chapter's utterances as dropped."""
     manifest, chapters = write_hifitts2(tmp_path)
     cache = cache_mp3s(tmp_path, "2/9/b.mp3")
 
-    def fail(url, path):
+    def fail(url: str, path: Path) -> None:
         raise OSError("404")
 
     monkeypatch.setattr(readers, "download", fail)
@@ -98,23 +102,25 @@ def test_read_hifitts2_skips_undownloadable_chapter(tmp_path, monkeypatch) -> No
     assert drops == {"download": 2}  # both utterances of the skipped chapter
 
 
-def test_download_failures_skip_the_chapter(tmp_path, monkeypatch) -> None:
+def test_download_failures_skip_the_chapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Downloads time out, and a truncated response skips the chapter, not the run."""
     manifest, chapters = write_hifitts2(tmp_path)
     cache = cache_mp3s(tmp_path, "2/9/b.mp3")
     timeouts = []
 
     class Truncated:
-        def __enter__(self):
+        def __enter__(self) -> Self:
             return self
 
-        def __exit__(self, *exc):
+        def __exit__(self, *exc: object) -> bool:
             return False
 
-        def read(self, *args):
+        def read(self, *args: object) -> bytes:
             raise http.client.IncompleteRead(b"")
 
-    def urlopen(url, timeout=None):
+    def urlopen(url: str, timeout: float | None = None) -> Truncated:
         timeouts.append(timeout)
         return Truncated()
 

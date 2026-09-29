@@ -1,3 +1,6 @@
+from collections.abc import Callable
+from pathlib import Path
+
 import pyarrow as pa
 
 from jwt.data.prepared import (
@@ -30,11 +33,11 @@ def row(i: int) -> dict:
     }
 
 
-def read_table(path) -> pa.Table:
+def read_table(path: Path) -> pa.Table:
     return pa.ipc.open_file(pa.memory_map(str(path))).read_all()
 
 
-def test_shard_writer_splits_rows_across_shards(tmp_path) -> None:
+def test_shard_writer_splits_rows_across_shards(tmp_path: Path) -> None:
     """Rows fill numbered shards of at most rows_per_shard, in order."""
     schema = build_schema()
     with ShardWriter(tmp_path, schema, rows_per_shard=2, batch_size=3) as writer:
@@ -49,14 +52,14 @@ def test_shard_writer_splits_rows_across_shards(tmp_path) -> None:
     assert writer.n_rows == 5
 
 
-def test_meta_round_trips(tmp_path) -> None:
+def test_meta_round_trips(tmp_path: Path) -> None:
     """meta.json reloads to the same PreparedMeta."""
     meta = PreparedMeta(sample_rate=24000, target_loudness=-24.0, aligner="MMS_FA")
     write_meta(tmp_path, meta)
     assert read_meta(tmp_path) == meta
 
 
-def test_make_prepared_fixture_geometry(make_prepared) -> None:
+def test_make_prepared_fixture_geometry(make_prepared: Callable[..., Path]) -> None:
     """The fixture writes 0.5 s words of 'ab' at 100 Hz (5 frames of 10 per word)."""
     folder = make_prepared("d", [("u0", "d/a", "s0", 0, 3)])
     table = read_table(shard_paths(folder)[0])

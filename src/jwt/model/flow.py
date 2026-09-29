@@ -14,7 +14,7 @@ class FlowParametrizations(StrEnum):
     RECTIFIED_FLOW = "rectified_flow"
 
     @property
-    def parametrization(self):
+    def parametrization(self) -> "type[FlowParametrization]":
         match self:
             case FlowParametrizations.RECTIFIED_FLOW:
                 return RectifiedFlowParametrization

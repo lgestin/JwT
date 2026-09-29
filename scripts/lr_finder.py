@@ -23,7 +23,7 @@ from torch.utils.data import DataLoader
 
 from jwt.data.audio.codecs import Codec, Codecs, RawAudioPatcher
 from jwt.data.collate import collate
-from jwt.data.dataset import AudioDataset
+from jwt.data.dataset import AudioDataset, Batch
 from jwt.data.source import ArrowTTSSource
 from jwt.data.text import Tokenizer, Vocabulary
 from jwt.model.flow import FlowParametrizations
@@ -66,7 +66,7 @@ class Args:
 def training_step(
     model: RollingFlowSpeaker,
     codec: Codec,
-    batch,
+    batch: Batch,
     device: torch.device,
     amp_dtype: torch.dtype,
     noamp: bool,

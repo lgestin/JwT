@@ -6,7 +6,7 @@ from jwt.training.metrics.utils import to_16khz_mono
 
 
 class UTMOS(nn.Module, AbsoluteMetric):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         model = torch.hub.load(
             "tarepan/SpeechMOS:v1.2.0", "utmos22_strong", trust_repo=True
@@ -15,7 +15,7 @@ class UTMOS(nn.Module, AbsoluteMetric):
         self.model = model
 
     @property
-    def device(self):
+    def device(self) -> torch.device:
         return next(self.parameters()).device
 
     @torch.inference_mode()

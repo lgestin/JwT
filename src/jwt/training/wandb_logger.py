@@ -94,7 +94,7 @@ class WandbLogger:
         group: str | None = None,
         tags: list[str] | None = None,
         mode: str | None = None,
-    ):
+    ) -> None:
         Path(log_dir).mkdir(parents=True, exist_ok=True)
         self.run = wandb.init(
             project=project,

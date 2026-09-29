@@ -14,7 +14,9 @@ S = 16 * 256  # short signals for the time-domain pair
 S_PERC = SAMPLE_RATE  # 1 s — PESQ/STOI need at least ~1/4 s of audio
 
 
-def make_wavs(batch: int = 2, n_samples: int = S, seed: int = SEED):
+def make_wavs(
+    batch: int = 2, n_samples: int = S, seed: int = SEED
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Seeded (pred, target) pair, pred = target + small noise. Shapes (B, S)."""
     g = torch.Generator().manual_seed(seed)
     target = torch.randn(batch, n_samples, generator=g) * 0.063
@@ -171,7 +173,7 @@ def test_nisqa_returns_all_five_dimensions() -> None:
         assert torch.isfinite(v).all()
 
 
-def test_utmos_scores_with_stubbed_hub(monkeypatch) -> None:
+def test_utmos_scores_with_stubbed_hub(monkeypatch: pytest.MonkeyPatch) -> None:
     """UTMOS wiring (resample + dict contract) without the torch.hub download."""
 
     class _StubMOS(torch.nn.Module):
@@ -186,7 +188,7 @@ def test_utmos_scores_with_stubbed_hub(monkeypatch) -> None:
     assert out["utmos"].shape == (2,)
 
 
-def test_metric_classes_reject_masks(monkeypatch) -> None:
+def test_metric_classes_reject_masks(monkeypatch: pytest.MonkeyPatch) -> None:
     """Masked scoring is deliberately unsupported — a mask must raise, not be
     silently ignored."""
     pred, target = make_wavs()

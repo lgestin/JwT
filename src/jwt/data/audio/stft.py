@@ -14,7 +14,7 @@ class STFT(nn.Module):
         hop_length: int,
         window: Literal["hann", "hamming"] = "hamming",
         center: bool = False,
-    ):
+    ) -> None:
         super().__init__()
         self.n_fft = n_fft
         self.hop_length = hop_length
@@ -110,7 +110,7 @@ class MelSpectrogram(STFT):
         center: bool = False,
         mel_scale: Literal["htk", "slaney"] = "htk",
         n_mfcc: int | None = None,
-    ):
+    ) -> None:
         super().__init__(
             n_fft=n_fft, hop_length=hop_length, window=window, center=center
         )
@@ -168,7 +168,7 @@ class MelSpectrogram(STFT):
         pred: torch.Tensor,
         trgt: torch.Tensor,
         eps: float = 1e-8,
-    ):
+    ) -> torch.Tensor:
         pred_logmel = self.logmel(pred, eps=eps, log_base=math.e)
         trgt_logmel = self.logmel(trgt, eps=eps, log_base=math.e)
         pred_cep = torch.einsum("bmt,mk->bkt", pred_logmel, self.dct)[:, 1:]

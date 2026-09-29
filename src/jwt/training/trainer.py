@@ -3,7 +3,7 @@ import math
 import time
 import warnings
 from collections import defaultdict
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -61,12 +61,12 @@ class AMPDtype(StrEnum):
     FP32 = "fp32"
 
     @property
-    def dtype(self):
+    def dtype(self) -> torch.dtype:
         if self == AMPDtype.FP16:
             return torch.float16
         elif self == AMPDtype.BF16:
             return torch.bfloat16
-        elif self == AMPDtype.FP32:
+        else:
             return torch.float32
 
 
@@ -93,45 +93,47 @@ class TrainerConfig:
 
 
 class Trainer:
-    def __init__(self, config: TrainerConfig, state: TrainerState | None = None):
+    def __init__(
+        self, config: TrainerConfig, state: TrainerState | None = None
+    ) -> None:
         self.config = config
         self.state = state or TrainerState(step=0)
         self._device = torch.device(config.device)
 
     @property
-    def device(self):
+    def device(self) -> torch.device:
         return self._device
 
     @property
-    def amp_dtype(self):
+    def amp_dtype(self) -> torch.dtype:
         return self.config.amp_dtype.dtype
 
     @property
-    def smp_steps(self):
+    def smp_steps(self) -> int:
         return self.config.smp_steps
 
     @property
-    def valid_steps(self):
+    def valid_steps(self) -> int:
         return self.config.valid_steps
 
     @property
-    def checkpoint_steps(self):
+    def checkpoint_steps(self) -> int:
         return self.config.checkpoint_steps
 
     @property
-    def max_steps(self):
+    def max_steps(self) -> int:
         return self.config.max_steps
 
     @property
-    def noamp(self):
+    def noamp(self) -> bool:
         return self._device.type != "cuda"
 
     @property
-    def step(self):
+    def step(self) -> int:
         return self.state.step
 
     @property
-    def best_loss(self):
+    def best_loss(self) -> float:
         return self.state.best_loss
 
 
@@ -184,7 +186,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         checkpoint_manager: CheckpointManager | None,
         ema: EMA | None = None,
         valid_unseen_dloader: DataLoader | None = None,
-    ):
+    ) -> None:
         super().__init__(config=config, state=state)
         self.codec = codec
         # Sample rate is a property of the dataset, not the codec — the training
@@ -218,11 +220,11 @@ class TTSRollingFlowMatchingTrainer(Trainer):
     def prepare_acoustic(self, batch: Batch) -> MaskedTensor:
         return prepare_acoustic_batch(batch, self.codec, self.model.cfg.eos_n_frames)
 
-    def ema_weights(self):
+    def ema_weights(self) -> AbstractContextManager[None]:
         """EMA weights installed for the block, or a no-op when EMA is off."""
         return self.ema.swapped(self.model) if self.ema is not None else nullcontext()
 
-    def train(self):
+    def train(self) -> None:
         self.log_initial_samples()
         self.log_timestep_schedule()
         self.optimizer.zero_grad()
@@ -593,7 +595,9 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self.optimizer.zero_grad()
         return metrics
 
-    def valid_pass(self, dloader) -> tuple[dict[str, float], dict, dict, int]:
+    def valid_pass(
+        self, dloader: DataLoader
+    ) -> tuple[dict[str, float], dict, dict, int]:
         """Sum training_step metrics and diagnostics over a validation loader."""
         sums: dict[str, float] = {}
         diag_accum: dict[str, torch.Tensor] = {}
@@ -618,7 +622,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             self.logger.log_metrics(metrics, self.step, prefix="valid_unseen")
 
     @torch.inference_mode()
-    def validation(self):
+    def validation(self) -> None:
         self.model.eval()
         if hasattr(self.optimizer, "eval"):
             self.optimizer.eval()  # ty: ignore[call-non-callable]
@@ -798,8 +802,8 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             SampleRecord(
                 index=si,
                 audio={
-                    "pred": Audio(pred_wav[i], self.sample_rate),  # ty: ignore[invalid-argument-type]
-                    "target": Audio(trgt_wav[i], self.sample_rate),  # ty: ignore[invalid-argument-type]
+                    "pred": Audio(pred_wav[i], self.sample_rate),
+                    "target": Audio(trgt_wav[i], self.sample_rate),
                 },
                 images=attention.get(si, {}),
                 metrics={k: float(per_sample[k][i]) for k in keys},
@@ -880,7 +884,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self.logger.log_metrics(metrics, self.step, prefix="sampled")
 
     @torch.inference_mode()
-    def log_samples(self):
+    def log_samples(self) -> None:
         self.model.eval()
         batch = next(iter(self.smp_dloader)).to(self.device)
         n = min(len(batch.audios), self.config.n_smp)
@@ -937,7 +941,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             wav = self.codec.decode(self.codec.unnormalize(ac_i))[0]
             record = SampleRecord(
                 index=i,
-                audio={"audio": Audio(wav, self.sample_rate)},  # ty: ignore[invalid-argument-type]
+                audio={"audio": Audio(wav, self.sample_rate)},
             )
             if i in att:
                 record.images.update(att[i])
@@ -962,7 +966,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             # References share the smp batch, so indices align for the join.
             self.logger.log_samples("samples", records, self.step, join="references")
 
-    def log_initial_samples(self):
+    def log_initial_samples(self) -> None:
         smp_batch = next(iter(self.smp_dloader))
         n = min(len(smp_batch.audios), self.config.n_smp)
 
@@ -989,7 +993,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                     index=i,
                     audio={
                         "clean": Audio(audio.waveform, audio.sample_rate),
-                        "reconstructed": Audio(reconstructed, self.sample_rate),  # ty: ignore[invalid-argument-type]
+                        "reconstructed": Audio(reconstructed, self.sample_rate),
                     },
                     images={
                         "clean_mel": mel_image(clean_viz),

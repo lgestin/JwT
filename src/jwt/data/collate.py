@@ -5,7 +5,7 @@ from jwt.data.dataset import Batch, Sample
 
 
 def pad_sequences_longest(
-    sequences: list[torch.Tensor], mode="constant"
+    sequences: list[torch.Tensor], mode: str = "constant"
 ) -> tuple[list[torch.Tensor], list[int]]:
     lengths = [seq.size(-1) for seq in sequences]
     max_length = max(lengths)

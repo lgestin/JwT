@@ -20,7 +20,7 @@ class CheckpointManager:
     exp_path: Path
     save_best: bool = True
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Coerce str inputs and create the directory."""
         self.exp_path = Path(self.exp_path)
         self.exp_path.mkdir(parents=True, exist_ok=True)

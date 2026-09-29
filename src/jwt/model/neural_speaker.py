@@ -58,16 +58,16 @@ class MaskedTensor:
     values: torch.Tensor
     mask: torch.BoolTensor
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         assert self.values.shape[-1] == self.mask.shape[-1]
         assert self.values.ndim == self.mask.ndim + 1
 
     @property
-    def shape(self):
+    def shape(self) -> torch.Size:
         return self.values.shape
 
     @property
-    def masked_shape(self):
+    def masked_shape(self) -> torch.Tensor:
         return self.mask.sum(-1)
 
 
@@ -90,7 +90,7 @@ class TrainingStepOutput:
 class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
     phoneme_per_audio_patch: torch.Tensor
 
-    def __init__(self, cfg: RollingFlowConfig):
+    def __init__(self, cfg: RollingFlowConfig) -> None:
         nn.Module.__init__(self)
         self.cfg = cfg
         # Resolve the parametrization class once — it's a static dispatch table,

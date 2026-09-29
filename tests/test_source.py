@@ -1,3 +1,7 @@
+from collections.abc import Callable
+from pathlib import Path
+from typing import NoReturn
+
 import pytest
 import torch
 
@@ -12,7 +16,7 @@ from jwt.data.text import Tokenizer, Vocabulary
 TOKENIZER = Tokenizer(Vocabulary({"a": 0, "b": 1, " ": 2}))
 
 
-def test_arrow_source_concatenates_shards(make_prepared) -> None:
+def test_arrow_source_concatenates_shards(make_prepared: Callable[..., Path]) -> None:
     """All shards form one source with its light columns in memory."""
     folder = make_prepared(
         "d",
@@ -38,10 +42,12 @@ def test_arrow_source_concatenates_shards(make_prepared) -> None:
     ]
 
 
-def test_arrow_source_item_uses_stored_phonemes(make_prepared, monkeypatch) -> None:
+def test_arrow_source_item_uses_stored_phonemes(
+    make_prepared: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Items use stored phonemes and patch the waveform into frames."""
 
-    def boom():
+    def boom() -> NoReturn:
         raise AssertionError("G2P must not run")
 
     monkeypatch.setattr("jwt.data.text.text.get_phonemizer", boom)
@@ -60,7 +66,7 @@ def test_arrow_source_item_uses_stored_phonemes(make_prepared, monkeypatch) -> N
     assert torch.equal(audio.acoustic[0, :, 1], audio.waveform[0, 10:20])
 
 
-def test_arrow_source_requires_shards(make_prepared) -> None:
+def test_arrow_source_requires_shards(make_prepared: Callable[..., Path]) -> None:
     """A directory without shards fails at construction."""
     folder = make_prepared("d", [("u0", "d/a", None, None, 1)])
     for path in folder.glob("*.arrow"):
@@ -69,7 +75,9 @@ def test_arrow_source_requires_shards(make_prepared) -> None:
         ArrowTTSSource(str(folder), tokenizer=None, patch_size=10)
 
 
-def test_check_same_sample_rate_rejects_mismatch(make_prepared) -> None:
+def test_check_same_sample_rate_rejects_mismatch(
+    make_prepared: Callable[..., Path],
+) -> None:
     """Mixing sample rates fails and names the offending dataset."""
     a = ArrowTTSSource(str(make_prepared("a", [("u", "a/x", None, None, 1)])), None, 10)
     b = ArrowTTSSource(str(make_prepared("b", [("u", "b/x", None, None, 1)])), None, 10)
@@ -79,7 +87,7 @@ def test_check_same_sample_rate_rejects_mismatch(make_prepared) -> None:
         check_same_sample_rate([a, b], ["path_a", "path_b"])
 
 
-def test_arrow_source_pads_last_patch(make_prepared) -> None:
+def test_arrow_source_pads_last_patch(make_prepared: Callable[..., Path]) -> None:
     """Patches come from reshaping the waveform; a partial last patch is zero-padded."""
     source = ArrowTTSSource(
         str(make_prepared("d", [("u", "d/x", None, None, 1)])), None, 20
@@ -92,7 +100,7 @@ def test_arrow_source_pads_last_patch(make_prepared) -> None:
     )
 
 
-def test_lj_source_works_without_a_tokenizer(tmp_path) -> None:
+def test_lj_source_works_without_a_tokenizer(tmp_path: Path) -> None:
     """The LJSpeech reader for create_arrow.py uses LJTTSSource before any
     vocabulary exists — construction and item access must not require one."""
     (tmp_path / "metadata.csv").write_text(
@@ -105,7 +113,7 @@ def test_lj_source_works_without_a_tokenizer(tmp_path) -> None:
     assert text.text == "normalized text"
 
 
-def test_lj_source_threads_sample_rate_to_audio(tmp_path) -> None:
+def test_lj_source_threads_sample_rate_to_audio(tmp_path: Path) -> None:
     (tmp_path / "metadata.csv").write_text(
         "LJ001-0001|raw text|normalized text\n", encoding="utf-8"
     )
