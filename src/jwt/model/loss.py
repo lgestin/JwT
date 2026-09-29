@@ -11,8 +11,8 @@ LossFn = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 class LossFns(StrEnum):
     """Per-element loss functions, selectable from config.
 
-    Each variant resolves to the corresponding ``F.*_loss`` with
-    ``reduction="none"`` — the elementwise error tensor, same shape as the
+    Each variant resolves to the corresponding `F.*_loss` with
+    `reduction="none"` — the elementwise error tensor, same shape as the
     inputs. Reducing (over the feature dim, then the masked time axis) is the
     caller's job.
     """

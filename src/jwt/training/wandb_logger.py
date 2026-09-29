@@ -1,7 +1,7 @@
 """Weights & Biases logging backend.
 
-Every ``wandb.log`` call carries a ``trainer/step`` field instead of wandb's
-own monotonic step (``define_metric("*", step_metric="trainer/step")``), so
+Every `wandb.log` call carries a `trainer/step` field instead of wandb's
+own monotonic step (`define_metric("*", step_metric="trainer/step")`), so
 out-of-order logging — reference audio at step 0, resumed runs — just works
 and every panel plots against the trainer step.
 """

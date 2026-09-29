@@ -20,10 +20,10 @@ class EMAConfig:
 class EMA:
     """Exponential moving average of a model's trainable parameters.
 
-    Holds a shadow fp32 copy of every parameter with ``requires_grad`` and
+    Holds a shadow fp32 copy of every parameter with `requires_grad` and
     nudges it toward the live weights after each optimizer step. A decay-warmup
     keeps early-init weights from being locked in. Evaluation borrows the
-    shadow weights via the ``swapped`` context manager, which copies in place
+    shadow weights via the `swapped` context manager, which copies in place
     so a compiled forward graph is left untouched.
     """
 
@@ -50,9 +50,9 @@ class EMA:
 
     @contextmanager
     def swapped(self, model: Module) -> Iterator[None]:
-        """Install the EMA weights into ``model`` for the duration of the block.
+        """Install the EMA weights into `model` for the duration of the block.
 
-        The swap is an in-place ``copy_``, so parameter identities are
+        The swap is an in-place `copy_`, so parameter identities are
         preserved and a compiled forward graph does not recompile. The
         original weights are restored on exit, including on exception.
         """
@@ -75,7 +75,7 @@ class EMA:
         return {"decay": self.decay, "shadow": self._shadow}
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
-        """Restore EMA state saved by ``state_dict``, in place."""
+        """Restore EMA state saved by `state_dict`, in place."""
         self.decay = state["decay"]
         loaded = state["shadow"]
         with torch.no_grad():

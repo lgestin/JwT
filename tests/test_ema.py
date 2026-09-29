@@ -6,7 +6,7 @@ from jwt.training.ema import EMA, EMAConfig
 
 
 def const_model(value: float) -> nn.Module:
-    """A 2x2 linear layer with every parameter filled with ``value``."""
+    """A 2x2 linear layer with every parameter filled with `value`."""
     model = nn.Linear(2, 2)
     with torch.no_grad():
         for param in model.parameters():

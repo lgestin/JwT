@@ -8,29 +8,29 @@ class TimestepSchedule(Protocol):
     """Warp from uniform denoising progress to the flow-matching timestep."""
 
     def timestep(self, progress: torch.Tensor) -> torch.Tensor:
-        """Map denoising progress in ``[0, 1]`` to a timestep in ``[0, 1]``.
+        """Map denoising progress in `[0, 1]` to a timestep in `[0, 1]`.
 
-        Must be monotonic non-decreasing and fix the endpoints: ``0 -> 0`` and
-        ``1 -> 1``. Applied elementwise, shape-preserving.
+        Must be monotonic non-decreasing and fix the endpoints: `0 -> 0` and
+        `1 -> 1`. Applied elementwise, shape-preserving.
         """
         ...
 
     def timesteps(self, n_steps: int) -> torch.Tensor:
-        """The full timestep grid of an ``n_steps`` denoising trajectory.
+        """The full timestep grid of an `n_steps` denoising trajectory.
 
-        ``timestep`` applied to the uniform progress grid
-        ``{0, 1/(n_steps-1), ..., 1}``; returns a ``(n_steps,)`` tensor. Every
+        `timestep` applied to the uniform progress grid
+        `{0, 1/(n_steps-1), ..., 1}`; returns a `(n_steps,)` tensor. Every
         schedule shares this warp-on-the-uniform-grid construction, so it is
-        derived here from ``timestep`` rather than reimplemented per schedule.
+        derived here from `timestep` rather than reimplemented per schedule.
         """
         return self.timestep(torch.linspace(0.0, 1.0, n_steps))
 
     def dt(self, progress: torch.Tensor, n_steps: int) -> torch.Tensor:
-        """Per-position Euler step size taken from each ``progress``.
+        """Per-position Euler step size taken from each `progress`.
 
-        Equals ``timestep(progress + h) - timestep(progress)`` with
-        ``h = 1 / (n_steps - 1)`` — the timestep advance of one rolling step.
-        Same shape as ``progress``.
+        Equals `timestep(progress + h) - timestep(progress)` with
+        `h = 1 / (n_steps - 1)` — the timestep advance of one rolling step.
+        Same shape as `progress`.
         """
         ...
         return euler_dt(self, progress, n_steps)
@@ -39,11 +39,11 @@ class TimestepSchedule(Protocol):
 def euler_dt(
     scheduler: TimestepSchedule, progress: torch.Tensor, n_steps: int
 ) -> torch.Tensor:
-    """Generic Euler step size — ``t(progress + h) - t(progress)`` by finite
+    """Generic Euler step size — `t(progress + h) - t(progress)` by finite
     difference, for schedules whose step size is not constant.
 
-    ``progress + h`` is clamped to 1 so the final rolling step lands exactly on
-    ``t = 1`` instead of reading the schedule past its domain.
+    `progress + h` is clamped to 1 so the final rolling step lands exactly on
+    `t = 1` instead of reading the schedule past its domain.
     """
     h = 1.0 / (n_steps - 1)
     nxt = (progress + h).clamp(max=1.0)
@@ -51,7 +51,7 @@ def euler_dt(
 
 
 class LinearTimestepSchedule(TimestepSchedule):
-    """Identity warp: ``t == progress``, i.e. uniform timestep spacing.
+    """Identity warp: `t == progress`, i.e. uniform timestep spacing.
 
     This reproduces the schedule the rolling model originally hard-coded.
     """
@@ -61,23 +61,23 @@ class LinearTimestepSchedule(TimestepSchedule):
 
 
 class LogNormTimestepSchedule(TimestepSchedule):
-    """Logit-normal warp: ``t = sigmoid(mean + std * Phi_inv(progress))``.
+    """Logit-normal warp: `t = sigmoid(mean + std * Phi_inv(progress))`.
 
-    ``Phi_inv`` is the standard-normal quantile function, so the uniform
+    `Phi_inv` is the standard-normal quantile function, so the uniform
     progress grid is placed at the quantiles of a logit-normal(mean, std)
     distribution — the deterministic, rolling-grid analogue of drawing
     timesteps from logit-normal(mean, std) (the SD3 sampling distribution).
 
-    ``mean < 0`` concentrates the schedule toward small ``t`` (the noisy,
-    generative timesteps); ``std`` controls how peaked the concentration is.
+    `mean < 0` concentrates the schedule toward small `t` (the noisy,
+    generative timesteps); `std` controls how peaked the concentration is.
 
-    ``eps`` trims that fraction of probability mass from each tail before
-    warping: the uniform progress grid is squeezed into ``[eps, 1 - eps]`` and
-    the resulting timesteps are rescaled back onto ``[0, 1]``. The logit-normal
+    `eps` trims that fraction of probability mass from each tail before
+    warping: the uniform progress grid is squeezed into `[eps, 1 - eps]` and
+    the resulting timesteps are rescaled back onto `[0, 1]`. The logit-normal
     quantile function has unbounded slope at progress 0 and 1, which makes the
     first and (especially) last Euler steps disproportionately large; trimming
     the tails bounds those steps without flattening the early-emphasis bump.
-    ``eps = 0`` is the untrimmed logit-normal.
+    `eps = 0` is the untrimmed logit-normal.
     """
 
     def __init__(self, mean: float = 0.0, std: float = 1.0, eps: float = 0.0) -> None:

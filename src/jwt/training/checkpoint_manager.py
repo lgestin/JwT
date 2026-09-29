@@ -251,12 +251,12 @@ class CheckpointManager:
     def cleanup_old_checkpoints(self, keep_recent: int = 2) -> None:
         """Remove checkpoints not worth keeping during a training run.
 
-        Keeps the checkpoints targeted by the ``best`` and ``latest`` symlinks
-        plus the ``keep_recent`` highest-step checkpoints; deletes the rest.
+        Keeps the checkpoints targeted by the `best` and `latest` symlinks
+        plus the `keep_recent` highest-step checkpoints; deletes the rest.
 
         Args:
             keep_recent: Number of most-recent checkpoints to keep, in addition
-                to the ``best`` and ``latest`` symlink targets.
+                to the `best` and `latest` symlink targets.
         """
         # Glob only numeric-stepped checkpoints — "checkpoint.*.pt" would also
         # match the "checkpoint.best.pt" symlink, and int("best") raises.

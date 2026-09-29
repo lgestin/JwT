@@ -59,7 +59,7 @@ class Word(NamedTuple):
 
 
 class ArrowTTSSource(TTSSource):
-    """Reads a prepared dataset directory (see ``jwt.data.prepared``).
+    """Reads a prepared dataset directory (see `jwt.data.prepared`).
 
     Shards are memory-mapped; light columns stay in memory for splits and audio
     prompt selection, audio is decoded per item and reshaped into `patch_size`

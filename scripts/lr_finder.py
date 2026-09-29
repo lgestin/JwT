@@ -1,11 +1,11 @@
 """LR range test (Smith) for RollingFlowSpeaker.
 
-Ramps the learning rate exponentially from ``min_lr`` to ``max_lr`` over
-``num_steps`` optimizer steps, logging loss and the pre-step gradient
+Ramps the learning rate exponentially from `min_lr` to `max_lr` over
+`num_steps` optimizer steps, logging loss and the pre-step gradient
 norm. No gradient clipping, no validation, no sampling, no checkpoints.
 
-After the run, writes ``lr_find.png`` (smoothed loss + grad norm vs LR)
-to ``output_dir`` and prints the LR at minimum smoothed loss and the LR
+After the run, writes `lr_find.png` (smoothed loss + grad norm vs LR)
+to `output_dir` and prints the LR at minimum smoothed loss and the LR
 at which the run diverged (if it did).
 
 Heuristic for picking a max LR: ~10x below the divergence LR, or just
