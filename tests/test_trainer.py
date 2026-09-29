@@ -54,16 +54,16 @@ def test_diagnostics_emit_unreweighted_x1_error_curve() -> None:
         mask=torch.ones(1, 2, dtype=torch.bool),
     )
 
-    _, bins = trainer._step_diagnostics(out, text, acoustic)
-    trainer._emit_loss_curves(bins, step=0, prefix="train")
+    _, bins = trainer.step_diagnostics(out, text, acoustic)
+    trainer.emit_loss_curves(bins, step=0, prefix="train")
 
     assert logger.curves["by_t/train_fm_loss"] == pytest.approx([0.1, 0.9], abs=1e-4)
     # |2 - 5| = 3.0 in bin 0; |5.05 - 5| = 0.05 in bin 1 — the reverse ranking.
     assert logger.curves["by_t/train_x1_err"] == pytest.approx([3.0, 0.05], abs=1e-4)
 
 
-def _diag_inputs() -> tuple[TrainingStepOutput, MaskedTensor, MaskedTensor]:
-    """Shared `_step_diagnostics` inputs: 2 frames, t-bins 0 (t=0.25) and 1."""
+def diag_inputs() -> tuple[TrainingStepOutput, MaskedTensor, MaskedTensor]:
+    """Shared `step_diagnostics` inputs: 2 frames, t-bins 0 (t=0.25) and 1."""
     out = TrainingStepOutput(
         loss=torch.tensor(0.5),
         x_pred=torch.tensor([[[2.0], [5.05]]]),  # (B=1, T=2, D=1)
@@ -92,8 +92,8 @@ def test_loss_curves_are_plotted_on_the_bin_centre_grid() -> None:
     logger = _RecordingLogger()
     trainer.logger = logger  # type: ignore[assignment]
 
-    _, bins = trainer._step_diagnostics(*_diag_inputs())
-    trainer._emit_loss_curves(bins, step=0, prefix="train")
+    _, bins = trainer.step_diagnostics(*diag_inputs())
+    trainer.emit_loss_curves(bins, step=0, prefix="train")
 
     assert logger.grids["by_t/train_fm_loss"] == pytest.approx(
         [0.125, 0.375, 0.625, 0.875]
@@ -110,8 +110,8 @@ def test_empty_t_bins_stay_nan_so_the_curve_gaps() -> None:
     trainer.logger = logger  # type: ignore[assignment]
 
     # Samples land at t=0.25 and t=0.75 only — bins 0 and 2 stay empty.
-    _, bins = trainer._step_diagnostics(*_diag_inputs())
-    trainer._emit_loss_curves(bins, step=0, prefix="train")
+    _, bins = trainer.step_diagnostics(*diag_inputs())
+    trainer.emit_loss_curves(bins, step=0, prefix="train")
 
     curve = logger.curves["by_t/train_fm_loss"]
     assert [math.isnan(v) for v in curve] == [True, False, True, False]
@@ -123,8 +123,8 @@ _SPECTRAL_KEYS = {"logstft_l1", "mel_cepstral_distortion"}
 _WAVEFORM_KEYS = {"si_snr", "snr", "mag_snr", "phase_snr_gap"}
 
 
-def _metrics_trainer(hop: int = 256) -> TTSRollingFlowMatchingTrainer:
-    """Trainer stub with just enough state for `_reconstruction_metrics`."""
+def metrics_trainer(hop: int = 256) -> TTSRollingFlowMatchingTrainer:
+    """Trainer stub with just enough state for `reconstruction_metrics`."""
     trainer = TTSRollingFlowMatchingTrainer.__new__(TTSRollingFlowMatchingTrainer)
     trainer.config = TrainerConfig(device="cpu")
     trainer.codec = RawAudioPatcher(patch_size=hop)
@@ -144,7 +144,7 @@ def _metrics_trainer(hop: int = 256) -> TTSRollingFlowMatchingTrainer:
 
 def test_reconstruction_metrics_cheap_pair_in_train_mode() -> None:
     """Train mode computes only the cheap time-domain pair."""
-    trainer = _metrics_trainer()
+    trainer = metrics_trainer()
     trainer.model.train()
 
     g = torch.Generator().manual_seed(0)
@@ -153,7 +153,7 @@ def test_reconstruction_metrics_cheap_pair_in_train_mode() -> None:
     v_mask = torch.ones(2, 16, dtype=torch.bool)
 
     metrics: dict[str, torch.Tensor] = {}
-    trainer._reconstruction_metrics(metrics, pred, target, v_mask)
+    trainer.reconstruction_metrics(metrics, pred, target, v_mask)
 
     assert set(metrics) == _WAVEFORM_KEYS
     for v in metrics.values():
@@ -162,7 +162,7 @@ def test_reconstruction_metrics_cheap_pair_in_train_mode() -> None:
 
 def test_reconstruction_metrics_squeezes_channel_dim() -> None:
     """(B, 1, S) waveforms (vocoder-shaped decodes) are squeezed to (B, S)."""
-    trainer = _metrics_trainer()
+    trainer = metrics_trainer()
     trainer.model.eval()
 
     g = torch.Generator().manual_seed(0)
@@ -171,7 +171,7 @@ def test_reconstruction_metrics_squeezes_channel_dim() -> None:
     v_mask = torch.ones(2, 16, dtype=torch.bool)
 
     metrics: dict[str, torch.Tensor] = {}
-    trainer._reconstruction_metrics(metrics, pred, target, v_mask)
+    trainer.reconstruction_metrics(metrics, pred, target, v_mask)
 
     assert set(metrics) == _WAVEFORM_KEYS | _SPECTRAL_KEYS
     for v in metrics.values():
@@ -180,7 +180,7 @@ def test_reconstruction_metrics_squeezes_channel_dim() -> None:
 
 def test_reconstruction_metrics_adds_spectral_pair_in_eval_mode() -> None:
     """Eval mode additionally computes the spectral pair."""
-    trainer = _metrics_trainer()
+    trainer = metrics_trainer()
     trainer.model.eval()
 
     g = torch.Generator().manual_seed(0)
@@ -189,7 +189,7 @@ def test_reconstruction_metrics_adds_spectral_pair_in_eval_mode() -> None:
     v_mask = torch.ones(2, 16, dtype=torch.bool)
 
     metrics: dict[str, torch.Tensor] = {}
-    trainer._reconstruction_metrics(metrics, pred, target, v_mask)
+    trainer.reconstruction_metrics(metrics, pred, target, v_mask)
 
     assert set(metrics) == _WAVEFORM_KEYS | _SPECTRAL_KEYS
     for v in metrics.values():
@@ -199,7 +199,7 @@ def test_reconstruction_metrics_adds_spectral_pair_in_eval_mode() -> None:
 def test_reconstruction_metrics_respect_the_mask() -> None:
     """Frames masked out of v_mask must not contribute: with the second half
     corrupted, masking to the clean half improves every metric."""
-    trainer = _metrics_trainer()
+    trainer = metrics_trainer()
     trainer.model.eval()
 
     g = torch.Generator().manual_seed(0)
@@ -214,8 +214,8 @@ def test_reconstruction_metrics_respect_the_mask() -> None:
 
     m_full: dict[str, torch.Tensor] = {}
     m_half: dict[str, torch.Tensor] = {}
-    trainer._reconstruction_metrics(m_full, pred, target, full)
-    trainer._reconstruction_metrics(m_half, pred, target, first_half)
+    trainer.reconstruction_metrics(m_full, pred, target, full)
+    trainer.reconstruction_metrics(m_half, pred, target, first_half)
 
     assert m_half["si_snr"] > m_full["si_snr"]
     assert m_half["snr"] > m_full["snr"]

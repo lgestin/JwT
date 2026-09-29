@@ -6,7 +6,7 @@ from jwt.training.checkpoint_manager import CheckpointManager
 from jwt.training.ema import EMA
 
 
-def _const_model(value: float) -> nn.Module:
+def const_model(value: float) -> nn.Module:
     """A 2x2 linear layer with every parameter filled with ``value``."""
     model = nn.Linear(2, 2)
     with torch.no_grad():
@@ -17,7 +17,7 @@ def _const_model(value: float) -> nn.Module:
 
 def test_ema_state_round_trips_through_checkpoint(tmp_path) -> None:
     """EMA shadow weights and decay survive a save / load cycle."""
-    model = _const_model(1.0)
+    model = const_model(1.0)
     optimizer = torch.optim.AdamW(model.parameters())
     ema = EMA(model, decay=0.5)
     with torch.no_grad():
@@ -34,7 +34,7 @@ def test_ema_state_round_trips_through_checkpoint(tmp_path) -> None:
         additional_state={"ema": ema.state_dict()},
     )
 
-    fresh_model = _const_model(1.0)
+    fresh_model = const_model(1.0)
     fresh_ema = EMA(fresh_model, decay=0.9999)
     manager.load_latest(fresh_model, ema=fresh_ema)
 
@@ -45,13 +45,13 @@ def test_ema_state_round_trips_through_checkpoint(tmp_path) -> None:
 
 def test_load_without_ema_in_checkpoint_warns(tmp_path) -> None:
     """Loading a pre-EMA checkpoint into an EMA leaves it initialized + warns."""
-    model = _const_model(1.0)
+    model = const_model(1.0)
     optimizer = torch.optim.AdamW(model.parameters())
 
     manager = CheckpointManager(exp_path=tmp_path)
     manager.save(step=5, model=model, optimizer=optimizer, scaler=None, best_loss=2.0)
 
-    fresh_model = _const_model(4.0)
+    fresh_model = const_model(4.0)
     fresh_ema = EMA(fresh_model, decay=0.9999)
     with pytest.warns(UserWarning, match="no EMA state"):
         manager.load_latest(fresh_model, ema=fresh_ema)
@@ -63,7 +63,7 @@ def test_load_without_ema_in_checkpoint_warns(tmp_path) -> None:
 
 def test_cleanup_keeps_best_latest_and_recent(tmp_path) -> None:
     """Cleanup keeps the best target plus the 2 most recent checkpoints."""
-    model = _const_model(1.0)
+    model = const_model(1.0)
     optimizer = torch.optim.AdamW(model.parameters())
     manager = CheckpointManager(exp_path=tmp_path)
 
@@ -91,7 +91,7 @@ def test_cleanup_keeps_best_latest_and_recent(tmp_path) -> None:
 
 def test_cleanup_keeps_symlinks_resolvable(tmp_path) -> None:
     """The best and latest symlinks still resolve to real files after cleanup."""
-    model = _const_model(1.0)
+    model = const_model(1.0)
     optimizer = torch.optim.AdamW(model.parameters())
     manager = CheckpointManager(exp_path=tmp_path)
 
@@ -113,7 +113,7 @@ def test_cleanup_keeps_symlinks_resolvable(tmp_path) -> None:
 
 def test_cleanup_keep_recent_zero_keeps_only_symlink_targets(tmp_path) -> None:
     """keep_recent=0 keeps only the best and latest targets, without crashing."""
-    model = _const_model(1.0)
+    model = const_model(1.0)
     optimizer = torch.optim.AdamW(model.parameters())
     manager = CheckpointManager(exp_path=tmp_path)
 

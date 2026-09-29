@@ -11,7 +11,7 @@ from jwt.model.transformer import TransformerConfig
 from jwt.training.attention_probe import attention_images, capture_attention
 
 
-def _model(num_layers: int = 3, n_registers: int = 0) -> RollingFlowSpeaker:
+def make_model(num_layers: int = 3, n_registers: int = 0) -> RollingFlowSpeaker:
     torch.manual_seed(0)
     cfg = RollingFlowConfig(
         transformer_config=TransformerConfig(
@@ -25,13 +25,13 @@ def _model(num_layers: int = 3, n_registers: int = 0) -> RollingFlowSpeaker:
     return RollingFlowSpeaker(cfg).eval()
 
 
-def _lens(
+def make_lens(
     text: MaskedTensor, acoustic: MaskedTensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return text.mask.sum(-1), acoustic.mask.sum(-1)
 
 
-def _inputs(
+def make_inputs(
     model: RollingFlowSpeaker, B: int = 2, t_text: int = 4, t_ac: int = 6
 ) -> tuple[MaskedTensor, MaskedTensor]:
     text = MaskedTensor(
@@ -46,9 +46,9 @@ def _inputs(
 
 
 def test_capture_attention_collects_layer_averaged_map() -> None:
-    model = _model(num_layers=3)
-    text, acoustic = _inputs(model, B=2, t_text=4, t_ac=6)
-    with capture_attention(model, *_lens(text, acoustic)) as collector:
+    model = make_model(num_layers=3)
+    text, acoustic = make_inputs(model, B=2, t_text=4, t_ac=6)
+    with capture_attention(model, *make_lens(text, acoustic)) as collector:
         model.training_step(text, acoustic, attention_implementation=TorchAttention)
     attn = collector.maps
     assert attn.shape == (2, 4 + 6, 4 + 6)
@@ -61,9 +61,9 @@ def test_capture_attention_collects_layer_averaged_map() -> None:
 def test_capture_attention_strips_registers() -> None:
     """Registers sit ahead of the packed sequence; the map must drop them so
     `attention_images` keeps indexing in [text | audio | pad] coordinates."""
-    model = _model(num_layers=2, n_registers=8)
-    text, acoustic = _inputs(model, B=2, t_text=4, t_ac=6)
-    with capture_attention(model, *_lens(text, acoustic)) as collector:
+    model = make_model(num_layers=2, n_registers=8)
+    text, acoustic = make_inputs(model, B=2, t_text=4, t_ac=6)
+    with capture_attention(model, *make_lens(text, acoustic)) as collector:
         model.training_step(text, acoustic, attention_implementation=TorchAttention)
     attn = collector.maps
     assert attn.shape == (2, 4 + 6, 4 + 6)
@@ -74,23 +74,23 @@ def test_capture_attention_strips_registers() -> None:
 
 def test_capture_attention_records_nothing_for_sdpa() -> None:
     """The fused backend exposes no weights — the collector stays empty."""
-    model = _model(num_layers=2)
-    text, acoustic = _inputs(model)
-    with capture_attention(model, *_lens(text, acoustic)) as collector:
+    model = make_model(num_layers=2)
+    text, acoustic = make_inputs(model)
+    with capture_attention(model, *make_lens(text, acoustic)) as collector:
         model.training_step(text, acoustic, attention_implementation=SDPAAttention)
     with pytest.raises(RuntimeError):
         _ = collector.maps
 
 
 def test_capture_attention_removes_hooks_on_exit() -> None:
-    model = _model(num_layers=2)
-    text, acoustic = _inputs(model)
-    with capture_attention(model, *_lens(text, acoustic)) as collector:
+    model = make_model(num_layers=2)
+    text, acoustic = make_inputs(model)
+    with capture_attention(model, *make_lens(text, acoustic)) as collector:
         model.training_step(text, acoustic, attention_implementation=TorchAttention)
     for block in model.transformer.blocks:
         assert len(block.attn._forward_hooks) == 0
     # A second probe still works — hooks were cleanly re-registered.
-    with capture_attention(model, *_lens(text, acoustic)) as collector2:
+    with capture_attention(model, *make_lens(text, acoustic)) as collector2:
         model.training_step(text, acoustic, attention_implementation=TorchAttention)
     assert collector2.maps.shape == collector.maps.shape
 
@@ -186,10 +186,10 @@ def test_capture_attention_records_the_models_seq_mask() -> None:
     marks exactly the queries the model treats as real: every text token, and
     audio frames up to and including the first `t = 0` (the rolling frontier);
     the pure-noise frames past it are masked."""
-    model = _model(num_layers=2, n_registers=3)
+    model = make_model(num_layers=2, n_registers=3)
     B, t_text, t_ac = 2, 4, 6
-    text, acoustic = _inputs(model, B=B, t_text=t_text, t_ac=t_ac)
-    with capture_attention(model, *_lens(text, acoustic)) as collector:
+    text, acoustic = make_inputs(model, B=B, t_text=t_text, t_ac=t_ac)
+    with capture_attention(model, *make_lens(text, acoustic)) as collector:
         # Pinned fronts: sample 0 has two noise frames past its frontier,
         # sample 1 has none — so both mask shapes are exercised.
         out = model.training_step(
@@ -301,7 +301,7 @@ def test_register_attention_images_shapes() -> None:
             assert img.min() >= 0.0 and img.max() <= 1.0
 
 
-def _uniform_rows(B: int, H: int, T: int) -> torch.Tensor:
+def uniform_rows(B: int, H: int, T: int) -> torch.Tensor:
     return torch.full((B, H, T, T), 1.0 / T)
 
 
@@ -311,7 +311,7 @@ def test_attention_entropy_uniform_is_one_and_one_hot_is_zero() -> None:
     T = 6
     text_lens, acoustic_lens = torch.tensor([2, 3]), torch.tensor([4, 3])
     uniform = AttentionCollector(text_lens, acoustic_lens)
-    uniform.record(_uniform_rows(2, 4, T))
+    uniform.record(uniform_rows(2, 4, T))
     s = uniform.metrics
     for k in ("attn_entropy", "attn_entropy_min_head", "attn_entropy_max_head"):
         assert torch.allclose(s[k], torch.tensor(1.0)), k
@@ -454,9 +454,9 @@ def test_scalars_omit_empty_modality_instead_of_nan() -> None:
 
 
 def test_capture_attention_logs_full_scalar_set() -> None:
-    model = _model(num_layers=2, n_registers=3)
-    text, acoustic = _inputs(model, B=2, t_text=4, t_ac=6)
-    with capture_attention(model, *_lens(text, acoustic)) as collector:
+    model = make_model(num_layers=2, n_registers=3)
+    text, acoustic = make_inputs(model, B=2, t_text=4, t_ac=6)
+    with capture_attention(model, *make_lens(text, acoustic)) as collector:
         model.training_step(text, acoustic, attention_implementation=TorchAttention)
     s = collector.metrics
     assert {"register_mass", "attn_entropy", "attn_align_monotonic"} <= set(s)

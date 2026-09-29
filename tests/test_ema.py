@@ -5,7 +5,7 @@ from torch import nn
 from jwt.training.ema import EMA, EMAConfig
 
 
-def _const_model(value: float) -> nn.Module:
+def const_model(value: float) -> nn.Module:
     """A 2x2 linear layer with every parameter filled with ``value``."""
     model = nn.Linear(2, 2)
     with torch.no_grad():
@@ -23,16 +23,16 @@ def test_config_defaults() -> None:
 
 def test_effective_decay_warmup() -> None:
     """The decay-warmup ramps from low values up to the configured decay."""
-    ema = EMA(_const_model(1.0), decay=0.9995)
-    assert ema._effective_decay(0) == pytest.approx(1 / 10)
-    assert ema._effective_decay(90) == pytest.approx(91 / 100)
+    ema = EMA(const_model(1.0), decay=0.9995)
+    assert ema.effective_decay(0) == pytest.approx(1 / 10)
+    assert ema.effective_decay(90) == pytest.approx(91 / 100)
     # Far enough along, the warmup saturates at the configured decay.
-    assert ema._effective_decay(1_000_000) == pytest.approx(0.9995)
+    assert ema.effective_decay(1_000_000) == pytest.approx(0.9995)
 
 
 def test_update_moves_shadow_toward_live() -> None:
     """update() blends shadow toward live weights by (1 - effective_decay)."""
-    model = _const_model(1.0)
+    model = const_model(1.0)
     ema = EMA(model, decay=0.5)
     # Move the live weights, then update. At step 1000 the warmup has
     # saturated, so the effective decay is exactly 0.5.
@@ -47,7 +47,7 @@ def test_update_moves_shadow_toward_live() -> None:
 
 def test_swapped_installs_and_restores() -> None:
     """swapped() installs EMA weights, then restores the originals on exit."""
-    model = _const_model(3.0)
+    model = const_model(3.0)
     ema = EMA(model, decay=0.5)
     with torch.no_grad():
         for tensor in ema._shadow.values():
@@ -63,7 +63,7 @@ def test_swapped_installs_and_restores() -> None:
 
 def test_swapped_restores_on_exception() -> None:
     """An exception inside the block still restores the original weights."""
-    model = _const_model(3.0)
+    model = const_model(3.0)
     ema = EMA(model, decay=0.5)
     with torch.no_grad():
         for tensor in ema._shadow.values():
@@ -78,14 +78,14 @@ def test_swapped_restores_on_exception() -> None:
 
 def test_state_dict_round_trip() -> None:
     """load_state_dict restores decay and shadow weights from state_dict."""
-    model = _const_model(1.0)
+    model = const_model(1.0)
     ema = EMA(model, decay=0.5)
     with torch.no_grad():
         for param in model.parameters():
             param.fill_(3.0)
     ema.update(model, step=1000)  # shadow now 2.0
 
-    restored = EMA(_const_model(1.0), decay=0.9995)
+    restored = EMA(const_model(1.0), decay=0.9995)
     restored.load_state_dict(ema.state_dict())
 
     assert restored.decay == 0.5

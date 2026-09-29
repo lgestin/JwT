@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from jwt.training.metrics.metric import AbsoluteMetric
-from jwt.training.metrics.utils import _to_16khz_mono
+from jwt.training.metrics.utils import to_16khz_mono
 
 
 class UTMOS(nn.Module, AbsoluteMetric):
@@ -37,6 +37,6 @@ class UTMOS(nn.Module, AbsoluteMetric):
             raise NotImplementedError(
                 "masked scoring not supported; pass full-length waveforms"
             )
-        waveforms = _to_16khz_mono(waveforms.detach(), sample_rate)
+        waveforms = to_16khz_mono(waveforms.detach(), sample_rate)
         scores = self.model(waveforms, 16_000)
         return {"utmos": torch.as_tensor(scores)}

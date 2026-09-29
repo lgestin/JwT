@@ -215,16 +215,16 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self.stoi = STOI().to(self._device)
         self.pesq = PESQ().to(self._device)
 
-    def _prepare_acoustic(self, batch: Batch) -> MaskedTensor:
+    def prepare_acoustic(self, batch: Batch) -> MaskedTensor:
         return prepare_acoustic_batch(batch, self.codec, self.model.cfg.eos_n_frames)
 
-    def _ema_weights(self):
+    def ema_weights(self):
         """EMA weights installed for the block, or a no-op when EMA is off."""
         return self.ema.swapped(self.model) if self.ema is not None else nullcontext()
 
     def train(self):
-        self._log_initial_samples()
-        self._log_timestep_schedule()
+        self.log_initial_samples()
+        self.log_timestep_schedule()
         self.optimizer.zero_grad()
         # Reflect the resumed step on the progress bar (no-op on a fresh run).
         self.logger.set_progress(self.step)
@@ -244,11 +244,11 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             for batch in self.train_dloader:
                 if micro == 0:
                     if self.step % self.smp_steps == 0:
-                        with self._ema_weights():
-                            self._log_samples()
-                            self._log_sampled_metrics()
+                        with self.ema_weights():
+                            self.log_samples()
+                            self.log_sampled_metrics()
                     if self.step % self.valid_steps == 0:
-                        with self._ema_weights():
+                        with self.ema_weights():
                             self.validation()
                     if (
                         self.checkpoint_manager is not None
@@ -276,13 +276,13 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                 metrics, scalars, bins = self.training_step(batch)
                 for k, v in metrics.items():
                     accum[k] = accum.get(k, 0.0) + float(v)
-                self._accumulate_diagnostics(diag_accum, scalars)
-                self._accumulate_diagnostics(bin_accum, bins)
+                self.accumulate_diagnostics(diag_accum, scalars)
+                self.accumulate_diagnostics(bin_accum, bins)
                 micro += 1
                 diag_micro += 1
 
                 if micro >= grad_accum_steps:
-                    opt_metrics = self._optimizer_step()
+                    opt_metrics = self.optimizer_step()
                     avg = {k: v / micro for k, v in accum.items()}
                     avg.update({k: float(v) for k, v in opt_metrics.items()})
                     self.logger.log_metrics(avg, self.step, prefix="train")
@@ -292,10 +292,10 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                     accum = {}
 
                     if self.step % self.config.log_steps == 0:
-                        self._log_train_diagnostics(
+                        self.log_train_diagnostics(
                             diag_accum, diag_micro, last_log_step, last_log_time
                         )
-                        self._emit_loss_curves(bin_accum, self.step, "train")
+                        self.emit_loss_curves(bin_accum, self.step, "train")
                         diag_accum = {}
                         diag_micro = 0
                         bin_accum = {}
@@ -323,7 +323,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         """
         batch = batch.to(self.device, non_blocking=True)
         text = MaskedTensor(values=batch.tokens.unsqueeze(1), mask=batch.tokens_mask)
-        acoustic = self._prepare_acoustic(batch)
+        acoustic = self.prepare_acoustic(batch)
 
         with torch.autocast(
             device_type=self.device.type,
@@ -352,12 +352,12 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             mel_mask = v_mask.repeat_interleave(repeats=repeats, dim=1)
             logmel_l1 = self.mel_spectrogram.logmel_l1(pred_wav, target_wav)
             logmel_l1 = masked_mean_reduction(logmel_l1, mel_mask).mean(0)
-            self._reconstruction_metrics(metrics, pred_wav, target_wav, v_mask)
+            self.reconstruction_metrics(metrics, pred_wav, target_wav, v_mask)
 
         loss = fm_loss + self.config.aux_mel_weight * logmel_l1
         metrics["logmel_l1"] = logmel_l1.detach()
         metrics["loss"] = loss.detach()
-        scalars, bins = self._step_diagnostics(out, text, acoustic)
+        scalars, bins = self.step_diagnostics(out, text, acoustic)
 
         if self.model.training:
             scaled = loss / self.config.grad_accum_steps
@@ -368,7 +368,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
 
         return metrics, scalars, bins
 
-    def _reconstruction_metrics(
+    def reconstruction_metrics(
         self,
         metrics: dict[str, torch.Tensor],
         pred_wav: torch.Tensor,  # (B, S)
@@ -405,7 +405,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             mcd = masked_mean_reduction(mcd, mel_mask).mean()
             metrics["mel_cepstral_distortion"] = mcd.detach()
 
-    def _step_diagnostics(
+    def step_diagnostics(
         self,
         out: TrainingStepOutput,
         text: MaskedTensor,
@@ -445,21 +445,21 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         return scalars, bins
 
     @staticmethod
-    def _accumulate_diagnostics(
+    def accumulate_diagnostics(
         acc: dict[str, torch.Tensor], new: dict[str, torch.Tensor]
     ) -> None:
         """In-place GPU accumulation — no host sync."""
         for k, v in new.items():
             acc[k] = v if k not in acc else acc[k] + v
 
-    def _reduce_diagnostics(
+    def reduce_diagnostics(
         self, acc: dict[str, torch.Tensor], micro: int
     ) -> dict[str, torch.Tensor]:
         """Window-average the accumulated data diagnostics (0-dim GPU tensors).
 
         These describe the batches being fed (lengths, target stats, supervision
         fill), so they are logged under the `data/` section rather than `train/`.
-        The binned FM loss is emitted separately by `_emit_loss_curves`.
+        The binned FM loss is emitted separately by `emit_loss_curves`.
         """
         return {
             k: acc[k] / micro
@@ -472,7 +472,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             )
         }
 
-    def _emit_loss_curves(
+    def emit_loss_curves(
         self, diag_accum: dict[str, torch.Tensor], step: int, prefix: str
     ) -> None:
         """Emit the timestep-binned loss curves.
@@ -497,7 +497,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         for (tag, _), curve in zip(series, vals, strict=True):
             self.logger.log_curve(f"by_t/{prefix}_{tag}", centers, curve, step)
 
-    def _log_timestep_schedule(self) -> None:
+    def log_timestep_schedule(self) -> None:
         """Log the timestep schedule curve — t = schedule.timestep(progress)
         sampled on the n-step denoising grid. Config-fixed (a pure function of
         progress), so it is logged once at startup rather than per window."""
@@ -514,7 +514,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             history=False,  # config-fixed, logged once
         )
 
-    def _emit_diagnostics(
+    def emit_diagnostics(
         self,
         gpu_metrics: dict[str, torch.Tensor],
         step: int,
@@ -536,7 +536,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         if merged:
             self.logger.log_diagnostics(merged, step, prefix=prefix)
 
-    def _log_train_diagnostics(
+    def log_train_diagnostics(
         self,
         diag_accum: dict[str, torch.Tensor],
         diag_micro: int,
@@ -547,7 +547,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         # optimization — they go under `data/train`. Param norm sits with the
         # optimization-health panels (`optim`); throughput and memory get
         # their own section so nothing crowds the loss curves.
-        data_metrics = self._reduce_diagnostics(diag_accum, diag_micro)
+        data_metrics = self.reduce_diagnostics(diag_accum, diag_micro)
         optim_metrics: dict[str, torch.Tensor] = {
             "param_norm": torch.stack(
                 [p.detach().norm() for p in self.model.parameters()]
@@ -569,11 +569,11 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             host["peak_mem_gb"] = torch.cuda.max_memory_allocated(self.device) / 1e9
             torch.cuda.reset_peak_memory_stats(self.device)
 
-        self._emit_diagnostics(data_metrics, self.step, "data/train")
-        self._emit_diagnostics(optim_metrics, self.step, "optim")
-        self._emit_diagnostics({}, self.step, "throughput", host_metrics=host)
+        self.emit_diagnostics(data_metrics, self.step, "data/train")
+        self.emit_diagnostics(optim_metrics, self.step, "optim")
+        self.emit_diagnostics({}, self.step, "throughput", host_metrics=host)
 
-    def _optimizer_step(self) -> dict[str, torch.Tensor]:
+    def optimizer_step(self) -> dict[str, torch.Tensor]:
         """Clip + step + zero_grad. Called once per accumulation window."""
         metrics: dict[str, torch.Tensor] = {}
         if self.scaler is not None:
@@ -603,8 +603,8 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             metrics, scalars, bins = self.training_step(vbatch)
             for k, v in metrics.items():
                 sums[k] = sums.get(k, 0.0) + float(v)
-            self._accumulate_diagnostics(diag_accum, scalars)
-            self._accumulate_diagnostics(bin_accum, bins)
+            self.accumulate_diagnostics(diag_accum, scalars)
+            self.accumulate_diagnostics(bin_accum, bins)
             count += 1
         return sums, diag_accum, bin_accum, count
 
@@ -631,19 +631,19 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self.logger.log_metrics(val_metrics, self.step, prefix="valid")
         # Validation emits only data diagnostics — route them to `data/valid`
         # to mirror the `data/train` split.
-        self._emit_diagnostics(
-            self._reduce_diagnostics(diag_accum, count), self.step, "data/valid"
+        self.emit_diagnostics(
+            self.reduce_diagnostics(diag_accum, count), self.step, "data/valid"
         )
-        self._emit_loss_curves(bin_accum, self.step, "valid")
+        self.emit_loss_curves(bin_accum, self.step, "valid")
         self.log_valid_unseen()
-        self._log_audio_metrics(self._attention_images())
+        self.log_audio_metrics(self.attention_images())
 
         loss_val = val_metrics.get("loss", float("inf"))
         if loss_val < self.best_loss:
             self.state.best_loss = loss_val
 
     @torch.inference_mode()
-    def _probe_attention(
+    def probe_attention(
         self, text: MaskedTensor, acoustic: MaskedTensor
     ) -> AttentionCollector:
         """A filled `AttentionCollector`: per-sample heatmaps (`images`) and
@@ -675,16 +675,16 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         return collector
 
     @torch.inference_mode()
-    def _attention_images(self) -> dict[int, dict[str, torch.Tensor]]:
+    def attention_images(self) -> dict[int, dict[str, torch.Tensor]]:
         """Teacher-forced attention probe over the first `n_smp` validation
         samples."""
         batch = next(iter(self.valid_dloader)).to(self.device, non_blocking=True)
         n = min(self.config.n_smp, batch.tokens.shape[0])
         text = MaskedTensor(values=batch.tokens.unsqueeze(1), mask=batch.tokens_mask)
-        acoustic = self._prepare_acoustic(batch)
+        acoustic = self.prepare_acoustic(batch)
         text_n = MaskedTensor(values=text.values[:n], mask=text.mask[:n])  # ty: ignore[invalid-argument-type]
         acoustic_n = MaskedTensor(values=acoustic.values[:n], mask=acoustic.mask[:n])  # ty: ignore[invalid-argument-type]
-        collector = self._probe_attention(text_n, acoustic_n)
+        collector = self.probe_attention(text_n, acoustic_n)
         self.logger.log_metrics(
             {k: float(v) for k, v in collector.metrics.items()},
             self.step,
@@ -693,7 +693,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         return collector.images
 
     @torch.inference_mode()
-    def _log_audio_metrics(
+    def log_audio_metrics(
         self, attention: dict[int, dict[str, torch.Tensor]] | None = None
     ) -> None:
         """SI-SDR, SDR, PESQ, ESTOI, NISQA on teacher-forced reconstructions
@@ -713,7 +713,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         batch = next(iter(self.valid_dloader)).to(self.device, non_blocking=True)
         n = min(self.config.n_smp, batch.tokens.shape[0])
         text = MaskedTensor(values=batch.tokens.unsqueeze(1), mask=batch.tokens_mask)
-        acoustic = self._prepare_acoustic(batch)
+        acoustic = self.prepare_acoustic(batch)
         text_n = MaskedTensor(values=text.values[:n], mask=text.mask[:n])  # ty: ignore[invalid-argument-type]
         acoustic_n = MaskedTensor(values=acoustic.values[:n], mask=acoustic.mask[:n])  # ty: ignore[invalid-argument-type]
 
@@ -809,9 +809,9 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self.logger.log_samples("valid_audio", records, self.step)
 
     @torch.inference_mode()
-    def _log_sampled_metrics(self) -> None:
+    def log_sampled_metrics(self) -> None:
         """UTMOS/NISQA and termination stats over free generations of the smp
-        and validation prompts — the quantitative counterpart of `_log_samples`.
+        and validation prompts — the quantitative counterpart of `log_samples`.
 
         Every generation is scored at its full length, terminated or not —
         short ones are zero-padded to `MIN_SCORED_SECONDS` — so the scored
@@ -880,7 +880,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         self.logger.log_metrics(metrics, self.step, prefix="sampled")
 
     @torch.inference_mode()
-    def _log_samples(self):
+    def log_samples(self):
         self.model.eval()
         batch = next(iter(self.smp_dloader)).to(self.device)
         n = min(len(batch.audios), self.config.n_smp)
@@ -898,7 +898,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         att: dict[int, dict[str, torch.Tensor]] = {}
         sample_metrics: dict[int, dict[str, float]] = {}
         if bool(acoustic_pred.mask[:n].any()):
-            collector = self._probe_attention(
+            collector = self.probe_attention(
                 MaskedTensor(values=text.values[:n], mask=text.mask[:n]),  # ty: ignore[invalid-argument-type]
                 MaskedTensor(
                     values=acoustic_pred.values[:n],
@@ -962,7 +962,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             # References share the smp batch, so indices align for the join.
             self.logger.log_samples("samples", records, self.step, join="references")
 
-    def _log_initial_samples(self):
+    def log_initial_samples(self):
         smp_batch = next(iter(self.smp_dloader))
         n = min(len(smp_batch.audios), self.config.n_smp)
 

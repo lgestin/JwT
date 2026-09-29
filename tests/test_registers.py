@@ -16,33 +16,33 @@ from jwt.model.transformer import (
 )
 
 
-def _skip_unless_cuda_flash() -> None:
+def skip_unless_cuda_flash() -> None:
     if not torch.cuda.is_available():
         pytest.skip("CUDA not available")
     if flash_attn_varlen_func is None:
         pytest.skip("flash-attn not installed")
 
 
-def _pos(x: torch.Tensor) -> torch.Tensor:
+def make_pos(x: torch.Tensor) -> torch.Tensor:
     """Plain 0..L-1 RoPE positions for an (B, L, D) input."""
     return torch.arange(x.shape[1], device=x.device).float().expand(x.shape[0], -1)
 
 
-def _freqs(T: int, head_dim: int, B: int = 1) -> torch.Tensor:
+def make_freqs(T: int, head_dim: int, B: int = 1) -> torch.Tensor:
     """RoPE factors at 0..T-1, in the (B, 1, T, head_dim // 2) model shape."""
     return freqs_cis_at(
         torch.arange(T).float().expand(B, T), rope_inv_freqs(head_dim, 10000.0)
     )
 
 
-def _seq_mask(lens: list[int], T: int, device: str = "cpu") -> torch.Tensor:
+def make_seq_mask(lens: list[int], T: int, device: str = "cpu") -> torch.Tensor:
     seq_mask = torch.zeros(len(lens), T, dtype=torch.bool, device=device)
     for i, L in enumerate(lens):
         seq_mask[i, :L] = True
     return seq_mask
 
 
-def _model(n: int = 4, **kwargs) -> Transformer:
+def make_model(n: int = 4, **kwargs) -> Transformer:
     """A small Transformer with registers and *open* adaLN gates.
 
     AdaLN is zero-init, which gates every residual to 0 and makes registers
@@ -89,8 +89,8 @@ def test_prepend_shapes_and_values() -> None:
     registers = Registers(n=n, dim=dim)
     x = torch.randn(B, T, dim)
     t_emb = torch.randn(B, T, dim)
-    freqs_cis = _freqs(T, head_dim, B=B)
-    seq_mask = _seq_mask([3, 6], T=T)
+    freqs_cis = make_freqs(T, head_dim, B=B)
+    seq_mask = make_seq_mask([3, 6], T=T)
 
     x_p, t_emb_p, mask_p, freqs_p = registers.prepend(x, t_emb, seq_mask, freqs_cis)
 
@@ -116,7 +116,7 @@ def test_prepend_none_mask_stays_none() -> None:
         torch.randn(1, 6, 32),
         torch.randn(1, 6, 32),
         None,
-        _freqs(6, 8),
+        make_freqs(6, 8),
     )
     assert mask_p is None
 
@@ -126,12 +126,12 @@ def test_prepend_registers_are_always_visible() -> None:
     `build_mask` sees them as valid tokens."""
     n, T = 4, 6
     registers = Registers(n=n, dim=32)
-    seq_mask = _seq_mask([3, 6], T=T)
+    seq_mask = make_seq_mask([3, 6], T=T)
     _, _, mask_p, _ = registers.prepend(
         torch.randn(2, T, 32),
         torch.randn(2, T, 32),
         seq_mask,
-        _freqs(T, 8),
+        make_freqs(T, 8),
     )
     assert mask_p is not None and mask_p.dtype == torch.bool
     assert bool(mask_p[:, :n].all())
@@ -144,7 +144,7 @@ def test_prepend_registers_get_identity_rope() -> None:
     phases they had before insertion."""
     n, T, head_dim = 4, 6, 8
     registers = Registers(n=n, dim=32)
-    freqs_cis = _freqs(T, head_dim)
+    freqs_cis = make_freqs(T, head_dim)
     _, _, _, freqs_p = registers.prepend(
         torch.randn(1, T, 32), torch.randn(1, T, 32), None, freqs_cis
     )
@@ -160,7 +160,7 @@ def test_prepend_registers_get_zero_t_emb() -> None:
     registers = Registers(n=n, dim=dim)
     t_emb = torch.randn(2, T, dim)
     _, t_emb_p, _, _ = registers.prepend(
-        torch.randn(2, T, dim), t_emb, None, _freqs(T, 8)
+        torch.randn(2, T, dim), t_emb, None, make_freqs(T, 8)
     )
     assert torch.equal(t_emb_p[:, :n], torch.zeros_like(t_emb_p[:, :n]))
 
@@ -171,7 +171,7 @@ def test_prepend_follows_input_dtype() -> None:
     n, T, dim = 4, 6, 32
     registers = Registers(n=n, dim=dim)
     x = torch.randn(2, T, dim, dtype=torch.bfloat16)
-    x_p, _, _, _ = registers.prepend(x, torch.randn(2, T, dim), None, _freqs(T, 8))
+    x_p, _, _, _ = registers.prepend(x, torch.randn(2, T, dim), None, make_freqs(T, 8))
     assert x_p.dtype == torch.bfloat16
 
 
@@ -179,16 +179,16 @@ def test_prepend_follows_input_dtype() -> None:
 
 
 def test_registers_are_stripped_from_output() -> None:
-    model = _model(n=8)
+    model = make_model(n=8)
     x = torch.randn(2, 16, 32)
     t = torch.rand(2, 16)
-    assert model(x, t, _pos(x)).shape == x.shape
+    assert model(x, t, make_pos(x)).shape == x.shape
 
 
 def test_registers_receive_gradient() -> None:
-    model = _model(n=4)
+    model = make_model(n=4)
     x = torch.randn(2, 12, 32)
-    model(x, torch.rand(2, 12), _pos(x)).sum().backward()
+    model(x, torch.rand(2, 12), make_pos(x)).sum().backward()
     grad = model.registers.registers.grad
     assert grad is not None
     assert grad.abs().sum() > 0
@@ -198,7 +198,7 @@ def test_registers_change_the_output() -> None:
     """Guards against a silent no-op: the same weights with and without
     registers must not agree."""
     torch.manual_seed(0)
-    with_registers = _model(n=8)
+    with_registers = make_model(n=8)
     without = Transformer(
         TransformerConfig(dim=32, num_heads=4, num_layers=4, n_registers=0)
     )
@@ -206,25 +206,25 @@ def test_registers_change_the_output() -> None:
 
     x, t = torch.randn(2, 12, 32), torch.rand(2, 12)
     assert not torch.allclose(
-        with_registers(x, t, _pos(x)), without(x, t, _pos(x)), atol=1e-4
+        with_registers(x, t, make_pos(x)), without(x, t, make_pos(x)), atol=1e-4
     )
 
 
 def test_output_is_invariant_to_extra_padding() -> None:
     """Registers must not leak masked positions into the valid ones: growing
     the pad must leave every real position bit-comparable."""
-    model = _model(n=4)
+    model = make_model(n=4)
     T, pad = 12, 5
-    seq_mask = _seq_mask([12, 7, 4], T=T)
+    seq_mask = make_seq_mask([12, 7, 4], T=T)
     x, t = torch.randn(3, T, 32), torch.rand(3, T)
 
-    out = model(x, t, _pos(x), seq_mask)
+    out = model(x, t, make_pos(x), seq_mask)
     x_padded = torch.cat((x, torch.randn(3, pad, 32)), dim=1)
     out_padded = model(
         x_padded,
         torch.cat((t, torch.rand(3, pad)), dim=1),
-        _pos(x_padded),
-        _seq_mask([12, 7, 4], T=T + pad),
+        make_pos(x_padded),
+        make_seq_mask([12, 7, 4], T=T + pad),
     )
 
     for b, L in enumerate([12, 7, 4]):
@@ -235,18 +235,18 @@ def test_registers_match_across_backends() -> None:
     """End-to-end: the varlen packed layout built from the widened `seq_mask`
     must give the same hidden states as the dense SDPA mask at every valid
     position."""
-    _skip_unless_cuda_flash()
-    model = _model(n=8).to("cuda").eval()
+    skip_unless_cuda_flash()
+    model = make_model(n=8).to("cuda").eval()
 
     B, T = 3, 32
-    seq_mask = _seq_mask([32, 11, 23], T=T, device="cuda")
+    seq_mask = make_seq_mask([32, 11, 23], T=T, device="cuda")
     x = torch.randn(B, T, 32, device="cuda")
     t = torch.rand(B, T, device="cuda")
 
     outs = {}
     for impl in (SDPAAttention, FlashVarlenAttention):
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
-            outs[impl.__name__] = model(x, t, _pos(x), seq_mask, impl).float()
+            outs[impl.__name__] = model(x, t, make_pos(x), seq_mask, impl).float()
 
     valid = seq_mask.unsqueeze(-1).expand_as(outs["SDPAAttention"])
     diff = (outs["SDPAAttention"] - outs["FlashVarlenAttention"])[valid].abs().max()

@@ -28,7 +28,7 @@ class CheckpointManager:
         self.latest_checkpoint_path = self.exp_path / "checkpoint.latest.pt"
 
     @staticmethod
-    def _point_symlink(link_path: Path, target_name: str) -> None:
+    def point_symlink(link_path: Path, target_name: str) -> None:
         """(Re)point a symlink at a sibling file, replacing any existing one."""
         if link_path.is_symlink():
             link_path.unlink()
@@ -91,11 +91,11 @@ class CheckpointManager:
         torch.save(checkpoint_data, checkpoint_path)
 
         # Point the "latest" symlink at the checkpoint just written.
-        self._point_symlink(self.latest_checkpoint_path, checkpoint_path.name)
+        self.point_symlink(self.latest_checkpoint_path, checkpoint_path.name)
 
         # Point the "best" symlink here if this is the best loss so far.
         if self.save_best and best_loss < float("inf"):
-            self._point_symlink(self.best_checkpoint_path, checkpoint_path.name)
+            self.point_symlink(self.best_checkpoint_path, checkpoint_path.name)
 
         return checkpoint_path
 

@@ -12,14 +12,14 @@ from jwt.model.attention import (
 from jwt.model.transformer import Transformer, TransformerConfig
 
 
-def _skip_unless_cuda_flash() -> None:
+def skip_unless_cuda_flash() -> None:
     if not torch.cuda.is_available():
         pytest.skip("CUDA not available")
     if flash_attn_varlen_func is None:
         pytest.skip("flash-attn not installed")
 
 
-def _qkv(B=2, H=4, T=6, D=8):
+def make_qkv(B=2, H=4, T=6, D=8):
     torch.manual_seed(0)
     return (
         torch.randn(B, H, T, D),
@@ -37,14 +37,14 @@ def test_build_mask_shape() -> None:
 
 
 def test_sdpa_returns_no_weights() -> None:
-    q, k, v = _qkv()
+    q, k, v = make_qkv()
     out, attn_weights = SDPAAttention.attention(q, k, v, mask=None)
     assert out.shape == q.shape
     assert attn_weights is None
 
 
 def test_torch_returns_normalized_weights() -> None:
-    q, k, v = _qkv()
+    q, k, v = make_qkv()
     out, attn_weights = TorchAttention.attention(q, k, v, mask=None)
     assert out.shape == q.shape
     assert attn_weights is not None
@@ -57,14 +57,14 @@ def test_torch_returns_normalized_weights() -> None:
 def test_torch_matches_sdpa_output() -> None:
     """The explicit backend must produce the same context vectors as the
     fused kernel — only the exposed weights differ."""
-    q, k, v = _qkv()
+    q, k, v = make_qkv()
     out_sdpa, _ = SDPAAttention.attention(q, k, v, mask=None)
     out_torch, _ = TorchAttention.attention(q, k, v, mask=None)
     assert torch.allclose(out_sdpa, out_torch, atol=1e-5)
 
 
 def test_torch_matches_sdpa_with_mask() -> None:
-    q, k, v = _qkv()
+    q, k, v = make_qkv()
     seq_mask = torch.tensor(
         [[True, True, True, False, False, False], [True, True, True, True, True, False]]
     )
@@ -101,7 +101,7 @@ def test_flash_varlen_matches_sdpa_attention() -> None:
     """Kernel-level: FlashVarlen and SDPA give the same context vectors at
     valid positions, within bf16 reduction-order noise. Masked positions are
     undefined for varlen (it never writes them), so they're excluded."""
-    _skip_unless_cuda_flash()
+    skip_unless_cuda_flash()
     torch.manual_seed(0)
     B, H, T, D = 2, 4, 32, 16
     device, dtype = "cuda", torch.bfloat16
@@ -126,7 +126,7 @@ def test_flash_varlen_matches_sdpa_attention() -> None:
 def test_transformer_outputs_match_across_backends() -> None:
     """End-to-end: a small Transformer produces equivalent hidden states at
     valid positions regardless of attention backend, within bf16 noise."""
-    _skip_unless_cuda_flash()
+    skip_unless_cuda_flash()
     torch.manual_seed(0)
     device, dtype = "cuda", torch.bfloat16
     model = (
@@ -169,7 +169,7 @@ def test_transformer_outputs_match_across_backends() -> None:
 def test_flash_varlen_rejects_foreign_mask() -> None:
     """Masks are backend-specific: handing FlashVarlen an SDPA-style tensor
     mask (or none at all) must fail loudly rather than misindex."""
-    q, k, v = _qkv()
+    q, k, v = make_qkv()
     seq_mask = torch.ones(2, 6, dtype=torch.bool)
     with pytest.raises(TypeError):
         FlashVarlenAttention.attention(q, k, v, SDPAAttention.build_mask(seq_mask))

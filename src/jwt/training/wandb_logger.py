@@ -42,7 +42,7 @@ _SUMMARY_MAX = (
 )
 
 
-def _audio_array(waveform: torch.Tensor) -> np.ndarray:
+def audio_array(waveform: torch.Tensor) -> np.ndarray:
     """To the (T,) or (T, C) float array `wandb.Audio` expects."""
     wav = waveform.detach().cpu().float().squeeze()
     if wav.ndim == 2:
@@ -50,7 +50,7 @@ def _audio_array(waveform: torch.Tensor) -> np.ndarray:
     return wav.numpy()
 
 
-def _image_array(image: torch.Tensor) -> np.ndarray:
+def image_array(image: torch.Tensor) -> np.ndarray:
     """(H, W) / (C, H, W) float in [0, 1] to the uint8 HWC array `wandb.Image`
     renders without rescaling."""
     img = image.detach().cpu().float()
@@ -59,12 +59,12 @@ def _image_array(image: torch.Tensor) -> np.ndarray:
     return (img * 255).clamp(0, 255).byte().numpy()
 
 
-def _curve_rows(x: list[float], y: list[float]) -> list[list[float]]:
+def curve_rows(x: list[float], y: list[float]) -> list[list[float]]:
     """(x, y) pairs with NaN points dropped — gaps stay gaps."""
     return [[xi, yi] for xi, yi in zip(x, y, strict=True) if yi == yi]
 
 
-def _bin_edges(x: list[float]) -> list[float]:
+def bin_edges(x: list[float]) -> list[float]:
     """Bin edges bracketing the monotone grid of centers `x`: interior edges at
     midpoints, end edges extrapolated half a bin out."""
     mids = [(a + b) / 2 for a, b in itertools.pairwise(x)]
@@ -73,13 +73,13 @@ def _bin_edges(x: list[float]) -> list[float]:
     return [first, *mids, last]
 
 
-def _record_cells(record: SampleRecord) -> dict[str, Any]:
+def record_cells(record: SampleRecord) -> dict[str, Any]:
     """A record's cells converted to wandb media/values, insertion-ordered."""
     cells: dict[str, Any] = {}
     for k, a in record.audio.items():
-        cells[k] = wandb.Audio(_audio_array(a.waveform), sample_rate=a.sample_rate)
+        cells[k] = wandb.Audio(audio_array(a.waveform), sample_rate=a.sample_rate)
     for k, img in record.images.items():
-        cells[k] = wandb.Image(_image_array(img))
+        cells[k] = wandb.Image(image_array(img))
     cells.update(record.metrics)
     return cells
 
@@ -117,10 +117,10 @@ class WandbLogger:
         # wandb's content-addressed storage dedupes identical bytes anyway.
         self._section_records: dict[str, dict[int, SampleRecord]] = {}
 
-    def _log(self, data: Mapping[str, object], step: int) -> None:
+    def log(self, data: Mapping[str, object], step: int) -> None:
         self.run.log({**data, STEP_METRIC: step})
 
-    def _alert_if_diverged(self, tag: str, value: float, step: int) -> None:
+    def alert_if_diverged(self, tag: str, value: float, step: int) -> None:
         if "loss" not in tag or math.isfinite(value) or tag in self._alerted:
             return
         self._alerted.add(tag)
@@ -133,25 +133,25 @@ class WandbLogger:
 
     def log_scalar(self, tag: str, value: float, step: int) -> None:
         value = float(value)
-        self._alert_if_diverged(tag, value, step)
-        self._log({tag: value}, step)
+        self.alert_if_diverged(tag, value, step)
+        self.log({tag: value}, step)
 
     def log_audio(
         self, tag: str, waveform: torch.Tensor, step: int, sample_rate: int
     ) -> None:
-        audio = wandb.Audio(_audio_array(waveform), sample_rate=sample_rate)
-        self._log({tag: audio}, step)
+        audio = wandb.Audio(audio_array(waveform), sample_rate=sample_rate)
+        self.log({tag: audio}, step)
 
     def log_image(self, tag: str, image: torch.Tensor, step: int) -> None:
-        self._log({tag: wandb.Image(_image_array(image))}, step)
+        self.log({tag: wandb.Image(image_array(image))}, step)
 
     def log_metrics(
         self, metrics: dict[str, float], step: int, prefix: str = "train"
     ) -> None:
         data = {metric_tag(prefix, k): float(v) for k, v in metrics.items()}
         for tag, v in data.items():
-            self._alert_if_diverged(tag, v, step)
-        self._log(data, step)
+            self.alert_if_diverged(tag, v, step)
+        self.log(data, step)
 
     def log_diagnostics(
         self, metrics: dict[str, float], step: int, prefix: str = "train"
@@ -159,7 +159,7 @@ class WandbLogger:
         data = {f"{prefix}/{k}": float(v) for k, v in metrics.items()}
         finite = {k: v for k, v in data.items() if v == v}  # skip NaN bins
         if finite:
-            self._log(finite, step)
+            self.log(finite, step)
 
     def log_curve(
         self,
@@ -172,15 +172,15 @@ class WandbLogger:
     ) -> None:
         ylabel = tag.rsplit("/", 1)[-1]
         # Latest curve only — step history lives in the `_hist` heatmap.
-        rows: list[Any] = _curve_rows(x, y)
+        rows: list[Any] = curve_rows(x, y)
         table = wandb.Table(columns=[xlabel, ylabel], data=rows)
-        self._log({tag: wandb.plot.line(table, xlabel, ylabel, title=tag)}, step)
+        self.log({tag: wandb.plot.line(table, xlabel, ylabel, title=tag)}, step)
         if history and len(x) >= 2:
             # Heatmap history: successive histograms render as a value-over-
             # steps heatmap. "Counts" are the per-bin curve values (NaN -> 0).
             vals = [yi if yi == yi else 0.0 for yi in y]
-            hist = wandb.Histogram(np_histogram=(vals, _bin_edges(x)))  # ty: ignore[invalid-argument-type]
-            self._log({f"{tag}_hist": hist}, step)
+            hist = wandb.Histogram(np_histogram=(vals, bin_edges(x)))  # ty: ignore[invalid-argument-type]
+            self.log({f"{tag}_hist": hist}, step)
 
     def log_samples(
         self,
@@ -190,12 +190,9 @@ class WandbLogger:
         join: str | None = None,
     ) -> None:
         self._section_records[section] = {r.index: r for r in records}
-        own = {r.index: _record_cells(r) for r in records}
+        own = {r.index: record_cells(r) for r in records}
         joined = (
-            {
-                i: _record_cells(r)
-                for i, r in self._section_records.get(join, {}).items()
-            }
+            {i: record_cells(r) for i, r in self._section_records.get(join, {}).items()}
             if join is not None
             else {}
         )
@@ -214,7 +211,7 @@ class WandbLogger:
             for r in records
         ]
         cols: list[Any] = ["idx", *columns]
-        self._log({f"tables/{section}": wandb.Table(columns=cols, data=data)}, step)
+        self.log({f"tables/{section}": wandb.Table(columns=cols, data=data)}, step)
 
     def log_config(self, config: object, step: int = 0) -> None:
         self.run.config.update(flatten_config(config), allow_val_change=True)

@@ -71,14 +71,14 @@ class AttentionCollector:
         n = self.n_registers
         p = attn_weights.float()
         entropy = -(p * p.clamp_min(1e-12).log()).sum(-1)  # (B, H, n + T)
-        self._entropy = _append(self._entropy, entropy)
+        self._entropy = append_layer(self._entropy, entropy)
         if self._in_text is None:
             pos = torch.arange(p.shape[-1] - n, device=p.device).unsqueeze(0)
             self._in_text = pos < self.text_lens.to(p.device).unsqueeze(1)  # (B, T)
         # Reduced at record time: keeping full per-head maps would be ~GBs.
         text_only = p[..., n:, n:].masked_fill(~self._in_text[:, None, None, :], -1.0)
-        self._text_argmax = _append(self._text_argmax, text_only.argmax(-1))
-        self._maps = _append(self._maps, p.mean(dim=1))
+        self._text_argmax = append_layer(self._text_argmax, text_only.argmax(-1))
+        self._maps = append_layer(self._maps, p.mean(dim=1))
         if seq_mask is not None:
             self._seq_mask = seq_mask[:, self.n_registers :]
 
@@ -150,7 +150,7 @@ class AttentionCollector:
         maps = self.maps  # raises the informative error on an empty collector
         assert self._maps is not None and self._entropy is not None
         n = self.n_registers
-        in_text, in_audio = self._masks()
+        in_text, in_audio = self.masks()
         n_keys = (in_text | in_audio).sum(1) + n
         scale = 1.0 / n_keys.float().clamp(min=2).log()[:, None]  # (B, 1)
         per_head = self._entropy[..., n:] * scale[:, None]  # (L, B, H, T)
@@ -181,8 +181,8 @@ class AttentionCollector:
         are omitted; samples with no real positions are skipped."""
         dense = self.position_metrics
         assert self._text_argmax is not None
-        in_text, in_audio = self._masks()
-        align = _alignment_per_sample(self._text_argmax, in_text, in_audio)
+        in_text, in_audio = self.masks()
+        align = alignment_per_sample(self._text_argmax, in_text, in_audio)
         splittable = [k for k in dense if not k.startswith("attn_mass")]
         out: dict[int, dict[str, float]] = {}
         for b in range(in_text.shape[0]):
@@ -227,7 +227,7 @@ class AttentionCollector:
             for vs in [[m[k] for m in per.values() if k in m]]
         }
 
-    def _masks(self) -> tuple[torch.Tensor, torch.Tensor]:
+    def masks(self) -> tuple[torch.Tensor, torch.Tensor]:
         """`(in_text, in_audio)` — `(B, T)` bool masks of the real text / audio
         queries in packed `[text | audio | pad]` coordinates.
 
@@ -248,13 +248,13 @@ class AttentionCollector:
         return in_text, real & ~in_text
 
 
-def _append(stack: torch.Tensor | None, layer: torch.Tensor) -> torch.Tensor:
+def append_layer(stack: torch.Tensor | None, layer: torch.Tensor) -> torch.Tensor:
     """Stack `layer` onto the per-layer leading axis."""
     layer = layer.unsqueeze(0)
     return layer if stack is None else torch.cat((stack, layer))
 
 
-def _alignment_per_sample(
+def alignment_per_sample(
     text_argmax: torch.Tensor, in_text: torch.Tensor, in_audio: torch.Tensor
 ) -> dict[int, tuple[torch.Tensor, torch.Tensor]]:
     """Best-head `(monotonic, coverage)` per qualifying sample index."""
@@ -351,7 +351,7 @@ def attention_images(
     return images
 
 
-def _registers_image(block: torch.Tensor) -> torch.Tensor:
+def registers_image(block: torch.Tensor) -> torch.Tensor:
     """Min-max normalize, upscale, colorize — as `attention_images`, for the
     wide-and-short `(n_registers, seq)` register blocks.
 
@@ -394,7 +394,7 @@ def registers_attention_images(
         if real == 0:
             continue
         images[i] = {
-            "registers_to_seq": _registers_image(reg_to_seq[i, :, :real]),
-            "registers_from_seq": _registers_image(seq_to_reg[i, :real, :].T),
+            "registers_to_seq": registers_image(reg_to_seq[i, :, :real]),
+            "registers_from_seq": registers_image(seq_to_reg[i, :real, :].T),
         }
     return images

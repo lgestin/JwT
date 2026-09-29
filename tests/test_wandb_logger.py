@@ -8,25 +8,25 @@ from jwt.data.audio.audio import Audio
 from jwt.training.loggers import MultiLogger, SampleRecord, flatten_config
 from jwt.training.wandb_logger import (
     WandbLogger,
-    _audio_array,
-    _curve_rows,
-    _image_array,
+    audio_array,
+    curve_rows,
+    image_array,
 )
 
 
 def test_audio_array_returns_1d_or_time_by_channel() -> None:
-    assert _audio_array(torch.zeros(100)).shape == (100,)
-    assert _audio_array(torch.zeros(1, 100)).shape == (100,)
-    assert _audio_array(torch.zeros(2, 100)).shape == (100, 2)
+    assert audio_array(torch.zeros(100)).shape == (100,)
+    assert audio_array(torch.zeros(1, 100)).shape == (100,)
+    assert audio_array(torch.zeros(2, 100)).shape == (100, 2)
 
 
 def test_image_array_converts_chw_float_to_hwc_uint8() -> None:
-    gray = _image_array(torch.full((1, 4, 6), 0.5))
+    gray = image_array(torch.full((1, 4, 6), 0.5))
     assert gray.shape == (4, 6)
     assert gray.dtype.name == "uint8"
     assert int(gray[0, 0]) == 127
 
-    rgb = _image_array(torch.rand(3, 4, 6))
+    rgb = image_array(torch.rand(3, 4, 6))
     assert rgb.shape == (4, 6, 3)
     assert rgb.dtype.name == "uint8"
 
@@ -57,12 +57,12 @@ def test_colorize_maps_grayscale_to_rgb() -> None:
 
 
 def test_bin_edges_bracket_centers() -> None:
-    from jwt.training.wandb_logger import _bin_edges
+    from jwt.training.wandb_logger import bin_edges
 
     # Uniform grid: centers 0.25/0.75 -> edges 0/0.5/1.
-    assert _bin_edges([0.25, 0.75]) == pytest.approx([0.0, 0.5, 1.0])
+    assert bin_edges([0.25, 0.75]) == pytest.approx([0.0, 0.5, 1.0])
     # Non-uniform grid: interior edges at midpoints, ends extrapolated.
-    assert _bin_edges([0.1, 0.2, 0.6]) == pytest.approx([0.05, 0.15, 0.4, 0.8])
+    assert bin_edges([0.1, 0.2, 0.6]) == pytest.approx([0.05, 0.15, 0.4, 0.8])
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
@@ -70,7 +70,7 @@ def test_log_curve_history_flag_controls_hist(tmp_path: Path) -> None:
     logger = WandbLogger(log_dir=tmp_path, run_name="hist-test", mode="offline")
     try:
         logged: dict[str, object] = {}
-        logger._log = lambda data, step: logged.update(data)  # ty: ignore[invalid-assignment]
+        logger.log = lambda data, step: logged.update(data)  # ty: ignore[invalid-assignment]
         logger.log_curve("by_t/train_fm_loss", [0.25, 0.75], [1.0, 2.0], step=1)
         assert "by_t/train_fm_loss_hist" in logged
         logger.log_curve(
@@ -83,7 +83,7 @@ def test_log_curve_history_flag_controls_hist(tmp_path: Path) -> None:
 
 
 def test_curve_rows_drop_nan_points() -> None:
-    rows = _curve_rows([0.1, 0.5, 0.9], [1.0, float("nan"), 3.0])
+    rows = curve_rows([0.1, 0.5, 0.9], [1.0, float("nan"), 3.0])
     assert rows == [[0.1, 1.0], [0.9, 3.0]]
 
 
@@ -133,7 +133,7 @@ def test_metric_tag_routes_by_question() -> None:
     )
 
 
-def _records() -> list[SampleRecord]:
+def make_records() -> list[SampleRecord]:
     return [
         SampleRecord(
             index=0,
@@ -165,7 +165,7 @@ class _Recorder:
 
 def test_multilogger_fans_out_log_samples() -> None:
     a, b = _Recorder(), _Recorder()
-    MultiLogger(a, b).log_samples("samples", _records(), step=1)  # ty: ignore[invalid-argument-type]
+    MultiLogger(a, b).log_samples("samples", make_records(), step=1)  # ty: ignore[invalid-argument-type]
     assert a.sections == ["samples"]
     assert b.sections == ["samples"]
 
@@ -174,7 +174,7 @@ def test_tensorboard_logger_unpacks_log_samples(tmp_path: Path) -> None:
     from jwt.training.tensorboard_logger import TensorBoardLogger
 
     logger = TensorBoardLogger(log_dir=tmp_path)
-    logger.log_samples("samples", _records(), step=1)
+    logger.log_samples("samples", make_records(), step=1)
     logger.close()
     assert any(tmp_path.iterdir()), "no event file written"
 
@@ -189,7 +189,7 @@ def test_log_samples_join_merges_columns_with_fresh_media(tmp_path: Path) -> Non
     logger = WandbLogger(log_dir=tmp_path, run_name="join-test", mode="offline")
     try:
         tables: list[object] = []
-        logger._log = lambda data, step: tables.extend(  # ty: ignore[invalid-assignment]
+        logger.log = lambda data, step: tables.extend(  # ty: ignore[invalid-assignment]
             v for k, v in data.items() if k.startswith("tables/samples")
         )
         refs = [SampleRecord(index=0, audio={"clean": Audio(torch.zeros(800), 8000)})]
@@ -230,7 +230,7 @@ def test_wandb_logger_offline_end_to_end(tmp_path: Path) -> None:
             "valid/fm_loss_by_t", [0.25, 0.75], [1.0, float("nan")], step=6
         )
         logger.log_config(_Cfg())
-        logger.log_samples("valid_audio", _records(), step=6)
+        logger.log_samples("valid_audio", make_records(), step=6)
         logger.set_description("desc")
         logger.update_progress()
         logger.set_progress(6)

@@ -11,7 +11,7 @@ import torch
 import torchaudio
 
 
-def _to_16khz_mono(wav: torch.Tensor, sample_rate: int) -> torch.Tensor:
+def to_16khz_mono(wav: torch.Tensor, sample_rate: int) -> torch.Tensor:
     if wav.dim() == 1:
         wav = wav[None]
     wav = wav.float()

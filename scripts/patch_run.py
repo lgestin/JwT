@@ -35,7 +35,7 @@ _ARCHITECTURAL_FIELDS = frozenset(
 )
 
 
-def _cast(field_type: Any, raw: str):
+def cast_value(field_type: Any, raw: str):
     if isinstance(field_type, type) and issubclass(field_type, Enum):
         return field_type[raw]
     if field_type is bool:
@@ -90,7 +90,7 @@ def main() -> None:
                 f"refusing to override architectural field {name!r}: changing it "
                 "would break load_state_dict on resume"
             )
-        casted[name] = _cast(field_types[name], raw)
+        casted[name] = cast_value(field_types[name], raw)
         old = getattr(cfg_obj, name)
         setattr(cfg_obj, name, casted[name])
         print(f"  {name}: {old!r} -> {casted[name]!r}")

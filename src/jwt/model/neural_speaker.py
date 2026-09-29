@@ -204,7 +204,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         )
         return pred
 
-    def _sample_noise(
+    def sample_noise(
         self,
         shape: tuple[int, ...] | torch.Size,
         *,
@@ -271,7 +271,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
 
         x_1 = acoustic.values.transpose(1, 2)  # (B, T_ext, acoustic_dim), normalized
         if x_0 is None:
-            x_0 = self._sample_noise(x_1.shape, device=x_1.device, dtype=x_1.dtype)
+            x_0 = self.sample_noise(x_1.shape, device=x_1.device, dtype=x_1.dtype)
 
         ac_idx = torch.arange(T_ext, device=device).expand(B, T_ext)
         progress = torch.clamp(
@@ -355,7 +355,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         max_T = self.cfg.max_acoustic_len
 
         if x_0 is None:
-            x_0 = self._sample_noise((B, acoustic_dim, max_T), device=device)
+            x_0 = self.sample_noise((B, acoustic_dim, max_T), device=device)
         else:
             assert x_0.shape[-1] >= max_T, (
                 f"x_0 must have at least cfg.max_acoustic_len ({max_T}) "

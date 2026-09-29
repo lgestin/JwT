@@ -33,10 +33,10 @@ class TimestepSchedule(Protocol):
         Same shape as ``progress``.
         """
         ...
-        return _euler_dt(self, progress, n_steps)
+        return euler_dt(self, progress, n_steps)
 
 
-def _euler_dt(
+def euler_dt(
     scheduler: TimestepSchedule, progress: torch.Tensor, n_steps: int
 ) -> torch.Tensor:
     """Generic Euler step size — ``t(progress + h) - t(progress)`` by finite
@@ -107,7 +107,7 @@ class LogNormTimestepSchedule(TimestepSchedule):
         return torch.where(progress >= 1.0, torch.ones_like(t), t)
 
     def dt(self, progress: torch.Tensor, n_steps: int) -> torch.Tensor:
-        return _euler_dt(self, progress, n_steps)
+        return euler_dt(self, progress, n_steps)
 
 
 class TimestepSchedules(StrEnum):

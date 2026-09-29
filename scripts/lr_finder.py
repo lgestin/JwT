@@ -63,7 +63,7 @@ class Args:
     divergence_factor: float = 4.0
 
 
-def _training_step(
+def training_step(
     model: RollingFlowSpeaker,
     codec: Codec,
     batch,
@@ -161,7 +161,7 @@ def main() -> None:
                 pg["lr"] = lr
 
             optimizer.zero_grad()
-            loss, loss_detached = _training_step(
+            loss, loss_detached = training_step(
                 model, codec, batch, device, amp_dtype, noamp
             )
             loss_val = float(loss_detached)

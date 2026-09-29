@@ -6,7 +6,7 @@ import torch
 from jwt.data.audio.stft import STFT
 
 
-def _masked_zero_mean(
+def masked_zero_mean(
     x: torch.Tensor,  # (B, S)
     m: torch.Tensor,  # (B, S), float 0/1
 ) -> torch.Tensor:
@@ -27,8 +27,8 @@ def si_snr(
     t = target.float()
     m = mask.to(p.dtype)
     if zero_mean:
-        p = _masked_zero_mean(p, m)
-        t = _masked_zero_mean(t, m)
+        p = masked_zero_mean(p, m)
+        t = masked_zero_mean(t, m)
     else:
         p = p * m
         t = t * m

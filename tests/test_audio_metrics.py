@@ -14,7 +14,7 @@ S = 16 * 256  # short signals for the time-domain pair
 S_PERC = SAMPLE_RATE  # 1 s — PESQ/STOI need at least ~1/4 s of audio
 
 
-def _wavs(batch: int = 2, n_samples: int = S, seed: int = SEED):
+def make_wavs(batch: int = 2, n_samples: int = S, seed: int = SEED):
     """Seeded (pred, target) pair, pred = target + small noise. Shapes (B, S)."""
     g = torch.Generator().manual_seed(seed)
     target = torch.randn(batch, n_samples, generator=g) * 0.063
@@ -22,7 +22,7 @@ def _wavs(batch: int = 2, n_samples: int = S, seed: int = SEED):
     return pred, target
 
 
-def _full_mask(batch: int = 2, n_samples: int = S) -> torch.Tensor:
+def full_mask(batch: int = 2, n_samples: int = S) -> torch.Tensor:
     return torch.ones(batch, n_samples, dtype=torch.bool)
 
 
@@ -30,24 +30,24 @@ _STFT = STFT(n_fft=1024, hop_length=256, window="hann")
 
 
 def test_si_snr_is_scale_invariant() -> None:
-    pred, target = _wavs()
-    mask = _full_mask()
+    pred, target = make_wavs()
+    mask = full_mask()
     base = si_snr(pred, target, mask)
     scaled = si_snr(0.5 * pred, target, mask)
     assert torch.allclose(base, scaled, atol=1e-4)
 
 
 def test_snr_is_scale_sensitive() -> None:
-    pred, target = _wavs()
-    mask = _full_mask()
+    pred, target = make_wavs()
+    mask = full_mask()
     base = snr(pred, target, mask)
     scaled = snr(0.5 * pred, target, mask)
     assert not torch.allclose(base, scaled, atol=1.0)
 
 
 def test_si_snr_identical_signals_is_large_and_finite() -> None:
-    _, target = _wavs()
-    mask = _full_mask()
+    _, target = make_wavs()
+    mask = full_mask()
     out = si_snr(target, target.clone(), mask)
     assert torch.isfinite(out).all()
     assert (out > 40).all()
@@ -55,8 +55,8 @@ def test_si_snr_identical_signals_is_large_and_finite() -> None:
 
 def test_time_metrics_ignore_samples_outside_mask() -> None:
     """Corrupting the masked-out half must not change the score."""
-    pred, target = _wavs()
-    mask = _full_mask()
+    pred, target = make_wavs()
+    mask = full_mask()
     mask[:, S // 2 :] = False
 
     clean = si_snr(pred, target, mask), snr(pred, target, mask)
@@ -71,16 +71,16 @@ def test_time_metrics_ignore_samples_outside_mask() -> None:
 def test_mag_snr_is_blind_to_pure_phase_error() -> None:
     """A global sign flip is a pure pi phase shift: STFT magnitudes are
     untouched, so mag_snr stays high while waveform snr collapses."""
-    _, target = _wavs()
-    mask = _full_mask()
+    _, target = make_wavs()
+    mask = full_mask()
     assert (mag_snr(-target, target, mask, _STFT) > 40).all()
     assert (snr(-target, target, mask) < 0).all()
 
 
 def test_mag_snr_matches_snr_on_pure_gain_error() -> None:
     """pred = 0.5*target has zero phase error: both domains read ~6.02 dB."""
-    _, target = _wavs()
-    mask = _full_mask()
+    _, target = make_wavs()
+    mask = full_mask()
     expected = 10 * torch.log10(torch.tensor(4.0))
     assert torch.allclose(
         mag_snr(0.5 * target, target, mask, _STFT), expected, atol=1e-3
@@ -91,15 +91,15 @@ def test_mag_snr_matches_snr_on_pure_gain_error() -> None:
 def test_mag_snr_gap_over_snr_is_nonnegative() -> None:
     """Reverse triangle inequality: discarding phase can only shrink the
     error, so mag_snr >= snr (up to windowing tolerance)."""
-    pred, target = _wavs()
-    mask = _full_mask()
+    pred, target = make_wavs()
+    mask = full_mask()
     gap = mag_snr(pred, target, mask, _STFT) - snr(pred, target, mask)
     assert (gap > -0.1).all()
 
 
 def test_mag_snr_ignores_samples_outside_mask() -> None:
-    pred, target = _wavs()
-    mask = _full_mask()
+    pred, target = make_wavs()
+    mask = full_mask()
     mask[:, S // 2 :] = False
     clean = mag_snr(pred, target, mask, _STFT)
     pred_corrupt = pred.clone()
@@ -113,8 +113,8 @@ def test_si_snr_and_snr_match_torchmetrics_on_unmasked_input() -> None:
         signal_noise_ratio,
     )
 
-    pred, target = _wavs()
-    mask = _full_mask()
+    pred, target = make_wavs()
+    mask = full_mask()
     assert torch.allclose(
         si_snr(pred, target, mask),
         scale_invariant_signal_distortion_ratio(pred, target, zero_mean=True),
@@ -128,9 +128,9 @@ def test_si_snr_and_snr_match_torchmetrics_on_unmasked_input() -> None:
 
 
 def test_masked_metrics_stay_on_device_and_detached() -> None:
-    pred, target = _wavs()
+    pred, target = make_wavs()
     pred = pred.requires_grad_(True)
-    mask = _full_mask()
+    mask = full_mask()
     for out in (
         si_snr(pred, target, mask),
         snr(pred, target, mask),
@@ -143,7 +143,7 @@ def test_masked_metrics_stay_on_device_and_detached() -> None:
 def test_pesq_scores_and_resamples_non_16khz_input() -> None:
     """24 kHz input exercises the internal resample; identical signals score
     near PESQ's 4.64 ceiling, noisy ones lower."""
-    pred, target = _wavs(n_samples=S_PERC)
+    pred, target = make_wavs(n_samples=S_PERC)
     out = PESQ().score(target, target.clone(), sample_rate=SAMPLE_RATE)
     assert set(out) == {"pesq", "pesq_scored"}
     assert out["pesq"].shape == (2,)
@@ -155,7 +155,7 @@ def test_pesq_scores_and_resamples_non_16khz_input() -> None:
 
 
 def test_stoi_scores_identical_signals_at_one() -> None:
-    _, target = _wavs(n_samples=S_PERC)
+    _, target = make_wavs(n_samples=S_PERC)
     out = STOI().score(target, target.clone(), sample_rate=SAMPLE_RATE)
     assert set(out) == {"stoi"}
     assert out["stoi"].shape == (2,)
@@ -163,7 +163,7 @@ def test_stoi_scores_identical_signals_at_one() -> None:
 
 
 def test_nisqa_returns_all_five_dimensions() -> None:
-    pred, _ = _wavs(n_samples=S_PERC)
+    pred, _ = make_wavs(n_samples=S_PERC)
     out = NISQA().score(pred, sample_rate=SAMPLE_RATE)
     assert set(out) == {f"nisqa_{dim}" for dim in NISQA.DIMS}
     for v in out.values():
@@ -180,7 +180,7 @@ def test_utmos_scores_with_stubbed_hub(monkeypatch) -> None:
             return waveforms.abs().mean(-1)
 
     monkeypatch.setattr(torch.hub, "load", lambda *a, **k: _StubMOS())
-    pred, _ = _wavs(n_samples=S_PERC)
+    pred, _ = make_wavs(n_samples=S_PERC)
     out = UTMOS().score(pred, sample_rate=SAMPLE_RATE)
     assert set(out) == {"utmos"}
     assert out["utmos"].shape == (2,)
@@ -189,8 +189,8 @@ def test_utmos_scores_with_stubbed_hub(monkeypatch) -> None:
 def test_metric_classes_reject_masks(monkeypatch) -> None:
     """Masked scoring is deliberately unsupported — a mask must raise, not be
     silently ignored."""
-    pred, target = _wavs()
-    mask = _full_mask()
+    pred, target = make_wavs()
+    mask = full_mask()
     monkeypatch.setattr(torch.hub, "load", lambda *a, **k: torch.nn.Identity())
     for call in (
         lambda: PESQ().score(pred, target, mask, sample_rate=SAMPLE_RATE),

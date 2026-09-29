@@ -143,7 +143,7 @@ def test_pesq_marks_unscorable_rows_nan_and_counts_the_rest() -> None:
     assert torch.isnan(out["pesq"][0])
     assert torch.isfinite(out["pesq"][1:]).all()
     assert out["pesq_scored"].item() == 2.0
-    assert torch.isfinite(out["pesq"].nanmean())  # what _log_audio_metrics logs
+    assert torch.isfinite(out["pesq"].nanmean())  # what log_audio_metrics logs
 
 
 @pytest.mark.parametrize(

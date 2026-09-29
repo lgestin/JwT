@@ -54,7 +54,7 @@ class Args:
     share: bool = False
 
 
-def _load_model(
+def load_model(
     checkpoint_path: str, device: torch.device
 ) -> tuple[RollingFlowSpeaker, dict]:
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -79,7 +79,7 @@ def _load_model(
     return model, ckpt
 
 
-def _plot_mel(
+def plot_mel(
     mel: torch.Tensor,
     hop_length: int,
     sample_rate: int,
@@ -106,7 +106,7 @@ def _plot_mel(
     return fig
 
 
-def _build_synth_fn(
+def build_synth_fn(
     model: RollingFlowSpeaker,
     codec: Codec,
     phonemizer: Phonemizer,
@@ -170,7 +170,7 @@ def _build_synth_fn(
 
         viz = viz_mel(wav.unsqueeze(0)).clamp(min=1e-5).log()[0]  # (n_mels, T)
         wav_np = wav.detach().cpu().float().numpy()
-        fig = _plot_mel(viz, hop_length=_VIZ_MEL_HOP, sample_rate=sr)
+        fig = plot_mel(viz, hop_length=_VIZ_MEL_HOP, sample_rate=sr)
         return (sr, wav_np), fig, phonemes, length_info
 
     return synthesize
@@ -190,7 +190,7 @@ def main() -> None:
     vocab = Vocabulary.from_json(args.vocab_path)
     tokenizer = Tokenizer(vocab)
     phonemizer = Phonemizer()
-    model, ckpt = _load_model(args.checkpoint, device)
+    model, ckpt = load_model(args.checkpoint, device)
     assert model.cfg.vocabulary_size == len(vocab), (
         f"vocab size mismatch: checkpoint has {model.cfg.vocabulary_size}, "
         f"vocab file has {len(vocab)}"
@@ -210,7 +210,7 @@ def main() -> None:
         sample_rate = args.sample_rate
     print(f"Codec: {model.cfg.codec} · sample rate: {sample_rate} Hz")
 
-    synthesize = _build_synth_fn(
+    synthesize = build_synth_fn(
         model, codec, phonemizer, tokenizer, device, sample_rate
     )
 

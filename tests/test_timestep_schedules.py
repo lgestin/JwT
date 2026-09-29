@@ -26,7 +26,7 @@ def test_linear_timestep_fixes_endpoints() -> None:
 def test_linear_dt_is_constant_within_window() -> None:
     """Identity warp: every in-window step (progress < 1) advances t by exactly h.
 
-    Linear now inherits the generic ``_euler_dt`` default, which tapers to 0 at
+    Linear now inherits the generic ``euler_dt`` default, which tapers to 0 at
     progress == 1 — so the constant-h property is asserted over in-window
     progress values only (the frozen progress == 1 frame is unsupervised)."""
     sched = LinearTimestepSchedule()

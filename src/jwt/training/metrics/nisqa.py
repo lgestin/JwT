@@ -5,7 +5,7 @@ from torchmetrics.functional.audio.nisqa import (
 )
 
 from jwt.training.metrics.metric import AbsoluteMetric
-from jwt.training.metrics.utils import _to_16khz_mono
+from jwt.training.metrics.utils import to_16khz_mono
 
 
 class NISQA(nn.Module, AbsoluteMetric):
@@ -32,7 +32,7 @@ class NISQA(nn.Module, AbsoluteMetric):
                 "masked scoring not supported; pass full-length waveforms"
             )
 
-        waveforms = _to_16khz_mono(waveforms.detach(), sample_rate)
+        waveforms = to_16khz_mono(waveforms.detach(), sample_rate)
         scores = non_intrusive_speech_quality_assessment(waveforms, 16_000)
         return {
             f"nisqa_{dim}": score

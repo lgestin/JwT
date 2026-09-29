@@ -35,14 +35,14 @@ class EMA:
             if param.requires_grad
         }
 
-    def _effective_decay(self, step: int) -> float:
+    def effective_decay(self, step: int) -> float:
         """Decay ramped up over early steps so init weights aren't locked in."""
         return min(self.decay, (1 + step) / (10 + step))
 
     @torch.no_grad()
     def update(self, model: Module, step: int) -> None:
         """Nudge every shadow weight toward the live weight after an opt step."""
-        decay = self._effective_decay(step)
+        decay = self.effective_decay(step)
         params = dict(model.named_parameters())
         shadow = list(self._shadow.values())
         live = [params[name].detach().float() for name in self._shadow]

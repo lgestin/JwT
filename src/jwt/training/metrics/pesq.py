@@ -4,7 +4,7 @@ from pesq import pesq as pesq_score
 from torch import nn
 
 from jwt.training.metrics.metric import ComparativeMetric
-from jwt.training.metrics.utils import _to_16khz_mono
+from jwt.training.metrics.utils import to_16khz_mono
 
 
 class PESQ(nn.Module, ComparativeMetric):
@@ -20,8 +20,8 @@ class PESQ(nn.Module, ComparativeMetric):
             raise NotImplementedError(
                 "masked scoring not supported; pass full-length waveforms"
             )
-        pred_np = _to_16khz_mono(pred.detach(), sample_rate).cpu().numpy()
-        trgt_np = _to_16khz_mono(trgt.detach(), sample_rate).cpu().numpy()
+        pred_np = to_16khz_mono(pred.detach(), sample_rate).cpu().numpy()
+        trgt_np = to_16khz_mono(trgt.detach(), sample_rate).cpu().numpy()
         scores = torch.tensor(
             [
                 pesq_score(16_000, t, p, "wb", on_error=PesqError.RETURN_VALUES)
