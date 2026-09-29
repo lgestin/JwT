@@ -216,16 +216,11 @@ class AttentionCollector:
         """The batch axis reduced too: the uniform mean over samples of
         `utterance_metrics`, per key, skipping samples that lack it. One value
         per step, for the logged panels."""
-        per = self.utterance_metrics
-        keys: dict[str, None] = {}
-        for m in per.values():
-            for k in m:
-                keys.setdefault(k)
-        return {
-            k: torch.tensor(sum(vs) / len(vs))
-            for k in keys
-            for vs in [[m[k] for m in per.values() if k in m]]
-        }
+        values: dict[str, list[float]] = {}
+        for m in self.utterance_metrics.values():
+            for k, v in m.items():
+                values.setdefault(k, []).append(v)
+        return {k: torch.tensor(sum(vs) / len(vs)) for k, vs in values.items()}
 
     def masks(self) -> tuple[torch.Tensor, torch.Tensor]:
         """`(in_text, in_audio)` — `(B, T)` bool masks of the real text / audio

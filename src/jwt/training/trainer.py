@@ -798,18 +798,21 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         keys = [k for k, v in per_sample.items() if v.numel() == n_rows]
         sample_idx = torch.arange(keep.shape[0], device=keep.device)[keep][rows]
         attention = attention or {}
-        records = [
-            SampleRecord(
-                index=si,
-                audio={
-                    "pred": Audio(pred_wav[i], self.sample_rate),
-                    "target": Audio(trgt_wav[i], self.sample_rate),
-                },
-                images=attention.get(si, {}),
-                metrics={k: float(per_sample[k][i]) for k in keys},
+        records: list[SampleRecord] = []
+        for i, si in enumerate(sample_idx.tolist()):
+            audios = {
+                "pred": Audio(pred_wav[i], self.sample_rate),
+                "target": Audio(trgt_wav[i], self.sample_rate),
+            }
+            row_metrics = {k: float(per_sample[k][i]) for k in keys}
+            records.append(
+                SampleRecord(
+                    index=si,
+                    audio=audios,
+                    images=attention.get(si, {}),
+                    metrics=row_metrics,
+                )
             )
-            for i, si in enumerate(int(s) for s in sample_idx.tolist())
-        ]
         self.logger.log_samples("valid_audio", records, self.step)
 
     @torch.inference_mode()
@@ -910,20 +913,15 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                 ),
             )
             att = collector.images
-            sample_metrics = {
-                i: {
-                    k: m[k]
-                    for k in (
-                        "attn_entropy",
-                        "attn_mass_audio_to_text",
-                        "attn_align_monotonic",
-                        "attn_align_coverage",
-                        "register_mass",
-                    )
-                    if k in m
-                }
-                for i, m in collector.utterance_metrics.items()
-            }
+            probe_keys = (
+                "attn_entropy",
+                "attn_mass_audio_to_text",
+                "attn_align_monotonic",
+                "attn_align_coverage",
+                "register_mass",
+            )
+            for i, m in collector.utterance_metrics.items():
+                sample_metrics[i] = {k: m[k] for k in probe_keys if k in m}
             self.logger.log_metrics(
                 {k: float(v) for k, v in collector.metrics.items()},
                 self.step,

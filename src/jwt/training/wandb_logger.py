@@ -197,16 +197,10 @@ class WandbLogger:
         for cells in (*joined.values(), *own.values()):
             for k in cells:
                 columns.setdefault(k, None)
-        data: list[Any] = [
-            [
-                r.index,
-                *(
-                    ({**joined.get(r.index, {}), **own[r.index]}).get(k)
-                    for k in columns
-                ),
-            ]
-            for r in records
-        ]
+        data: list[Any] = []
+        for r in records:
+            cells = {**joined.get(r.index, {}), **own[r.index]}
+            data.append([r.index, *(cells.get(k) for k in columns)])
         cols: list[Any] = ["idx", *columns]
         self.log({f"tables/{section}": wandb.Table(columns=cols, data=data)}, step)
 
