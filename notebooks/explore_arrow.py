@@ -1,4 +1,4 @@
-"""Marimo notebook: walk through the LJSpeech Arrow data pipeline.
+"""Marimo notebook: walk through a prepared dataset (arrow shards + meta.json).
 
 Run with:
     uv run marimo edit notebooks/explore_arrow.py
@@ -20,61 +20,64 @@ def _():
 @app.cell
 def _(mo):
     mo.md(r"""
-    # Explore the LJSpeech Arrow source
+    # Explore a prepared dataset
 
-    Walk an arrow row through every layer of `jwt.data`:
+    Walk a prepared row through every layer of `jwt.data`:
 
-    1. open the file with `pyarrow` and look at the row payload
-    2. let `ArrowTTSSource` materialise it into `(Audio, Text)`
-    3. wrap that in `AudioDataset` and pull a `Sample`
-    4. confirm `BigVGAN.encode(waveform)` matches the stored mel
-    5. decode the stored mel back into a waveform for A/B listening
+    1. read `meta.json` and the arrow shards with `pyarrow`
+    2. let `ArrowTTSSource` materialise a row into `(Audio, Text)`
+    3. look at its word alignment
+    4. wrap the source in `AudioDataset` and pull a `Sample`
+    5. cut an audio prompt at a word boundary and collate a `Batch` with its padding masks
     """)
     return
 
 
 @app.cell
 def _(mo):
-    import torch
-
-    arrow_path = mo.ui.text(
-        value="data/ljspeech_24khz_bigvgan.arrow",
-        label="arrow file",
+    prepared_dir = mo.ui.text(
+        value="data/prepared/ljspeech_22.050khz",
+        label="prepared dataset directory",
         full_width=True,
     )
     vocab_path = mo.ui.text(
-        value="/data/ljspeech/vocabulary.json",
+        value="data/vocabulary.json",
         label="vocabulary json",
         full_width=True,
     )
-    codec_name = mo.ui.text(
-        value="bigvgan",
-        label="codec name (acoustic column suffix)",
+    patch_size = mo.ui.dropdown(
+        options={str(p): p for p in (32, 64, 128, 256, 512)},
+        value="512",
+        label="raw-audio patch size",
     )
-    device = mo.ui.dropdown(
-        options=["cuda", "cpu"] if torch.cuda.is_available() else ["cpu"],
-        value="cuda" if torch.cuda.is_available() else "cpu",
-        label="device",
-    )
-    mo.vstack([arrow_path, vocab_path, codec_name, device])
-    return arrow_path, codec_name, device, torch, vocab_path
+    mo.vstack([prepared_dir, vocab_path, patch_size])
+    return patch_size, prepared_dir, vocab_path
 
 
 @app.cell
-def _(arrow_path):
+def _(prepared_dir):
     import pyarrow as pa
 
-    arrow_file = pa.memory_map(arrow_path.value, "r")
-    table = pa.ipc.open_file(arrow_file).read_all()
-    return (table,)
+    from jwt.data.prepared import read_meta, shard_paths
+
+    meta = read_meta(prepared_dir.value)
+    shards = shard_paths(prepared_dir.value)
+    table = pa.concat_tables(
+        pa.ipc.open_file(pa.memory_map(str(p), "r")).read_all() for p in shards
+    )
+    return meta, shards, table
 
 
 @app.cell
-def _(mo, table):
+def _(meta, mo, shards, table):
     mo.md(f"""
-    ## Arrow file
+    ## Prepared directory
 
-    - **rows**: {table.num_rows}
+    - **sample_rate**: {meta.sample_rate} Hz
+    - **target_loudness**: {meta.target_loudness} dB
+    - **aligner**: `{meta.aligner}`
+    - **dropped**: {meta.dropped or "none"}
+    - **shards**: {len(shards)}, **rows**: {table.num_rows}
     - **columns**: {", ".join(f"`{c}`" for c in table.column_names)}
     """)
     return
@@ -96,14 +99,17 @@ def _(mo, table):
 @app.cell
 def _(row_idx, table):
     scalar_cols = [
-        "audio_id",
+        "utt_id",
+        "dataset",
+        "speaker",
+        "session",
+        "session_idx",
+        "duration",
         "text",
         "phonemes",
         "num_samples",
         "sample_rate",
         "loudness",
-        "acoustic_dim",
-        "n_frames",
     ]
     raw_row = {c: table.column(c)[row_idx.value].as_py() for c in scalar_cols}
     return (raw_row,)
@@ -111,31 +117,48 @@ def _(row_idx, table):
 
 @app.cell
 def _(mo, raw_row):
-    raw_duration_s = raw_row["num_samples"] / raw_row["sample_rate"]
     mo.md(
         f"""
-        ### Raw row `{raw_row["audio_id"]}`
+        ### Raw row `{raw_row["utt_id"]}`
 
+        - **dataset**: {raw_row["dataset"]}, **speaker**: {raw_row["speaker"]}
+        - **session**: {raw_row["session"]} (#{raw_row["session_idx"]})
         - **text**: {raw_row["text"]}
         - **phonemes**: `{raw_row["phonemes"]}`
-        - **samples**: {raw_row["num_samples"]:,} @ {raw_row["sample_rate"]} Hz ({raw_duration_s:.2f}s)
+        - **samples**: {raw_row["num_samples"]:,} @ {raw_row["sample_rate"]} Hz
+        - **duration**: {raw_row["duration"]:.2f}s
         - **loudness**: {raw_row["loudness"]:.2f} dB
-        - **acoustic**: {raw_row["acoustic_dim"]} channels x {raw_row["n_frames"]} frames
         """
     )
     return
 
 
 @app.cell
-def _(arrow_path, codec_name, vocab_path):
+def _(patch_size, prepared_dir, vocab_path):
     from jwt.data.source import ArrowTTSSource
     from jwt.data.text import Tokenizer, Vocabulary
 
     tokenizer = Tokenizer(Vocabulary.from_json(vocab_path.value))
-    arrow_source = ArrowTTSSource(
-        arrow_path.value, tokenizer=tokenizer, codec_name=codec_name.value
-    )
+    arrow_source = ArrowTTSSource(prepared_dir.value, tokenizer, patch_size.value)
     return arrow_source, tokenizer
+
+
+@app.cell
+def _(arrow_source, mo):
+    n_sessions = len(
+        {
+            (s, x)
+            for s, x in zip(arrow_source.speakers, arrow_source.sessions, strict=True)
+        }
+    )
+    mo.md(f"""
+    ## Through `ArrowTTSSource`
+
+    - `len(source)` = {len(arrow_source)}
+    - hours: {sum(arrow_source.durations) / 3600:.2f}
+    - speakers: {len(set(arrow_source.speakers))}, sessions: {n_sessions}
+    """)
+    return
 
 
 @app.cell
@@ -149,19 +172,17 @@ def _(audio, mo, text, tokenizer):
     phoneme_tokens = tokenizer.encode(text.phonemes)
     mo.md(
         f"""
-        ## Through `ArrowTTSSource`
-
         ### `Audio`
         - waveform: shape={tuple(audio.waveform.shape)}, dtype=`{audio.waveform.dtype}`
         - sample_rate: {audio.sample_rate}
-        - duration_s: {audio.duration_s:.3f}
         - loudness: {audio.loudness:.2f} dB
-        - acoustic: shape={tuple(audio.acoustic.shape)}, dtype=`{audio.acoustic.dtype}`
+        - acoustic [1, patch_size, n_frames]: shape={tuple(audio.acoustic.shape)}
 
         ### `Text`
         - text: {text.text!r}
         - phonemes: `{text.phonemes}`
-        - tokens via `tokenizer.encode(phonemes)` (len={len(phoneme_tokens)}, first 30): {phoneme_tokens[:30]}
+        - `tokenizer.encode(phonemes)`: len={len(phoneme_tokens)}
+        - first 30 tokens: {phoneme_tokens[:30]}
         """
     )
     return
@@ -173,83 +194,50 @@ def _(audio, mo):
 
     import soundfile as sf
 
-    original_buf = io.BytesIO()
-    sf.write(
-        original_buf,
-        audio.waveform.squeeze(0).cpu().numpy(),
-        audio.sample_rate,
-        format="WAV",
-    )
-    original_buf.seek(0)
-    mo.vstack([mo.md("### Listen (original)"), mo.audio(original_buf)])
-    return io, sf
+    def wav(waveform, sample_rate):
+        """WAV bytes of a [1, S] waveform, for `mo.audio`."""
+        buf = io.BytesIO()
+        sf.write(buf, waveform.squeeze(0).cpu().numpy(), sample_rate, format="WAV")
+        buf.seek(0)
+        return buf
+
+    mo.vstack([mo.md("### Listen"), mo.audio(wav(audio.waveform, audio.sample_rate))])
+    return (wav,)
 
 
 @app.cell
-def _(audio, mo):
-    stored_mel = audio.acoustic
-    mo.md(
-        f"""
-        ### Stored acoustic features (as encoded by the codec)
-
-        - shape: {tuple(stored_mel.shape)} (batch x acoustic_dim x n_frames)
-        - dtype: `{stored_mel.dtype}`
-        - min: {stored_mel.min().item():.3f}, max: {stored_mel.max().item():.3f}, mean: {stored_mel.mean().item():.3f}
-
-        First 4x6 corner:
-        ```
-        {stored_mel[0, :4, :6].cpu().tolist()}
-        ```
-        """
-    )
-    return (stored_mel,)
-
-
-@app.cell
-def _(io, mo, stored_mel):
-    import numpy as np
-    from PIL import Image
-
-    log_mel = stored_mel[0].cpu().numpy()[::-1, :]
-    m_min, m_max = float(log_mel.min()), float(log_mel.max())
-    norm = (log_mel - m_min) / (m_max - m_min + 1e-9)
-
-    stops = np.array(
-        [[68, 1, 84], [33, 145, 140], [253, 231, 37]],
-        dtype=np.float32,
-    )
-    idx = norm * (len(stops) - 1)
-    lo = np.floor(idx).astype(np.int32).clip(0, len(stops) - 2)
-    frac = (idx - lo)[..., None]
-    rgb = (stops[lo] * (1 - frac) + stops[lo + 1] * frac).astype(np.uint8)
-
-    img = Image.fromarray(rgb, mode="RGB").resize(
-        (min(log_mel.shape[1] * 2, 1600), 400),
-        Image.BILINEAR,
-    )
-    mel_buf = io.BytesIO()
-    img.save(mel_buf, format="PNG")
-    mel_buf.seek(0)
-
+def _(arrow_source, mo, row_idx, text):
+    words = arrow_source.words(row_idx.value)
+    # Each word runs until the next one starts (or to the end of the utterance).
+    ends = [(w.text_start, w.phoneme_start) for w in words[1:]]
+    ends.append((len(text.text), len(text.phonemes)))
+    word_rows = []
+    for word, (text_end, phoneme_end) in zip(words, ends, strict=True):
+        word_rows.append(
+            {
+                "word": text.text[word.text_start : text_end],
+                "start_s": round(word.start, 3),
+                "end_s": round(word.end, 3),
+                "phonemes": text.phonemes[word.phoneme_start : phoneme_end],
+            }
+        )
     mo.vstack(
         [
-            mo.md(
-                f"### Log-mel spectrogram\n\n"
-                f"range `[{m_min:.2f}, {m_max:.2f}]` "
-                f"({log_mel.shape[0]} mels x {log_mel.shape[1]} frames; "
-                f"low freq at bottom; viridis colourmap)"
+            mo.md("### Word alignment (`source.words(idx)`)"),
+            mo.ui.table(
+                word_rows,
+                selection=None,
             ),
-            mo.image(mel_buf),
         ]
     )
-    return (np,)
+    return
 
 
 @app.cell
 def _(arrow_source, mo):
     from jwt.data.dataset import AudioDataset
 
-    dataset = AudioDataset(tts_source=arrow_source, sample_rate=24000)
+    dataset = AudioDataset(arrow_source, arrow_source.sample_rate)
     sample = dataset[0]
     mo.md(
         f"""
@@ -257,110 +245,110 @@ def _(arrow_source, mo):
 
         - `len(dataset)` = {len(dataset)}
         - `dataset[0]` returns a `Sample(idx={sample.idx}, audio=..., text=...)`
-        - `sample.audio.waveform.shape` = {tuple(sample.audio.waveform.shape)}
-        - `sample.audio.sample_rate` = {sample.audio.sample_rate}
-        - `sample.audio.loudness` = {sample.audio.loudness:.2f} dB (normalised in `__getitem__`)
-
-        > `collate.py` / `Batch` have pending fixes for variable-length stacking
-        > and field names, so a `DataLoader` step is omitted here.
+        - no audio prompt configured: `sample.audio_prompt` = {sample.audio_prompt}
+        - `sample.audio.acoustic.shape` = {tuple(sample.audio.acoustic.shape)}
         """
+    )
+    return (AudioDataset,)
+
+
+@app.cell
+def _(AudioDataset, arrow_source):
+    from jwt.data.audio_prompt import AudioPromptConfig
+
+    cut_dataset = AudioDataset(
+        arrow_source,
+        arrow_source.sample_rate,
+        audio_prompt=AudioPromptConfig(p_drop=0, p_other=0),
+        seed=0,
+    )
+    return (cut_dataset,)
+
+
+@app.cell
+def _(arrow_source, cut_dataset, mo, patch_size, row_idx, wav):
+    from jwt.data.audio.codecs import RawAudioPatcher
+
+    cut = cut_dataset[row_idx.value]
+    prompt_s = (
+        cut.audio_prompt.shape[-1] * arrow_source.hop_length / cut.audio.sample_rate
+    )
+    prompt_wave = RawAudioPatcher(patch_size.value).decode(cut.audio_prompt)
+    mo.vstack(
+        [
+            mo.md(
+                f"""
+                ### Audio prompt: same-utterance word cut
+
+                `AudioPromptConfig(p_drop=0, p_other=0)`; an empty prompt means no word
+                boundary fits the prompt / target length bounds.
+
+                - prompt: shape={tuple(cut.audio_prompt.shape)} ({prompt_s:.2f}s)
+                - target: {cut.audio.waveform.shape[-1] / cut.audio.sample_rate:.2f}s
+                - target text: {cut.text.text!r}
+                - target phonemes: `{cut.text.phonemes}`
+                """
+            ),
+            mo.audio(wav(prompt_wave, cut.audio.sample_rate)),
+            mo.audio(wav(cut.audio.waveform, cut.audio.sample_rate)),
+        ]
     )
     return
 
 
 @app.cell
-def _(device, mo):
-    try:
-        from jwt.data.audio.codecs import BigVGAN
+def _(cut_dataset, mo, row_idx):
+    import matplotlib.pyplot as plt
+    import torch
 
-        bigvgan = BigVGAN().to(device.value).eval()
-        bigvgan_error: str | None = None
-    except ImportError as exc:
-        bigvgan = None
-        bigvgan_error = str(exc)
+    from jwt.data.collate import collate
 
-    if bigvgan_error is not None:
-        bigvgan_notice = mo.md(
-            f"""
-            ### BigVGAN unavailable
+    # The selected utterance first, then its neighbours, so padding shows.
+    batch_rows = [(row_idx.value + i) % len(cut_dataset) for i in range(4)]
+    batch = collate([cut_dataset[i] for i in batch_rows])
+    # Side by side in the order the model reads them: prompt, text, target.
+    masks = {
+        "audio_prompt_mask": batch.audio_prompt_mask,
+        "tokens_mask": batch.tokens_mask,
+        "acoustic_mask": batch.acoustic_mask,
+    }
+    fig, ax = plt.subplots(figsize=(12, 2.5))
+    ax.imshow(
+        torch.cat(list(masks.values()), dim=1).numpy(),
+        aspect="auto",
+        interpolation="nearest",
+        cmap="gray",
+    )
+    offset = 0
+    for name, mask in masks.items():
+        width = mask.shape[1]
+        if offset:
+            ax.axvline(offset - 0.5, color="red")
+        ax.text(offset + width / 2, -0.7, f"{name} ({width})", ha="center")
+        offset += width
+    ax.set_yticks(range(len(batch_rows)), [f"row {r}" for r in batch_rows])
+    ax.set_xticks([])
+    fig.tight_layout()
+    mo.vstack(
+        [
+            mo.md(
+                f"""
+        ### `collate` into a `Batch`: padding masks
 
-            ```
-            {bigvgan_error}
-            ```
+        Row {batch_rows[0]} (top) is the selected utterance; white is valid,
+        black is padding.
 
-            Install with `uv sync --extra bigvgan` and re-run.
-            """
-        )
-    else:
-        bigvgan_notice = mo.md(
-            f"""
-            ### BigVGAN loaded
-
-            - sample_rate: {bigvgan.sample_rate}
-            - acoustic_dim: {bigvgan.acoustic_dim}
-            - hop_length: {bigvgan.hop_length}
-            - device: `{device.value}`
-            """
-        )
-    bigvgan_notice
-    return (bigvgan,)
-
-
-@app.cell
-def _(audio, bigvgan, device, mo, stored_mel, torch):
-    if bigvgan is None:
-        roundtrip_view = mo.md("_skipped: BigVGAN not loaded_")
-    else:
-        with torch.inference_mode():
-            recomputed_mel = bigvgan.encode(audio.waveform.to(device.value)).cpu()
-        diff = (recomputed_mel - stored_mel).abs()
-        roundtrip_view = mo.md(
-            f"""
-            ### `BigVGAN.encode(waveform)` vs. stored mel
-
-            - recomputed shape: {tuple(recomputed_mel.shape)}
-            - max |diff|: {diff.max().item():.3e}
-            - mean |diff|: {diff.mean().item():.3e}
-            """
-        )
-    roundtrip_view
-    return
-
-
-@app.cell
-def _(audio, bigvgan, device, io, mo, sf, stored_mel, torch):
-    if bigvgan is None:
-        decode_view = mo.md("_skipped: BigVGAN not loaded_")
-    else:
-        with torch.inference_mode():
-            decoded = bigvgan.decode(stored_mel.to(device.value)).cpu()
-        decoded_buf = io.BytesIO()
-        sf.write(
-            decoded_buf,
-            decoded.squeeze().numpy(),
-            audio.sample_rate,
-            format="WAV",
-        )
-        decoded_buf.seek(0)
-        decode_view = mo.vstack(
-            [
-                mo.md(
-                    f"""
-                    ### BigVGAN decode (stored mel -> waveform)
-
-                    - decoded shape: {tuple(decoded.shape)}
-                    - max |amp|: {decoded.abs().max().item():.3f}
-                    """
-                ),
-                mo.audio(decoded_buf),
-            ]
-        )
-    decode_view
-    return
-
-
-@app.cell
-def _():
+        - acoustic: {tuple(batch.acoustic.shape)},
+          {int(batch.acoustic_mask[0].sum())} valid frames
+        - audio_prompt: {tuple(batch.audio_prompt.shape)},
+          {int(batch.audio_prompt_mask[0].sum())} valid frames
+        - tokens: {tuple(batch.tokens.shape)},
+          {int(batch.tokens_mask[0].sum())} valid tokens
+        """
+            ),
+            fig,
+        ]
+    )
     return
 
 
