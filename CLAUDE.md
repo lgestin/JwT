@@ -32,7 +32,8 @@
 - Bare `assert` only for internal type narrowing or shape invariants.
 
 ## Naming and structure
-- **No `_`-prefixed functions or methods.** A name never signals "private". This includes test helpers.
+- **No `_`-prefixed names**: functions, methods, variables and attributes alike (`self.batches`, not `self._batches`). A name never signals "private". This includes test helpers. A bare `_` as a throwaway name is fine.
+  - When a `@property` needs backing storage, give the stored attribute its own descriptive name rather than the property's name with a `_`.
   - If a function belongs to the class (it uses its state, or is conceptually part of what the class does), keep it in the class as a public method, `@staticmethod` or `@classmethod`. Don't move it out just to avoid a `_`.
   - Only a helper that is genuinely independent of the class (general-purpose, or shared with other code) becomes a plain module-level function in the same file.
 - Use `@property` for cheap, side-effect-free, derived, argument-less values instead of `get_x()` methods or stored duplicates. Anything costly, mutating, or taking arguments stays a method with a verb name. Use `functools.cached_property` only for expensive, stable values. Don't make something a property merely because it has no arguments; it has to read like an attribute.
