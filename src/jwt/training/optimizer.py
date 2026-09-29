@@ -25,7 +25,7 @@ class LinearWarmup:
     def __init__(self, optimizer: Optimizer, warmup_steps: int) -> None:
         self.optimizer = optimizer
         self.warmup_steps = warmup_steps
-        self._base_lrs = [group["lr"] for group in optimizer.param_groups]
+        self.base_lrs = [group["lr"] for group in optimizer.param_groups]
 
     def apply(self, step: int) -> float:
         """Set the LR for `step` on every param group; return the LR in effect."""
@@ -33,7 +33,7 @@ class LinearWarmup:
             return self.optimizer.param_groups[0]["lr"]
         scale = min(1.0, (step + 1) / self.warmup_steps)
         for group, base_lr in zip(
-            self.optimizer.param_groups, self._base_lrs, strict=True
+            self.optimizer.param_groups, self.base_lrs, strict=True
         ):
             group["lr"] = base_lr * scale
         return self.optimizer.param_groups[0]["lr"]

@@ -11,7 +11,7 @@ from jwt.data.audio.stft import MelSpectrogram
 # Patch sizes for the RawAudio codec variants. Each variant is its own codec
 # identity: str(variant).lower() names the acoustic_{name} arrow column, so the
 # patch size baked into the precomputed dataset and the runtime codec can't drift.
-_RAWAUDIO_PATCH = {
+RAWAUDIO_PATCH = {
     "RawAudio32": 32,
     "RawAudio64": 64,
     "RawAudio128": 128,
@@ -42,7 +42,7 @@ class Codecs(StrEnum):
             case Codecs.BIGVGAN:
                 return BigVGAN()
             case _:
-                return RawAudioPatcher(patch_size=_RAWAUDIO_PATCH[self.value])
+                return RawAudioPatcher(patch_size=RAWAUDIO_PATCH[self.value])
 
 
 @runtime_checkable
@@ -98,8 +98,8 @@ class BigVGANVersions(StrEnum):
 
 
 # Global log-mel stats fit on LJSpeech at 24 kHz with this BigVGAN's mel front-end.
-_LJSPEECH_LOG_MEL_MEAN = -5.896610
-_LJSPEECH_LOG_MEL_STD = 2.226763
+LJSPEECH_LOG_MEL_MEAN = -5.896610
+LJSPEECH_LOG_MEL_STD = 2.226763
 
 
 class BigVGAN(nn.Module):
@@ -113,7 +113,7 @@ class BigVGAN(nn.Module):
     ) -> None:
         nn.Module.__init__(self)
         # local: avoid heavy bigvgan import at module load
-        from bigvgan.bigvgan import BigVGAN as _BigVGAN
+        from bigvgan.bigvgan import BigVGAN as UpstreamBigVGAN
         from bigvgan.bigvgan import load_hparams_from_json
         from huggingface_hub import hf_hub_download
 
@@ -124,7 +124,7 @@ class BigVGAN(nn.Module):
         )
 
         h: Any = load_hparams_from_json(config_file)
-        self.decoder = _BigVGAN(h, use_cuda_kernel=False)
+        self.decoder = UpstreamBigVGAN(h, use_cuda_kernel=False)
         # Published checkpoint has weight norm stripped; load_state_dict
         # succeeds directly.
         checkpoint = torch.load(weights_file, map_location="cpu", weights_only=False)
@@ -151,10 +151,10 @@ class BigVGAN(nn.Module):
         self.hop_length = int(h.hop_size)
 
         self.register_buffer(
-            "mel_mean", torch.tensor(_LJSPEECH_LOG_MEL_MEAN, dtype=torch.float32)
+            "mel_mean", torch.tensor(LJSPEECH_LOG_MEL_MEAN, dtype=torch.float32)
         )
         self.register_buffer(
-            "mel_std", torch.tensor(_LJSPEECH_LOG_MEL_STD, dtype=torch.float32)
+            "mel_std", torch.tensor(LJSPEECH_LOG_MEL_STD, dtype=torch.float32)
         )
 
         # Sentinel level chosen well below the noise floor of normalized log-mels

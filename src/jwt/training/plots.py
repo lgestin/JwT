@@ -7,8 +7,8 @@ import torch
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 
-_FIGSIZE = (5.0, 3.0)
-_DPI = 110
+FIGSIZE = (5.0, 3.0)
+DPI = 110
 
 
 def render_curve(
@@ -21,7 +21,7 @@ def render_curve(
     instead of being drawn, so gaps in a sparsely populated grid read as missing
     rather than as zeros.
     """
-    fig = Figure(figsize=_FIGSIZE, dpi=_DPI, layout="constrained")
+    fig = Figure(figsize=FIGSIZE, dpi=DPI, layout="constrained")
     canvas = FigureCanvasAgg(fig)
     ax = fig.add_subplot()
     ax.plot(x, y, marker=".", markersize=3.0, linewidth=1.0)

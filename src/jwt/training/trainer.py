@@ -98,11 +98,7 @@ class Trainer:
     ) -> None:
         self.config = config
         self.state = state or TrainerState(step=0)
-        self._device = torch.device(config.device)
-
-    @property
-    def device(self) -> torch.device:
-        return self._device
+        self.device = torch.device(config.device)
 
     @property
     def amp_dtype(self) -> torch.dtype:
@@ -126,7 +122,7 @@ class Trainer:
 
     @property
     def noamp(self) -> bool:
-        return self._device.type != "cuda"
+        return self.device.type != "cuda"
 
     @property
     def step(self) -> int:
@@ -211,11 +207,11 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             center=False,
             mel_scale="slaney",
             n_mfcc=13,
-        ).to(self._device)
-        self.utmos = UTMOS().to(self._device)
-        self.nisqa = NISQA().to(self._device)
-        self.stoi = STOI().to(self._device)
-        self.pesq = PESQ().to(self._device)
+        ).to(self.device)
+        self.utmos = UTMOS().to(self.device)
+        self.nisqa = NISQA().to(self.device)
+        self.stoi = STOI().to(self.device)
+        self.pesq = PESQ().to(self.device)
 
     def prepare_acoustic(self, batch: Batch) -> MaskedTensor:
         return prepare_acoustic_batch(batch, self.codec, self.model.cfg.eos_n_frames)

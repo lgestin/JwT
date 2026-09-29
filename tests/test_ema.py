@@ -41,7 +41,7 @@ def test_update_moves_shadow_toward_live() -> None:
             param.fill_(3.0)
     ema.update(model, step=1000)
     # shadow = 0.5 * 1.0 + 0.5 * 3.0 = 2.0
-    for tensor in ema._shadow.values():
+    for tensor in ema.shadow_weights.values():
         assert torch.allclose(tensor, torch.full_like(tensor, 2.0))
 
 
@@ -50,7 +50,7 @@ def test_swapped_installs_and_restores() -> None:
     model = const_model(3.0)
     ema = EMA(model, decay=0.5)
     with torch.no_grad():
-        for tensor in ema._shadow.values():
+        for tensor in ema.shadow_weights.values():
             tensor.fill_(2.0)
 
     with ema.swapped(model):
@@ -66,7 +66,7 @@ def test_swapped_restores_on_exception() -> None:
     model = const_model(3.0)
     ema = EMA(model, decay=0.5)
     with torch.no_grad():
-        for tensor in ema._shadow.values():
+        for tensor in ema.shadow_weights.values():
             tensor.fill_(2.0)
 
     with pytest.raises(RuntimeError, match="boom"), ema.swapped(model):
@@ -89,5 +89,5 @@ def test_state_dict_round_trip() -> None:
     restored.load_state_dict(ema.state_dict())
 
     assert restored.decay == 0.5
-    for name, tensor in ema._shadow.items():
-        assert torch.equal(restored._shadow[name], tensor)
+    for name, tensor in ema.shadow_weights.items():
+        assert torch.equal(restored.shadow_weights[name], tensor)

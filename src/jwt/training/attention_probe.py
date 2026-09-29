@@ -48,11 +48,11 @@ class AttentionCollector:
         acoustic_lens: torch.Tensor,
         n_registers: int = 0,
     ) -> None:
-        self._maps: torch.Tensor | None = None
-        self._entropy: torch.Tensor | None = None
-        self._text_argmax: torch.Tensor | None = None
-        self._seq_mask: torch.Tensor | None = None
-        self._in_text: torch.Tensor | None = None
+        self.layer_maps: torch.Tensor | None = None
+        self.layer_entropy: torch.Tensor | None = None
+        self.layer_text_argmax: torch.Tensor | None = None
+        self.recorded_seq_mask: torch.Tensor | None = None
+        self.in_text_mask: torch.Tensor | None = None
         self.text_lens = text_lens
         self.acoustic_lens = acoustic_lens
         self.n_registers = n_registers
@@ -71,47 +71,51 @@ class AttentionCollector:
         n = self.n_registers
         p = attn_weights.float()
         entropy = -(p * p.clamp_min(1e-12).log()).sum(-1)  # (B, H, n + T)
-        self._entropy = append_layer(self._entropy, entropy)
-        if self._in_text is None:
+        self.layer_entropy = append_layer(self.layer_entropy, entropy)
+        if self.in_text_mask is None:
             pos = torch.arange(p.shape[-1] - n, device=p.device).unsqueeze(0)
-            self._in_text = pos < self.text_lens.to(p.device).unsqueeze(1)  # (B, T)
+            self.in_text_mask = pos < self.text_lens.to(p.device).unsqueeze(1)  # (B, T)
         # Reduced at record time: keeping full per-head maps would be ~GBs.
-        text_only = p[..., n:, n:].masked_fill(~self._in_text[:, None, None, :], -1.0)
-        self._text_argmax = append_layer(self._text_argmax, text_only.argmax(-1))
-        self._maps = append_layer(self._maps, p.mean(dim=1))
+        text_only = p[..., n:, n:].masked_fill(
+            ~self.in_text_mask[:, None, None, :], -1.0
+        )
+        self.layer_text_argmax = append_layer(
+            self.layer_text_argmax, text_only.argmax(-1)
+        )
+        self.layer_maps = append_layer(self.layer_maps, p.mean(dim=1))
         if seq_mask is not None:
-            self._seq_mask = seq_mask[:, self.n_registers :]
+            self.recorded_seq_mask = seq_mask[:, self.n_registers :]
 
     @property
     def seq_mask(self) -> torch.Tensor | None:
         """(B, T) bool in packed coordinates: the queries the model treats as
         real, i.e. `Transformer`'s `seq_mask` with the register prefix cropped.
         `None` when the forward ran unmasked or `record` was not given one."""
-        return self._seq_mask
+        return self.recorded_seq_mask
 
     @property
     def maps(self) -> torch.Tensor:
-        if self._maps is None:
+        if self.layer_maps is None:
             raise RuntimeError(
                 "attention maps empty: nothing was passed to `record` — run the "
                 "model with `TorchAttention`, the fused backends expose no weights"
             )
         n = self.n_registers
-        return self._maps[..., n:, n:].mean(dim=0)
+        return self.layer_maps[..., n:, n:].mean(dim=0)
 
     @property
     def seq_to_registers_maps(self) -> torch.Tensor:
-        assert self._maps is not None
+        assert self.layer_maps is not None
         n = self.n_registers
         assert n > 0
-        return self._maps[..., n:, :n].mean(dim=0)
+        return self.layer_maps[..., n:, :n].mean(dim=0)
 
     @property
     def registers_to_seq_maps(self) -> torch.Tensor:
-        assert self._maps is not None
+        assert self.layer_maps is not None
         n = self.n_registers
         assert n > 0
-        return self._maps[..., :n, n:].mean(dim=0)
+        return self.layer_maps[..., :n, n:].mean(dim=0)
 
     @property
     def images(self) -> dict[int, dict[str, torch.Tensor]]:
@@ -148,13 +152,13 @@ class AttentionCollector:
         - `register_mass` — mass parked on the register keys (with registers)
         """
         maps = self.maps  # raises the informative error on an empty collector
-        assert self._maps is not None and self._entropy is not None
+        assert self.layer_maps is not None and self.layer_entropy is not None
         n = self.n_registers
         in_text, in_audio = self.masks()
         n_keys = (in_text | in_audio).sum(1) + n
         scale = 1.0 / n_keys.float().clamp(min=2).log()[:, None]  # (B, 1)
-        per_head = self._entropy[..., n:] * scale[:, None]  # (L, B, H, T)
-        rows = self._maps[..., n:, :].float()  # (L, B, T, n + T) head-averaged
+        per_head = self.layer_entropy[..., n:] * scale[:, None]  # (L, B, H, T)
+        rows = self.layer_maps[..., n:, :].float()  # (L, B, T, n + T) head-averaged
         head_avg = -(rows * rows.clamp_min(1e-12).log()).sum(-1) * scale
         mean_heads = per_head.mean(2)  # (L, B, T)
         p = maps.float()
@@ -180,9 +184,9 @@ class AttentionCollector:
         join here rather than in `position_metrics`. Splits with no queries
         are omitted; samples with no real positions are skipped."""
         dense = self.position_metrics
-        assert self._text_argmax is not None
+        assert self.layer_text_argmax is not None
         in_text, in_audio = self.masks()
-        align = alignment_per_sample(self._text_argmax, in_text, in_audio)
+        align = alignment_per_sample(self.layer_text_argmax, in_text, in_audio)
         splittable = [k for k in dense if not k.startswith("attn_mass")]
         out: dict[int, dict[str, float]] = {}
         for b in range(in_text.shape[0]):
@@ -231,10 +235,10 @@ class AttentionCollector:
         `[0, text + audio)` range from the lengths. Text is always the leading
         `text_lens` positions; audio is the rest of the real ones.
         """
-        in_text = self._in_text
+        in_text = self.in_text_mask
         assert in_text is not None
-        if self._seq_mask is not None:
-            real = self._seq_mask.to(in_text.device)
+        if self.recorded_seq_mask is not None:
+            real = self.recorded_seq_mask.to(in_text.device)
         else:
             T = in_text.shape[1]
             pos = torch.arange(T, device=in_text.device).unsqueeze(0)
@@ -253,7 +257,7 @@ def alignment_per_sample(
     text_argmax: torch.Tensor, in_text: torch.Tensor, in_audio: torch.Tensor
 ) -> dict[int, tuple[torch.Tensor, torch.Tensor]]:
     """Best-head `(monotonic, coverage)` per qualifying sample index."""
-    L, N, H, _T = text_argmax.shape
+    L, N, H, _ = text_argmax.shape
     per: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
     for b in range(N):
         tl = int(in_text[b].sum())
@@ -286,7 +290,7 @@ def capture_attention(
         text_lens, acoustic_lens, n_registers=sum(r.n for r in registers)
     )
 
-    def hook(_module: torch.nn.Module, args: tuple, output: object) -> None:
+    def hook(module: torch.nn.Module, args: tuple, output: object) -> None:
         # SelfAttention.forward returns (out, attn_weights); TorchAttention
         # populates attn_weights, SDPA leaves it None.
         attn_weights = output[1] if isinstance(output, tuple) else None

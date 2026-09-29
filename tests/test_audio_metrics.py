@@ -28,7 +28,7 @@ def full_mask(batch: int = 2, n_samples: int = S) -> torch.Tensor:
     return torch.ones(batch, n_samples, dtype=torch.bool)
 
 
-_STFT = STFT(n_fft=1024, hop_length=256, window="hann")
+TEST_STFT = STFT(n_fft=1024, hop_length=256, window="hann")
 
 
 def test_si_snr_is_scale_invariant() -> None:
@@ -75,7 +75,7 @@ def test_mag_snr_is_blind_to_pure_phase_error() -> None:
     untouched, so mag_snr stays high while waveform snr collapses."""
     _, target = make_wavs()
     mask = full_mask()
-    assert (mag_snr(-target, target, mask, _STFT) > 40).all()
+    assert (mag_snr(-target, target, mask, TEST_STFT) > 40).all()
     assert (snr(-target, target, mask) < 0).all()
 
 
@@ -85,7 +85,7 @@ def test_mag_snr_matches_snr_on_pure_gain_error() -> None:
     mask = full_mask()
     expected = 10 * torch.log10(torch.tensor(4.0))
     assert torch.allclose(
-        mag_snr(0.5 * target, target, mask, _STFT), expected, atol=1e-3
+        mag_snr(0.5 * target, target, mask, TEST_STFT), expected, atol=1e-3
     )
     assert torch.allclose(snr(0.5 * target, target, mask), expected, atol=1e-3)
 
@@ -95,7 +95,7 @@ def test_mag_snr_gap_over_snr_is_nonnegative() -> None:
     error, so mag_snr >= snr (up to windowing tolerance)."""
     pred, target = make_wavs()
     mask = full_mask()
-    gap = mag_snr(pred, target, mask, _STFT) - snr(pred, target, mask)
+    gap = mag_snr(pred, target, mask, TEST_STFT) - snr(pred, target, mask)
     assert (gap > -0.1).all()
 
 
@@ -103,10 +103,12 @@ def test_mag_snr_ignores_samples_outside_mask() -> None:
     pred, target = make_wavs()
     mask = full_mask()
     mask[:, S // 2 :] = False
-    clean = mag_snr(pred, target, mask, _STFT)
+    clean = mag_snr(pred, target, mask, TEST_STFT)
     pred_corrupt = pred.clone()
     pred_corrupt[:, S // 2 :] = 10.0
-    assert torch.allclose(clean, mag_snr(pred_corrupt, target, mask, _STFT), atol=1e-4)
+    assert torch.allclose(
+        clean, mag_snr(pred_corrupt, target, mask, TEST_STFT), atol=1e-4
+    )
 
 
 def test_si_snr_and_snr_match_torchmetrics_on_unmasked_input() -> None:
@@ -136,7 +138,7 @@ def test_masked_metrics_stay_on_device_and_detached() -> None:
     for out in (
         si_snr(pred, target, mask),
         snr(pred, target, mask),
-        mag_snr(pred, target, mask, _STFT),
+        mag_snr(pred, target, mask, TEST_STFT),
     ):
         assert out.device == pred.device
         assert not out.requires_grad
@@ -176,12 +178,12 @@ def test_nisqa_returns_all_five_dimensions() -> None:
 def test_utmos_scores_with_stubbed_hub(monkeypatch: pytest.MonkeyPatch) -> None:
     """UTMOS wiring (resample + dict contract) without the torch.hub download."""
 
-    class _StubMOS(torch.nn.Module):
+    class StubMOS(torch.nn.Module):
         def forward(self, waveforms: torch.Tensor, sample_rate: int) -> torch.Tensor:
             assert sample_rate == 16_000
             return waveforms.abs().mean(-1)
 
-    monkeypatch.setattr(torch.hub, "load", lambda *a, **k: _StubMOS())
+    monkeypatch.setattr(torch.hub, "load", lambda *a, **k: StubMOS())
     pred, _ = make_wavs(n_samples=S_PERC)
     out = UTMOS().score(pred, sample_rate=SAMPLE_RATE)
     assert set(out) == {"utmos"}

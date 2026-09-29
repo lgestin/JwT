@@ -256,7 +256,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         - t:            (B, T_ext) — per-position rolling timestep
         - per_pos_loss: (B, T_ext) — per-position loss before masking
         """
-        B, _acoustic_dim, T_ext = acoustic.values.shape
+        B, _, T_ext = acoustic.values.shape
         device = acoustic.values.device
         n = n if n is not None else self.cfg.n_denoising_steps
         # Default is MSE; the trainer overrides via TrainerConfig.loss_fn.

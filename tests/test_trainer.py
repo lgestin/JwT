@@ -13,7 +13,7 @@ from jwt.training.trainer import (
 )
 
 
-class _RecordingLogger:
+class RecordingLogger:
     """Captures `log_curve` calls so tests can assert on emitted data."""
 
     def __init__(self) -> None:
@@ -36,7 +36,7 @@ def test_diagnostics_emit_unreweighted_x1_error_curve() -> None:
     # `config` and `logger`.
     trainer = TTSRollingFlowMatchingTrainer.__new__(TTSRollingFlowMatchingTrainer)
     trainer.config = TrainerConfig(device="cpu", n_loss_bins=2)
-    logger = _RecordingLogger()
+    logger = RecordingLogger()
     trainer.logger = logger  # ty: ignore[invalid-assignment]
 
     # Bin 0 (t=0.25): big prediction error, small reweighted FM loss.
@@ -91,7 +91,7 @@ def test_loss_curves_are_plotted_on_the_bin_centre_grid() -> None:
     neighbour."""
     trainer = TTSRollingFlowMatchingTrainer.__new__(TTSRollingFlowMatchingTrainer)
     trainer.config = TrainerConfig(device="cpu", n_loss_bins=4)
-    logger = _RecordingLogger()
+    logger = RecordingLogger()
     trainer.logger = logger  # ty: ignore[invalid-assignment]
 
     _, bins = trainer.step_diagnostics(*diag_inputs())
@@ -108,7 +108,7 @@ def test_empty_t_bins_stay_nan_so_the_curve_gaps() -> None:
     breaks the line there instead."""
     trainer = TTSRollingFlowMatchingTrainer.__new__(TTSRollingFlowMatchingTrainer)
     trainer.config = TrainerConfig(device="cpu", n_loss_bins=4)
-    logger = _RecordingLogger()
+    logger = RecordingLogger()
     trainer.logger = logger  # ty: ignore[invalid-assignment]
 
     # Samples land at t=0.25 and t=0.75 only — bins 0 and 2 stay empty.
@@ -121,8 +121,8 @@ def test_empty_t_bins_stay_nan_so_the_curve_gaps() -> None:
     assert curve[3] == pytest.approx(0.9, abs=1e-4)
 
 
-_SPECTRAL_KEYS = {"logstft_l1", "mel_cepstral_distortion"}
-_WAVEFORM_KEYS = {"si_snr", "snr", "mag_snr", "phase_snr_gap"}
+SPECTRAL_KEYS = {"logstft_l1", "mel_cepstral_distortion"}
+WAVEFORM_KEYS = {"si_snr", "snr", "mag_snr", "phase_snr_gap"}
 
 
 def metrics_trainer(hop: int = 256) -> TTSRollingFlowMatchingTrainer:
@@ -157,7 +157,7 @@ def test_reconstruction_metrics_cheap_pair_in_train_mode() -> None:
     metrics: dict[str, torch.Tensor] = {}
     trainer.reconstruction_metrics(metrics, pred, target, v_mask)
 
-    assert set(metrics) == _WAVEFORM_KEYS
+    assert set(metrics) == WAVEFORM_KEYS
     for v in metrics.values():
         assert v.shape == () and torch.isfinite(v)
 
@@ -175,7 +175,7 @@ def test_reconstruction_metrics_squeezes_channel_dim() -> None:
     metrics: dict[str, torch.Tensor] = {}
     trainer.reconstruction_metrics(metrics, pred, target, v_mask)
 
-    assert set(metrics) == _WAVEFORM_KEYS | _SPECTRAL_KEYS
+    assert set(metrics) == WAVEFORM_KEYS | SPECTRAL_KEYS
     for v in metrics.values():
         assert v.shape == () and torch.isfinite(v)
 
@@ -193,7 +193,7 @@ def test_reconstruction_metrics_adds_spectral_pair_in_eval_mode() -> None:
     metrics: dict[str, torch.Tensor] = {}
     trainer.reconstruction_metrics(metrics, pred, target, v_mask)
 
-    assert set(metrics) == _WAVEFORM_KEYS | _SPECTRAL_KEYS
+    assert set(metrics) == WAVEFORM_KEYS | SPECTRAL_KEYS
     for v in metrics.values():
         assert v.shape == () and torch.isfinite(v)
 
@@ -222,7 +222,7 @@ def test_reconstruction_metrics_respect_the_mask() -> None:
     assert m_half["si_snr"] > m_full["si_snr"]
     assert m_half["snr"] > m_full["snr"]
     assert m_half["mag_snr"] > m_full["mag_snr"]
-    for key in _SPECTRAL_KEYS:
+    for key in SPECTRAL_KEYS:
         assert m_half[key] < m_full[key]
 
 

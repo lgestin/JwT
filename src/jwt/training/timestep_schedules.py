@@ -86,20 +86,20 @@ class LogNormTimestepSchedule(TimestepSchedule):
         self.mean = mean
         self.std = std
         self.eps = eps
-        self._span = 1.0 - 2.0 * eps
+        self.span = 1.0 - 2.0 * eps
         # Timesteps the trimmed window's endpoints warp to, before rescaling.
         # Built with the same expression timestep() uses, so the rescale is
-        # exact at progress 0 and 1. eps == 0 gives _t_lo == 0, _t_hi == 1
+        # exact at progress 0 and 1. eps == 0 gives t_lo == 0, t_hi == 1
         # (Phi_inv(0) == -inf, sigmoid(-inf) == 0): an identity rescale.
-        bounds_pp = self.eps + self._span * torch.tensor([0.0, 1.0])
+        bounds_pp = self.eps + self.span * torch.tensor([0.0, 1.0])
         bounds = torch.sigmoid(self.mean + self.std * torch.special.ndtri(bounds_pp))
-        self._t_lo = bounds[0].item()
-        self._t_hi = bounds[1].item()
+        self.t_lo = bounds[0].item()
+        self.t_hi = bounds[1].item()
 
     def timestep(self, progress: torch.Tensor) -> torch.Tensor:
-        pp = self.eps + self._span * progress
+        pp = self.eps + self.span * progress
         raw = torch.sigmoid(self.mean + self.std * torch.special.ndtri(pp))
-        t = (raw - self._t_lo) / (self._t_hi - self._t_lo)
+        t = (raw - self.t_lo) / (self.t_hi - self.t_lo)
         # Pin the endpoints: across devices/dtypes the rescale is only
         # approximate at the bounds, and speak() freezes a finished frame only
         # when timestep(1) == 1 exactly. Make 0 -> 0 and 1 -> 1 exact.

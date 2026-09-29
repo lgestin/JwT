@@ -24,7 +24,7 @@ import yaml
 # Fields whose value shapes or anchors the model weights. Changing any of these
 # would corrupt a resumed run (load_state_dict would fail or the codec/loss
 # would no longer match what the weights learned), so they're forbidden here.
-_ARCHITECTURAL_FIELDS = frozenset(
+ARCHITECTURAL_FIELDS = frozenset(
     {
         "transformer_config",
         "vocabulary_size",
@@ -85,7 +85,7 @@ def main() -> None:
     for name, raw in overrides.items():
         if name not in field_types:
             raise KeyError(f"unknown RollingFlowConfig field: {name}")
-        if name in _ARCHITECTURAL_FIELDS:
+        if name in ARCHITECTURAL_FIELDS:
             raise ValueError(
                 f"refusing to override architectural field {name!r}: changing it "
                 "would break load_state_dict on resume"

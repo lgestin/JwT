@@ -29,7 +29,7 @@ class EMA:
 
     def __init__(self, model: Module, decay: float = 0.9995) -> None:
         self.decay = decay
-        self._shadow: dict[str, torch.Tensor] = {
+        self.shadow_weights: dict[str, torch.Tensor] = {
             name: param.detach().clone().float()
             for name, param in model.named_parameters()
             if param.requires_grad
@@ -44,8 +44,8 @@ class EMA:
         """Nudge every shadow weight toward the live weight after an opt step."""
         decay = self.effective_decay(step)
         params = dict(model.named_parameters())
-        shadow = list(self._shadow.values())
-        live = [params[name].detach().float() for name in self._shadow]
+        shadow = list(self.shadow_weights.values())
+        live = [params[name].detach().float() for name in self.shadow_weights]
         torch._foreach_lerp_(shadow, live, 1.0 - decay)
 
     @contextmanager
@@ -59,7 +59,7 @@ class EMA:
         params = dict(model.named_parameters())
         backup: dict[str, torch.Tensor] = {}
         with torch.no_grad():
-            for name, shadow in self._shadow.items():
+            for name, shadow in self.shadow_weights.items():
                 param = params[name]
                 backup[name] = param.detach().clone()
                 param.copy_(shadow)
@@ -72,12 +72,12 @@ class EMA:
 
     def state_dict(self) -> dict[str, Any]:
         """Serializable EMA state for checkpointing."""
-        return {"decay": self.decay, "shadow": self._shadow}
+        return {"decay": self.decay, "shadow": self.shadow_weights}
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
         """Restore EMA state saved by `state_dict`, in place."""
         self.decay = state["decay"]
         loaded = state["shadow"]
         with torch.no_grad():
-            for name, tensor in self._shadow.items():
+            for name, tensor in self.shadow_weights.items():
                 tensor.copy_(loaded[name])

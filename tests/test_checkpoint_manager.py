@@ -23,7 +23,7 @@ def test_ema_state_round_trips_through_checkpoint(tmp_path: Path) -> None:
     optimizer = torch.optim.AdamW(model.parameters())
     ema = EMA(model, decay=0.5)
     with torch.no_grad():
-        for tensor in ema._shadow.values():
+        for tensor in ema.shadow_weights.values():
             tensor.fill_(7.0)
 
     manager = CheckpointManager(exp_path=tmp_path)
@@ -41,8 +41,8 @@ def test_ema_state_round_trips_through_checkpoint(tmp_path: Path) -> None:
     manager.load_latest(fresh_model, ema=fresh_ema)
 
     assert fresh_ema.decay == 0.5
-    for name, tensor in ema._shadow.items():
-        assert torch.equal(fresh_ema._shadow[name], tensor)
+    for name, tensor in ema.shadow_weights.items():
+        assert torch.equal(fresh_ema.shadow_weights[name], tensor)
 
 
 def test_load_without_ema_in_checkpoint_warns(tmp_path: Path) -> None:
@@ -59,7 +59,7 @@ def test_load_without_ema_in_checkpoint_warns(tmp_path: Path) -> None:
         manager.load_latest(fresh_model, ema=fresh_ema)
 
     # EMA keeps its from-init shadow (the 4.0-filled fresh model).
-    for tensor in fresh_ema._shadow.values():
+    for tensor in fresh_ema.shadow_weights.values():
         assert torch.allclose(tensor, torch.full_like(tensor, 4.0))
 
 

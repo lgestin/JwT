@@ -37,9 +37,9 @@ import matplotlib.pyplot as plt
 
 # Fixed visualization mel: independent of the codec so the displayed
 # spectrogram is the same representation for every checkpoint.
-_VIZ_MEL_N_MELS = 80
-_VIZ_MEL_N_FFT = 1024
-_VIZ_MEL_HOP = 256
+VIZ_MEL_N_MELS = 80
+VIZ_MEL_N_FFT = 1024
+VIZ_MEL_HOP = 256
 
 
 @dataclass
@@ -122,9 +122,9 @@ def build_synth_fn(
     sr = sample_rate
     hop = codec.hop_length
     viz_mel = MelSpectrogram(
-        n_fft=_VIZ_MEL_N_FFT,
-        hop_length=_VIZ_MEL_HOP,
-        n_mels=_VIZ_MEL_N_MELS,
+        n_fft=VIZ_MEL_N_FFT,
+        hop_length=VIZ_MEL_HOP,
+        n_mels=VIZ_MEL_N_MELS,
         sample_rate=sr,
         window="hann",
         center=False,
@@ -175,7 +175,7 @@ def build_synth_fn(
 
         viz = viz_mel(wav.unsqueeze(0)).clamp(min=1e-5).log()[0]  # (n_mels, T)
         wav_np = wav.detach().cpu().float().numpy()
-        fig = plot_mel(viz, hop_length=_VIZ_MEL_HOP, sample_rate=sr)
+        fig = plot_mel(viz, hop_length=VIZ_MEL_HOP, sample_rate=sr)
         return (sr, wav_np), fig, phonemes, length_info
 
     return synthesize

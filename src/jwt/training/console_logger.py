@@ -18,7 +18,7 @@ from rich.text import Text
 from jwt.training.loggers import SampleRecord
 
 
-class _IterSpeedColumn(ProgressColumn):
+class IterSpeedColumn(ProgressColumn):
     """Render the current iteration speed: 'X.XX it/s' or 'X.XX s/it'."""
 
     def render(self, task: Task) -> Text:
@@ -48,7 +48,7 @@ class ConsoleLogger:
             BarColumn(),
             MofNCompleteColumn(),
             TextColumn("•"),
-            _IterSpeedColumn(),
+            IterSpeedColumn(),
             TextColumn("•"),
             TimeElapsedColumn(),
             TextColumn("<"),

@@ -59,7 +59,7 @@ class TensorBoardLogger:
         image = render_curve(x, y, xlabel=xlabel, ylabel=tag.rsplit("/", 1)[-1])
         self.writer.add_image(tag, image, step)
 
-    _HPARAM_METRICS = (
+    HPARAM_METRICS = (
         "loss/valid",
         "loss/valid_fm",
         "quality_tf/valid_si_snr",
@@ -94,7 +94,7 @@ class TensorBoardLogger:
 
     def log_config(self, config: object, step: int = 0) -> None:
         flat = flatten_config(config)
-        exp, ssi, sei = hparams(flat, dict.fromkeys(self._HPARAM_METRICS, 0.0))
+        exp, ssi, sei = hparams(flat, dict.fromkeys(self.HPARAM_METRICS, 0.0))
         file_writer = self.writer._get_file_writer()  # re-opens after close()
         for summary in (exp, ssi, sei):
             file_writer.add_summary(summary, global_step=step)

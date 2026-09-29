@@ -21,13 +21,13 @@ from jwt.training.loggers import SampleRecord, flatten_config, metric_tag
 STEP_METRIC = "trainer/step"
 
 # Best-so-far summaries for the runs table (min for losses, max for quality).
-_SUMMARY_MIN = (
+SUMMARY_MIN = (
     "loss/valid",
     "loss/valid_fm",
     "quality_tf/valid_logstft_l1",
     "quality_tf/valid_mel_cepstral_distortion",
 )
-_SUMMARY_MAX = (
+SUMMARY_MAX = (
     "quality_tf/valid_si_snr",
     "quality_tf/valid_snr",
     "quality_tf/valid_si_sdr",
@@ -106,23 +106,23 @@ class WandbLogger:
         )
         self.run.define_metric(STEP_METRIC)
         self.run.define_metric("*", step_metric=STEP_METRIC)
-        for k in _SUMMARY_MIN:
+        for k in SUMMARY_MIN:
             self.run.define_metric(k, step_metric=STEP_METRIC, summary="min")
-        for k in _SUMMARY_MAX:
+        for k in SUMMARY_MAX:
             self.run.define_metric(k, step_metric=STEP_METRIC, summary="max")
-        self._alerted: set[str] = set()
+        self.alerted: set[str] = set()
         # Latest raw records per section, for `join`. Converted fresh on every
         # log — reused bound media objects don't render in the table UI, and
         # wandb's content-addressed storage dedupes identical bytes anyway.
-        self._section_records: dict[str, dict[int, SampleRecord]] = {}
+        self.section_records: dict[str, dict[int, SampleRecord]] = {}
 
     def log(self, data: Mapping[str, object], step: int) -> None:
         self.run.log({**data, STEP_METRIC: step})
 
     def alert_if_diverged(self, tag: str, value: float, step: int) -> None:
-        if "loss" not in tag or math.isfinite(value) or tag in self._alerted:
+        if "loss" not in tag or math.isfinite(value) or tag in self.alerted:
             return
-        self._alerted.add(tag)
+        self.alerted.add(tag)
         self.run.alert(
             title=f"{tag} diverged",
             text=f"{tag}={value} at step {step} ({self.run.name})",
@@ -186,10 +186,10 @@ class WandbLogger:
         step: int,
         join: str | None = None,
     ) -> None:
-        self._section_records[section] = {r.index: r for r in records}
+        self.section_records[section] = {r.index: r for r in records}
         own = {r.index: record_cells(r) for r in records}
         joined = (
-            {i: record_cells(r) for i, r in self._section_records.get(join, {}).items()}
+            {i: record_cells(r) for i, r in self.section_records.get(join, {}).items()}
             if join is not None
             else {}
         )

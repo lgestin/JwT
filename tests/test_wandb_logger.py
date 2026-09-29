@@ -89,18 +89,18 @@ def test_curve_rows_drop_nan_points() -> None:
 
 
 @dataclass
-class _Inner:
+class Inner:
     dim: int = 8
 
 
 @dataclass
-class _Cfg:
+class Cfg:
     lr: float = 1e-3
-    inner: _Inner = field(default_factory=_Inner)
+    inner: Inner = field(default_factory=Inner)
 
 
 def test_flatten_config_joins_nested_keys_with_dots() -> None:
-    assert flatten_config(_Cfg()) == {"lr": 1e-3, "inner.dim": 8}
+    assert flatten_config(Cfg()) == {"lr": 1e-3, "inner.dim": 8}
 
 
 def test_metric_tag_routes_by_question() -> None:
@@ -147,7 +147,7 @@ def make_records() -> list[SampleRecord]:
     ]
 
 
-class _Recorder:
+class Recorder:
     def __init__(self) -> None:
         self.sections: list[str] = []
 
@@ -165,7 +165,7 @@ class _Recorder:
 
 
 def test_multilogger_fans_out_log_samples() -> None:
-    a, b = _Recorder(), _Recorder()
+    a, b = Recorder(), Recorder()
     MultiLogger(a, b).log_samples("samples", make_records(), step=1)  # ty: ignore[invalid-argument-type]
     assert a.sections == ["samples"]
     assert b.sections == ["samples"]
@@ -230,7 +230,7 @@ def test_wandb_logger_offline_end_to_end(tmp_path: Path) -> None:
         logger.log_curve(
             "valid/fm_loss_by_t", [0.25, 0.75], [1.0, float("nan")], step=6
         )
-        logger.log_config(_Cfg())
+        logger.log_config(Cfg())
         logger.log_samples("valid_audio", make_records(), step=6)
         logger.set_description("desc")
         logger.update_progress()
