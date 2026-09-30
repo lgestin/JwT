@@ -674,3 +674,127 @@ def test_speak_cache_under_autocast(
         full = model.speak(text, codec=codec, x_0=x_0, use_kv_cache=False)
     assert torch.equal(cached.mask, full.mask)
     torch.testing.assert_close(cached.values, full.values, atol=5e-2, rtol=5e-2)
+
+
+def speaker_prompt(lengths: list[int], total: int | None = None) -> MaskedTensor:
+    """Random normalized prompt frames, right-padded to `total` (default: max)."""
+    total = max(lengths) if total is None else total
+    mask = (
+        torch.arange(total).expand(len(lengths), total) < torch.tensor(lengths)[:, None]
+    )
+    return MaskedTensor(values=torch.randn(len(lengths), N_MELS, total), mask=mask)  # ty: ignore[invalid-argument-type]
+
+
+def test_forward_with_empty_prompt_matches_no_prompt(
+    model: RollingFlowSpeaker, text: MaskedTensor, acoustic: MaskedTensor
+) -> None:
+    """A zero-length prompt is the unconditional branch: same output as none."""
+    open_gates(model)
+    t = clean_then_window_t(acoustic, model.cfg.n_denoising_steps)
+    a = model.forward(text, acoustic, t)
+    b = model.forward(text, acoustic, t, prompt=speaker_prompt([0] * B))
+    torch.testing.assert_close(a, b)
+
+
+def test_forward_depends_on_prompt(
+    model: RollingFlowSpeaker, text: MaskedTensor, acoustic: MaskedTensor
+) -> None:
+    """Different prompts give different outputs."""
+    open_gates(model)
+    t = clean_then_window_t(acoustic, model.cfg.n_denoising_steps)
+    a = model.forward(text, acoustic, t, prompt=speaker_prompt([3] * B))
+    b = model.forward(text, acoustic, t, prompt=speaker_prompt([3] * B))
+    assert not torch.allclose(a, b)
+
+
+def test_forward_invariant_to_prompt_padding(
+    model: RollingFlowSpeaker, text: MaskedTensor, acoustic: MaskedTensor
+) -> None:
+    """Padding a prompt, as batching with a longer one does, changes nothing."""
+    open_gates(model)
+    t = clean_then_window_t(acoustic, model.cfg.n_denoising_steps)
+    prompt = speaker_prompt([3, 2])
+    padded = MaskedTensor(
+        values=torch.cat([prompt.values, torch.randn(B, N_MELS, 4)], dim=-1),
+        mask=torch.nn.functional.pad(prompt.mask, (0, 4)),  # ty: ignore[invalid-argument-type]
+    )
+    a = model.forward(text, acoustic, t, prompt=prompt)
+    b = model.forward(text, acoustic, t, prompt=padded)
+    torch.testing.assert_close(a, b)
+
+
+def test_speak_with_prompt_cache_matches_full_recompute(
+    model: RollingFlowSpeaker, codec: StubCodec, text: MaskedTensor
+) -> None:
+    """The KV cache stays exact with a prompt of different length per sample."""
+    open_gates(model)
+    prompt = speaker_prompt([3, 1])
+    x_0 = torch.randn(B, N_MELS, model.cfg.max_acoustic_len)
+    cached = model.speak(text, codec=codec, x_0=x_0, prompt=prompt)
+    full = model.speak(text, codec=codec, x_0=x_0, prompt=prompt, use_kv_cache=False)
+    assert torch.equal(cached.mask, full.mask)
+    torch.testing.assert_close(cached.values, full.values, atol=1e-5, rtol=1e-4)
+
+
+def test_training_step_depends_on_prompt(
+    model: RollingFlowSpeaker, text: MaskedTensor, acoustic: MaskedTensor
+) -> None:
+    """`training_step` conditions on the prompt: a different prompt changes the loss."""
+    open_gates(model)
+    front = torch.tensor([3, 9])
+    x_0 = torch.randn(B, acoustic.values.shape[-1], N_MELS)
+    losses = [
+        model.training_step(
+            text,
+            acoustic,
+            prompt=speaker_prompt([3, 2]),
+            acoustic_front=front,  # ty: ignore[invalid-argument-type]
+            x_0=x_0,
+        ).loss
+        for _ in range(2)
+    ]
+    assert losses[0] != losses[1]
+
+
+def test_compiled_training_step_with_prompt_matches_eager(
+    model: RollingFlowSpeaker, text: MaskedTensor, acoustic: MaskedTensor
+) -> None:
+    """`torch.compile` does not miscompile the prompt prepend (cf. registers):
+    compiled and eager training steps give the same loss and gradients."""
+    skip_unless_cuda()
+    from dataclasses import replace
+
+    from jwt.model.attention import FlexAttention
+
+    cfg = replace(
+        model.cfg,
+        transformer_config=TransformerConfig(dim=64, num_heads=4, num_layers=2),
+    )
+    torch.manual_seed(0)
+    model = open_gates(RollingFlowSpeaker(cfg)).cuda().train()
+    text = MaskedTensor(text.values.cuda(), text.mask.cuda())
+    acoustic = MaskedTensor(acoustic.values.cuda(), acoustic.mask.cuda())
+    prompt = speaker_prompt([3, 2])
+    prompt = MaskedTensor(prompt.values.cuda(), prompt.mask.cuda())  # ty: ignore[invalid-argument-type]
+    front = torch.tensor([3, 9], device="cuda")
+    x_0 = torch.randn(B, acoustic.values.shape[-1], N_MELS, device="cuda")
+
+    def step() -> tuple[torch.Tensor, torch.Tensor]:
+        model.zero_grad()
+        loss = model.training_step(
+            text,
+            acoustic,
+            prompt=prompt,
+            acoustic_front=front,  # ty: ignore[invalid-argument-type]
+            x_0=x_0,
+            attention_implementation=FlexAttention,
+        ).loss
+        loss.backward()
+        grad = model.speaker_modality.grad
+        assert grad is not None
+        return loss.detach(), grad.clone()
+
+    eager = step()
+    model.forward = torch.compile(model.forward, dynamic=True)  # as in train.py
+    compiled = step()
+    torch.testing.assert_close(compiled, eager, atol=1e-4, rtol=1e-3)
