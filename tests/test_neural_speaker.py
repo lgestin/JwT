@@ -232,11 +232,13 @@ def test_forward_invariant_to_text_padding(model: RollingFlowSpeaker) -> None:
             torch.nn.init.normal_(m.linear.weight, std=0.02)
             torch.nn.init.normal_(m.linear.bias, std=0.02)
 
-    T_ac = 5
+    T_acoustic = 5
     text_ids = torch.randint(0, model.cfg.vocabulary_size, (B, 2))
-    ac_vals = torch.randn(B, model.cfg.acoustic_dim, T_ac)
-    t = torch.full((B, T_ac), 0.5)
-    acoustic = MaskedTensor(values=ac_vals, mask=torch.ones(B, T_ac, dtype=torch.bool))
+    acoustic_values = torch.randn(B, model.cfg.acoustic_dim, T_acoustic)
+    t = torch.full((B, T_acoustic), 0.5)
+    acoustic = MaskedTensor(
+        values=acoustic_values, mask=torch.ones(B, T_acoustic, dtype=torch.bool)
+    )
 
     text_unpadded = MaskedTensor(
         values=text_ids.unsqueeze(1),
@@ -351,7 +353,7 @@ def test_training_step_finite_for_both_parametrizations(
         eos_n_frames=4,
     )
     m = RollingFlowSpeaker(cfg).eval()
-    txt = MaskedTensor(
+    text = MaskedTensor(
         values=torch.randint(0, m.cfg.vocabulary_size, (B, 1, T_TEXT)),
         mask=torch.ones(B, T_TEXT, dtype=torch.bool),
     )
@@ -364,11 +366,11 @@ def test_training_step_finite_for_both_parametrizations(
         codec_.eos_frames(eos_n).unsqueeze(0).expand(B, m.cfg.acoustic_dim, eos_n)
     )
     ext = codec_.normalize(torch.cat([real, eos_frames], dim=-1))
-    ac = MaskedTensor(
+    acoustic = MaskedTensor(
         values=ext, mask=torch.ones(B, T_MEL_MAX + eos_n, dtype=torch.bool)
     )
 
-    out = m.training_step(txt, ac)
+    out = m.training_step(text, acoustic)
     assert torch.isfinite(out.loss), f"{parametrization}: loss not finite"
     assert torch.isfinite(out.x_pred).all(), f"{parametrization}: x_pred not finite"
     assert (out.v_mask.sum() > 0).item()
@@ -394,11 +396,11 @@ def test_speak_finite_for_both_parametrizations(
         eos_n_frames=4,
     )
     m = RollingFlowSpeaker(cfg).eval()
-    txt = MaskedTensor(
+    text = MaskedTensor(
         values=torch.randint(0, m.cfg.vocabulary_size, (B, 1, T_TEXT)),
         mask=torch.ones(B, T_TEXT, dtype=torch.bool),
     )
-    out = m.speak(txt, codec=codec_)
+    out = m.speak(text, codec=codec_)
     assert torch.isfinite(out.values).all(), (
         f"{parametrization}: speak() produced NaN/Inf"
     )
@@ -426,7 +428,7 @@ def test_lognorm_schedule_runs_end_to_end() -> None:
         eos_n_frames=4,
     )
     m = RollingFlowSpeaker(cfg).eval()
-    txt = MaskedTensor(
+    text = MaskedTensor(
         values=torch.randint(0, m.cfg.vocabulary_size, (B, 1, T_TEXT)),
         mask=torch.ones(B, T_TEXT, dtype=torch.bool),
     )
@@ -436,15 +438,15 @@ def test_lognorm_schedule_runs_end_to_end() -> None:
         codec_.eos_frames(eos_n).unsqueeze(0).expand(B, m.cfg.acoustic_dim, eos_n)
     )
     ext = codec_.normalize(torch.cat([real, eos_frames], dim=-1))
-    ac = MaskedTensor(
+    acoustic = MaskedTensor(
         values=ext, mask=torch.ones(B, T_MEL_MAX + eos_n, dtype=torch.bool)
     )
 
-    out = m.training_step(txt, ac)
+    out = m.training_step(text, acoustic)
     assert torch.isfinite(out.loss), "lognorm: training loss not finite"
     assert torch.isfinite(out.x_pred).all(), "lognorm: x_pred not finite"
 
-    spoken = m.speak(txt, codec=codec_)
+    spoken = m.speak(text, codec=codec_)
     assert torch.isfinite(spoken.values).all(), "lognorm: speak produced NaN/Inf"
 
 
@@ -536,7 +538,7 @@ def test_phoneme_per_audio_patch_is_text_padding_invariant() -> None:
     """Positions are built in packed coords from the real text length, so text
     padding must not shift the ramp."""
     torch.manual_seed(0)
-    T_ac = 6
+    T_acoustic = 6
     model = RollingFlowSpeaker(
         RollingFlowConfig(
             transformer_config=TransformerConfig(dim=32, num_heads=4, num_layers=2),
@@ -548,10 +550,10 @@ def test_phoneme_per_audio_patch_is_text_padding_invariant() -> None:
 
     text_ids = torch.randint(0, model.cfg.vocabulary_size, (B, 2))
     acoustic = MaskedTensor(
-        values=torch.randn(B, model.cfg.acoustic_dim, T_ac),
-        mask=torch.ones(B, T_ac, dtype=torch.bool),
+        values=torch.randn(B, model.cfg.acoustic_dim, T_acoustic),
+        mask=torch.ones(B, T_acoustic, dtype=torch.bool),
     )
-    t = torch.full((B, T_ac), 0.5)
+    t = torch.full((B, T_acoustic), 0.5)
 
     text_unpadded = MaskedTensor(
         values=text_ids.unsqueeze(1), mask=torch.ones(B, 2, dtype=torch.bool)

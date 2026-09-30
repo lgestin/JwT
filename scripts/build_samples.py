@@ -183,10 +183,10 @@ def synthesize(
     )
 
     acoustic = model.speak(text_mt, codec=codec, x_0=x_0)
-    ac_len = int(acoustic.mask[0].sum().item())
-    ac = acoustic.values[0, :, :ac_len]
-    ac_unnorm = codec.unnormalize(ac.unsqueeze(0))
-    wav = codec.decode(ac_unnorm)[0].squeeze(0).detach().cpu().float()
+    acoustic_len = int(acoustic.mask[0].sum().item())
+    acoustic_values = acoustic.values[0, :, :acoustic_len]
+    acoustic_unnorm = codec.unnormalize(acoustic_values.unsqueeze(0))
+    wav = codec.decode(acoustic_unnorm)[0].squeeze(0).detach().cpu().float()
     return wav, phonemes
 
 

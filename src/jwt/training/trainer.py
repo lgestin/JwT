@@ -149,16 +149,16 @@ def prepare_acoustic_batch(batch: Batch, codec: Codec, eos_n: int) -> MaskedTens
     T_ext = T + eos_n
 
     values_ext = torch.nn.functional.pad(values, (0, eos_n))
-    ac_idx_ext = torch.arange(T_ext, device=values.device).unsqueeze(0)
-    in_sentinel = (ac_idx_ext >= lens.unsqueeze(1)) & (
-        ac_idx_ext < (lens + eos_n).unsqueeze(1)
+    acoustic_idx_ext = torch.arange(T_ext, device=values.device).unsqueeze(0)
+    in_sentinel = (acoustic_idx_ext >= lens.unsqueeze(1)) & (
+        acoustic_idx_ext < (lens + eos_n).unsqueeze(1)
     )
     eos = codec.eos_frames(eos_n, device=values.device, dtype=values.dtype)
     eos_grid = eos.unsqueeze(0).expand(B, acoustic_dim, eos_n)
     eos_padded = torch.nn.functional.pad(eos_grid, (T, 0))
     values_ext = torch.where(in_sentinel.unsqueeze(1), eos_padded, values_ext)
 
-    in_real = ac_idx_ext < lens.unsqueeze(1)
+    in_real = acoustic_idx_ext < lens.unsqueeze(1)
     mask_ext = in_real | in_sentinel
 
     values_norm = codec.normalize(values_ext)
@@ -427,13 +427,13 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         x1_err_sums, _ = binned_loss_stats(
             x1_err, out.t, out.v_mask, self.config.n_loss_bins
         )
-        ac_mean, ac_std = masked_mean_std(acoustic.values, out.v_mask)
+        acoustic_mean, acoustic_std = masked_mean_std(acoustic.values, out.v_mask)
         scalars = {
             "vmask_fill": out.v_mask.float().mean(),
             "ac_len_mean": acoustic.mask.sum(-1).float().mean(),
             "text_len_mean": text.mask.sum(-1).float().mean(),
-            "ac_target_mean": ac_mean,
-            "ac_target_std": ac_std,
+            "ac_target_mean": acoustic_mean,
+            "ac_target_std": acoustic_std,
         }
         bins = {
             "bin_sums": bin_sums,
@@ -859,8 +859,8 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             for b in range(B):
                 L = int(gen_lens[b])
                 if L > 0:
-                    ac_b = acoustic_pred.values[b : b + 1, :, :L].float()
-                    wav = self.codec.decode(self.codec.unnormalize(ac_b))[0]
+                    acoustic_b = acoustic_pred.values[b : b + 1, :, :L].float()
+                    wav = self.codec.decode(self.codec.unnormalize(acoustic_b))[0]
                     wav = wav.reshape(-1)
                 else:
                     wav = torch.zeros(0, device=self.device)
@@ -929,10 +929,10 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             L = int(acoustic_pred.mask[i].sum().item())
             if L == 0:
                 continue
-            ac_i = acoustic_pred.values[
+            acoustic_i = acoustic_pred.values[
                 i : i + 1, :, :L
             ]  # (1, acoustic_dim, L), normalized
-            wav = self.codec.decode(self.codec.unnormalize(ac_i))[0]
+            wav = self.codec.decode(self.codec.unnormalize(acoustic_i))[0]
             record = SampleRecord(
                 index=i,
                 audio={"audio": Audio(wav, self.sample_rate)},

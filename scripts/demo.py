@@ -159,16 +159,17 @@ def build_synth_fn(
         )
 
         acoustic_pred = model.speak(text_mt, codec=codec, x_0=x_0)
-        ac_len = int(acoustic_pred.mask[0].sum().item())
-        ac = acoustic_pred.values[0, :, :ac_len]  # (acoustic_dim, ac_len), normalized
-        ac_unnorm = codec.unnormalize(ac.unsqueeze(0))
-        wav = codec.decode(ac_unnorm)[0].squeeze(0)  # (T_audio,)
+        acoustic_len = int(acoustic_pred.mask[0].sum().item())
+        # (acoustic_dim, acoustic_len), normalized
+        acoustic_values = acoustic_pred.values[0, :, :acoustic_len]
+        acoustic_unnorm = codec.unnormalize(acoustic_values.unsqueeze(0))
+        wav = codec.decode(acoustic_unnorm)[0].squeeze(0)  # (T_audio,)
 
         n_tokens = len(token_ids)
-        duration_s = ac_len * hop / sr
-        rate = ac_len / n_tokens if n_tokens else 0.0
+        duration_s = acoustic_len * hop / sr
+        rate = acoustic_len / n_tokens if n_tokens else 0.0
         length_info = (
-            f"Predicted length: {ac_len} frames ({duration_s:.2f}s)\n"
+            f"Predicted length: {acoustic_len} frames ({duration_s:.2f}s)\n"
             f"Tokens: {n_tokens}\n"
             f"Rate: {rate:.2f} frames/token"
         )
