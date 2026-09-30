@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -8,6 +9,7 @@ from torch import nn
 from jwt.data.audio.codecs import Codec, Codecs
 from jwt.model.attention import AttentionImplementation, SDPAAttention
 from jwt.model.flow import FlowParametrizations
+from jwt.model.kvcache import KVCache
 from jwt.model.loss import LossFn, LossFns
 from jwt.model.transformer import (
     Transformer,
@@ -184,14 +186,26 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         keep_first_zero = is_zero_real.cumsum(-1) <= 1
         seq_mask = in_real_packed & keep_first_zero  # (B, T)
 
+        in_text_packed = arange < text_lens.unsqueeze(1)
+        acoustic_pos = (arange - text_lens.unsqueeze(1)).float()
         positions = torch.where(
-            arange < text_lens.unsqueeze(1),
-            arange / self.phoneme_per_audio_patch,
-            (arange - text_lens.unsqueeze(1)).float(),
+            in_text_packed, arange / self.phoneme_per_audio_patch, acoustic_pos
+        )
+        # Text commits first (0); padding never (inf), so no query row is empty.
+        acoustic_commit_index = self.acoustic_commit_index(t_packed, acoustic_pos)
+        commit_index = torch.where(
+            in_text_packed,
+            0.0,
+            torch.where(in_acoustic_packed, acoustic_commit_index, math.inf),
         )
 
         out_packed = self.transformer(
-            x_packed, t_packed, positions, seq_mask, attention_implementation
+            x_packed,
+            t_packed,
+            positions,
+            attention_implementation,
+            seq_mask=seq_mask,
+            commit_index=commit_index,
         )
         pred_packed = self.acoustic_out(out_packed)  # (B, T, acoustic_dim)
 
@@ -203,6 +217,51 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             pred_packed, 1, unpack_idx.unsqueeze(-1).expand(B, T_acoustic, acoustic_dim)
         )
         return pred
+
+    @staticmethod
+    def acoustic_commit_index(
+        t: torch.Tensor, acoustic_idx: torch.Tensor
+    ) -> torch.Tensor:
+        """Commit index of acoustic frames for `attention.commit_rule`:
+        `i + 1` once frame `i` is clean (t=1), inf while it is in the window."""
+        # Exact comparison: every schedule maps progress 1 to exactly t=1.
+        return torch.where(t == 1.0, acoustic_idx + 1.0, math.inf)
+
+    def prefill(self, text: MaskedTensor, cache: KVCache) -> None:
+        """Commit registers and text to `cache`."""
+        B, T_text = text.mask.shape
+        device = text.values.device
+        text_lat = self.text_in(text.values.squeeze(-2)) + self.text_modality
+        positions = torch.arange(T_text, device=device).expand(B, T_text)
+        # Padding keeps index 0 with a False mask, so every sample commits
+        # T_text tokens and the cache stays aligned across the batch.
+        self.transformer(
+            text_lat,
+            torch.ones(B, T_text, device=device),
+            positions / self.phoneme_per_audio_patch,
+            seq_mask=text.mask,
+            commit_index=torch.zeros(B, T_text, device=device),
+            cache=cache,
+        )
+
+    def predict_window(
+        self,
+        x_t: torch.Tensor,
+        t: torch.Tensor,
+        acoustic_idx: torch.Tensor,
+        cache: KVCache,
+    ) -> torch.Tensor:
+        """Model output for the window `x_t` (B, W, acoustic_dim) at float
+        acoustic indices `acoustic_idx` (B, W), attending through `cache`; the frame
+        at t=1, if any, is committed to it."""
+        out = self.transformer(
+            self.acoustic_in(x_t) + self.acoustic_modality,
+            t,
+            acoustic_idx,
+            commit_index=self.acoustic_commit_index(t, acoustic_idx),
+            cache=cache,
+        )
+        return self.acoustic_out(out)
 
     def sample_noise(
         self,
@@ -319,18 +378,24 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         codec: Codec,
         *,
         x_0: torch.Tensor | None = None,
+        use_kv_cache: bool = True,
     ) -> MaskedTensor:
         """Generate acoustic features via rolling-Euler integration, stopping on EOS.
 
-        Each generated frame is checked once it is fully denoised (t → 1). When
-        codec.is_eos fires on its unnormalized form the loop marks that sample
-        done and records the trim position. The loop exits once all samples are
-        done or cfg.max_acoustic_len frames have been added.
+        At step k the window is frames [k-n+1, k]: its first frame has just
+        reached t=1 and is checked for EOS, the rest take one Euler step. With
+        `use_kv_cache` text is prefilled into a `KVCache` and every step runs the
+        model on the window alone, committing the t=1 frame; without it the
+        whole buffer is recomputed each step. The two give the same frames,
+        since the cache is exact under the commit-rule mask. The loop exits
+        once all samples are done or cfg.max_acoustic_len frames have been
+        generated.
 
         text:  MaskedTensor — values (B, 1, T_text), mask (B, T_text)
         codec: Codec used for unnormalize + EOS detection. Must match the codec
                type that the model config was instantiated with.
         x_0:   optional (B, acoustic_dim, max_acoustic_len) noise override.
+        use_kv_cache: False recomputes the full buffer, as a reference.
 
         Returns a MaskedTensor with values (B, acoustic_dim, T_out) in **normalized**
         space — callers are expected to call codec.unnormalize before codec.decode.
@@ -347,8 +412,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             f"codec.acoustic_dim={codec.acoustic_dim} but model "
             f"cfg.acoustic_dim={self.cfg.acoustic_dim}"
         )
-
-        B = text.values.shape[0]
+        B = text.mask.shape[0]
         device = text.values.device
         n = self.cfg.n_denoising_steps
         acoustic_dim = self.cfg.acoustic_dim
@@ -362,46 +426,44 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
                 f"frames, got {x_0.shape[-1]}"
             )
 
-        values = torch.empty(B, acoustic_dim, 0, device=device, dtype=x_0.dtype)
+        values = x_0[..., :max_T].clone()  # (B, acoustic_dim, max_T)
         done = torch.zeros(B, dtype=torch.bool, device=device)
         trim = torch.full((B,), -1, dtype=torch.long, device=device)
 
+        cache = KVCache() if use_kv_cache else None
+        if cache is not None:
+            self.prefill(text, cache)
+
         for k in range(max_T + n - 1):
-            if k < max_T:
-                values = torch.cat([values, x_0[..., k : k + 1]], dim=-1)
+            lo, hi = max(k - (n - 1), 0), min(k + 1, max_T)
+            acoustic_idx = torch.arange(lo, hi, device=device, dtype=torch.float32)
+            acoustic_idx = acoustic_idx.expand(B, hi - lo)
+            progress = torch.clamp((k - acoustic_idx) / (n - 1), 0.0, 1.0)
+            t = self.schedule.timestep(progress)  # (B, W)
+            x_t = values[..., lo:hi].transpose(1, 2)  # (B, W, acoustic_dim)
 
-            L = values.shape[-1]
-            acoustic_idx = torch.arange(L, device=device).expand(B, L)
-            buffer_mask = torch.ones(B, L, dtype=torch.bool, device=device)
+            if cache is not None:
+                pred = self.predict_window(x_t, t, acoustic_idx, cache)
+            else:
+                # Frames before the window are clean.
+                t_all = F.pad(t, (lo, 0), value=1.0)
+                buffer_mask = torch.ones(B, hi, dtype=torch.bool, device=device)
+                buffer = MaskedTensor(values=values[..., :hi], mask=buffer_mask)  # ty: ignore[invalid-argument-type]
+                pred = self.forward(text, buffer, t_all)[:, lo:]
 
-            progress = torch.clamp((k - acoustic_idx).float() / (n - 1), 0.0, 1.0)
-            t = self.schedule.timestep(progress)
-
-            mt = MaskedTensor(values=values, mask=buffer_mask)  # ty: ignore[invalid-argument-type]
-            pred = self.forward(text, mt, t)
-
-            # Take a rolling-Euler step through the parametrization. For RF this
-            # adds dt*pred; for JWT it divides by (1-t), so the t=1 column may
-            # contain inf/nan — torch.where below zeroes those positions before
-            # they touch `values`.
-            x_t_BLD = values.transpose(1, 2)  # (B, L, dim)
-            dt = self.schedule.dt(progress, n)  # (B, L) — per-position step size
-            x_t_new = self.param.step(x_t_BLD, t.unsqueeze(-1), pred, dt.unsqueeze(-1))
-
-            in_window = (t < 1.0) & buffer_mask
-            update = torch.where(
-                in_window.unsqueeze(-1),
-                x_t_new - x_t_BLD,
-                x_t_BLD.new_zeros(()),
-            )
-            values = values + update.transpose(1, 2)
+            # Rolling-Euler step through the parametrization. For RF this adds
+            # dt*pred; for JWT it divides by (1-t), so the t=1 frame may come
+            # out inf/nan — torch.where keeps its old value.
+            dt = self.schedule.dt(progress, n)  # (B, W) — per-position step size
+            x_new = self.param.step(x_t, t.unsqueeze(-1), pred, dt.unsqueeze(-1))
+            x_t = torch.where((t < 1.0).unsqueeze(-1), x_new, x_t)
+            values[..., lo:hi] = x_t.transpose(1, 2)
 
             # Check the frame that just reached t=1 for the EOS sentinel.
             if k >= n - 1:
-                p = k - (n - 1)
-                frame_raw = codec.unnormalize(values[:, :, p])
+                frame_raw = codec.unnormalize(values[:, :, lo])
                 triggered = (~done) & codec.is_eos(frame_raw)
-                trim[triggered] = p
+                trim[triggered] = lo
                 done |= triggered
 
             if done.all():

@@ -23,20 +23,23 @@ class Registers(nn.Module):
         self,
         x: torch.Tensor,
         t_emb: torch.Tensor,
-        seq_mask: torch.Tensor | None,
+        seq_mask: torch.Tensor,
         freqs_cis: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
+        commit_index: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Registers are visible and frozen with the text prefix (`commit_index`
+        0), see `attention.commit_rule`."""
         x_reg = self.registers.expand(x.size(0), -1, -1).to(x)
         x = torch.cat((x_reg, x), dim=1)
         t_emb_reg = t_emb.new_zeros((t_emb.size(0), self.n, t_emb.size(-1)))
         t_emb = torch.cat((t_emb_reg, t_emb), dim=1)
-        if seq_mask is not None:
-            seq_mask = F.pad(seq_mask, (self.n, 0), value=True)
+        seq_mask = F.pad(seq_mask, (self.n, 0), value=True)
         freqs_cis_reg = freqs_cis.new_ones(
             (*freqs_cis.shape[:-2], self.n, freqs_cis.size(-1))
         )
         freqs_cis = torch.cat((freqs_cis_reg, freqs_cis), dim=-2)
-        return x, t_emb, seq_mask, freqs_cis
+        commit_index = F.pad(commit_index, (self.n, 0), value=0.0)
+        return x, t_emb, seq_mask, freqs_cis, commit_index
 
     @torch.compiler.disable
     def strip(

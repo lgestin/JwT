@@ -82,9 +82,7 @@ class TrainerConfig:
     n_smp: int = 16
     grad_accum_steps: int = 1
     loss_fn: LossFns = LossFns.L1
-    attention_implementation: AttentionImplementations = (
-        AttentionImplementations.FLASH_VARLEN
-    )
+    attention_implementation: AttentionImplementations = AttentionImplementations.FLEX
     # Auxiliary log-mel L1 loss weight. 0 = monitor only (no gradient signal);
     aux_mel_weight: float = 0.0
     # Scalar diagnostics (throughput, memory, normalization stats) and the
