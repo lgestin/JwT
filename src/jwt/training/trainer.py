@@ -217,6 +217,17 @@ class TTSRollingFlowMatchingTrainer(Trainer):
     def prepare_acoustic(self, batch: Batch) -> MaskedTensor:
         return prepare_acoustic_batch(batch, self.codec, self.model.cfg.eos_n_frames)
 
+    def prepare_prompt(self, batch: Batch, n: int | None = None) -> MaskedTensor | None:
+        """The batch's normalized speaker prompt, first `n` samples (default all);
+        `None` when the dataset draws no prompts."""
+        if batch.audio_prompt is None or batch.audio_prompt_mask is None:
+            return None
+        values = batch.audio_prompt[:n].squeeze(1)  # (B, 1, D, P) -> (B, D, P)
+        return MaskedTensor(
+            values=self.codec.normalize(values),
+            mask=batch.audio_prompt_mask[:n],  # ty: ignore[invalid-argument-type]
+        )
+
     def ema_weights(self) -> AbstractContextManager[None]:
         """EMA weights installed for the block, or a no-op when EMA is off."""
         return self.ema.swapped(self.model) if self.ema is not None else nullcontext()
@@ -324,6 +335,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             out = self.model.training_step(
                 text,
                 acoustic,
+                prompt=self.prepare_prompt(batch),
                 loss_fn=self.config.loss_fn.fn,
                 attention_implementation=self.config.attention_implementation.implementation,
             )
@@ -650,12 +662,15 @@ class TTSRollingFlowMatchingTrainer(Trainer):
 
     @torch.inference_mode()
     def probe_attention(
-        self, text: MaskedTensor, acoustic: MaskedTensor
+        self,
+        text: MaskedTensor,
+        acoustic: MaskedTensor,
+        prompt: MaskedTensor | None = None,
     ) -> AttentionCollector:
         """A filled `AttentionCollector`: per-sample heatmaps (`images`) and
         the metric reductions (`position_metrics` -> `utterance_metrics` ->
-        `metrics` — entropy, cross-modal mass, alignment, register mass). The
-        caller logs the batch metrics under its own prefix.
+        `metrics` — entropy, cross-modal mass, alignment, register and prompt
+        mass). The caller logs the batch metrics under its own prefix.
 
         Runs one extra eager forward with the weight-exposing `TorchAttention`
         backend (the fused SDPA kernel cannot surface attention weights), behind
@@ -670,11 +685,17 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                 dtype=self.amp_dtype,
                 enabled=not self.noamp,
             ),
-            capture_attention(self.model, text_lens, acoustic_lens) as collector,
+            capture_attention(
+                self.model,
+                text_lens,
+                acoustic_lens,
+                None if prompt is None else prompt.mask,
+            ) as collector,
         ):
             self.model.training_step(
                 text,
                 acoustic,
+                prompt=prompt,
                 loss_fn=self.config.loss_fn.fn,
                 attention_implementation=TorchAttention,
             )
@@ -690,7 +711,9 @@ class TTSRollingFlowMatchingTrainer(Trainer):
         acoustic = self.prepare_acoustic(batch)
         text_n = MaskedTensor(values=text.values[:n], mask=text.mask[:n])  # ty: ignore[invalid-argument-type]
         acoustic_n = MaskedTensor(values=acoustic.values[:n], mask=acoustic.mask[:n])  # ty: ignore[invalid-argument-type]
-        collector = self.probe_attention(text_n, acoustic_n)
+        collector = self.probe_attention(
+            text_n, acoustic_n, self.prepare_prompt(batch, n)
+        )
         self.logger.log_metrics(
             {k: float(v) for k, v in collector.metrics.items()},
             self.step,
@@ -731,6 +754,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             out = self.model.training_step(
                 text_n,
                 acoustic_n,
+                prompt=self.prepare_prompt(batch, n),
                 loss_fn=self.config.loss_fn.fn,
                 attention_implementation=self.config.attention_implementation.implementation,
             )
@@ -857,7 +881,9 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                 dtype=self.amp_dtype,
                 enabled=not self.noamp,
             ):
-                acoustic_pred = self.model.speak(text, codec=self.codec, x_0=x_0)
+                acoustic_pred = self.model.speak(
+                    text, codec=self.codec, prompt=self.prepare_prompt(batch), x_0=x_0
+                )
 
             gen_lens = acoustic_pred.mask.sum(-1)
             gen_lens_all.append(gen_lens)
@@ -901,7 +927,9 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             dtype=self.amp_dtype,
             enabled=not self.noamp,
         ):
-            acoustic_pred = self.model.speak(text, codec=self.codec)
+            acoustic_pred = self.model.speak(
+                text, codec=self.codec, prompt=self.prepare_prompt(batch)
+            )
 
         # Self-forced probe: alignment read back from the generated frames.
         att: dict[int, dict[str, torch.Tensor]] = {}
@@ -913,6 +941,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                     values=acoustic_pred.values[:n],
                     mask=acoustic_pred.mask[:n],  # ty: ignore[invalid-argument-type]
                 ),
+                self.prepare_prompt(batch, n),
             )
             att = collector.images
             probe_keys = (
@@ -921,6 +950,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                 "attn_align_monotonic",
                 "attn_align_coverage",
                 "register_mass",
+                "prompt_mass",
             )
             for i, m in collector.utterance_metrics.items():
                 sample_metrics[i] = {k: m[k] for k in probe_keys if k in m}
@@ -988,17 +1018,32 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                     .clamp(min=1e-5)
                     .log()
                 )
-            records.append(
-                SampleRecord(
-                    index=i,
-                    audio={
-                        "clean": Audio(audio.waveform, audio.sample_rate),
-                        "reconstructed": Audio(reconstructed, self.sample_rate),
-                    },
-                    images={
-                        "clean_mel": mel_image(clean_viz),
-                        "reconstructed_mel": mel_image(recon_viz),
-                    },
-                )
+            record = SampleRecord(
+                index=i,
+                audio={
+                    "clean": Audio(audio.waveform, audio.sample_rate),
+                    "reconstructed": Audio(reconstructed, self.sample_rate),
+                },
+                images={
+                    "clean_mel": mel_image(clean_viz),
+                    "reconstructed_mel": mel_image(recon_viz),
+                },
             )
+            # The smp prompts are seed-fixed, so logging them once here puts
+            # them next to every step's generations through the join.
+            prompt_mask = smp_batch.audio_prompt_mask
+            prompt_len = 0 if prompt_mask is None else int(prompt_mask[i].sum())
+            if prompt_len:
+                assert smp_batch.audio_prompt is not None
+                frames = smp_batch.audio_prompt[i, ..., :prompt_len].to(self.device)
+                with torch.no_grad():
+                    prompt_wav = self.codec.decode(frames)[0]
+                    prompt_viz = (
+                        self.mel_spectrogram(prompt_wav.unsqueeze(0))[0]
+                        .clamp(min=1e-5)
+                        .log()
+                    )
+                record.audio["prompt"] = Audio(prompt_wav, self.sample_rate)
+                record.images["prompt_mel"] = mel_image(prompt_viz)
+            records.append(record)
         self.logger.log_samples("references", records, 0)

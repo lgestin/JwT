@@ -3,8 +3,10 @@ import math
 import pytest
 import torch
 
+from jwt.data.audio.audio import Audio
 from jwt.data.audio.codecs import RawAudioPatcher
 from jwt.data.audio.stft import MelSpectrogram
+from jwt.data.dataset import Batch
 from jwt.model.neural_speaker import MaskedTensor, TrainingStepOutput
 from jwt.training.trainer import (
     TrainerConfig,
@@ -286,3 +288,68 @@ def test_save_checkpoint_tags_the_last_validation_loss() -> None:
     assert saved["val_loss"] == pytest.approx(0.4)
     assert saved["best_loss"] == pytest.approx(0.3)
     assert manager.cleanups == 1
+
+
+def prompt_batch(prompt_lens: list[int], hop: int = 4) -> Batch:
+    """Two-sample batch with raw prompts collated to `(B, 1, hop, P)`."""
+    B, P = len(prompt_lens), max(prompt_lens)
+    mask = torch.arange(P).expand(B, P) < torch.tensor(prompt_lens)[:, None]
+    return Batch(
+        idxs=list(range(B)),
+        audios=[Audio(torch.randn(1, 8 * hop), 16000) for _ in range(B)],
+        acoustic=torch.randn(B, 1, hop, 8),  # ty: ignore[invalid-argument-type]
+        acoustic_mask=torch.ones(B, 8, dtype=torch.bool),  # ty: ignore[invalid-argument-type]
+        tokens=torch.zeros(B, 3, dtype=torch.long),  # ty: ignore[invalid-argument-type]
+        tokens_mask=torch.ones(B, 3, dtype=torch.bool),  # ty: ignore[invalid-argument-type]
+        audio_prompt=torch.randn(B, 1, hop, P) * mask[:, None, None, :],
+        audio_prompt_mask=mask,  # ty: ignore[invalid-argument-type]
+    )
+
+
+def test_prepare_prompt_squeezes_and_normalizes() -> None:
+    """The collated `(B, 1, D, P)` prompt becomes a normalized `(B, D, P)`
+    MaskedTensor; `n` keeps the first samples; no prompt gives `None`."""
+    trainer = TTSRollingFlowMatchingTrainer.__new__(TTSRollingFlowMatchingTrainer)
+    trainer.codec = RawAudioPatcher(patch_size=4)
+    batch = prompt_batch([3, 1])
+    prompt = trainer.prepare_prompt(batch)
+    assert prompt is not None
+    assert torch.equal(prompt.values, trainer.codec.normalize(batch.audio_prompt[:, 0]))
+    assert torch.equal(prompt.mask, batch.audio_prompt_mask)
+    head = trainer.prepare_prompt(batch, n=1)
+    assert head is not None and head.values.shape == (1, 4, 3)
+    batch.audio_prompt = batch.audio_prompt_mask = None
+    assert trainer.prepare_prompt(batch) is None
+
+
+class SamplesLogger:
+    def __init__(self) -> None:
+        self.records: dict[str, list] = {}
+
+    def log_samples(
+        self, section: str, records: list, step: int, join: str | None = None
+    ) -> None:
+        self.records[section] = records
+
+
+def test_references_include_the_prompt_audio() -> None:
+    """Each reference row carries its prompt's audio (its real frames only) and
+    mel; a row whose prompt was dropped has neither."""
+    trainer = TTSRollingFlowMatchingTrainer.__new__(TTSRollingFlowMatchingTrainer)
+    trainer.config = TrainerConfig(device="cpu", n_smp=2)
+    trainer.device = torch.device("cpu")
+    trainer.codec = RawAudioPatcher(patch_size=256)
+    trainer.sample_rate = 16000
+    trainer.mel_spectrogram = MelSpectrogram(
+        n_fft=1024, hop_length=256, n_mels=80, sample_rate=16000
+    )
+    logger = SamplesLogger()
+    trainer.logger = logger  # ty: ignore[invalid-assignment]
+    batch = prompt_batch([8, 0], hop=256)
+    trainer.smp_dloader = [batch]  # ty: ignore[invalid-assignment]
+    trainer.log_initial_samples()
+    with_prompt, without = logger.records["references"]
+    wav = with_prompt.audio["prompt"].waveform
+    assert torch.equal(wav.reshape(-1), batch.audio_prompt[0, 0].T.reshape(-1))
+    assert "prompt_mel" in with_prompt.images
+    assert "prompt" not in without.audio and "prompt_mel" not in without.images
