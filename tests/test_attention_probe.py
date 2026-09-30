@@ -579,3 +579,113 @@ def test_capture_attention_reads_a_keyword_mask() -> None:
         )
     assert collector.seq_mask is not None
     assert torch.equal(collector.seq_mask, seq_mask)
+
+
+def test_capture_attention_strips_prompt() -> None:
+    """The prompt block sits ahead of the packed sequence; the map drops it and
+    its share of each row is `prompt_mass`."""
+    model = make_model(num_layers=2)
+    text, acoustic = make_inputs(model, B=2, t_text=4, t_ac=6)
+    prompt_mask = torch.tensor([[True] * 3, [True, False, False]])
+    prompt = MaskedTensor(values=torch.randn(2, 8, 3), mask=prompt_mask)  # ty: ignore[invalid-argument-type]
+    with capture_attention(
+        model, *make_lens(text, acoustic), prompt_mask=prompt_mask
+    ) as collector:
+        model.training_step(
+            text, acoustic, prompt=prompt, attention_implementation=TorchAttention
+        )
+    assert collector.maps.shape == (2, 4 + 6, 4 + 6)
+    assert collector.seq_mask is not None and collector.seq_mask.shape == (2, 10)
+    rows = collector.maps.sum(-1) + collector.position_metrics["prompt_mass"]
+    real = collector.seq_mask
+    assert torch.allclose(rows[real], torch.ones_like(rows[real]), atol=1e-4)
+
+
+def test_prompt_mass_and_register_maps_with_both_blocks() -> None:
+    """With registers and a prompt, each real row splits between sequence,
+    register and prompt keys, and the register maps skip the prompt block."""
+    from jwt.training.attention_probe import AttentionCollector
+
+    n, P, T = 2, 3, 6
+    attn = torch.randn(2, 4, n + P + T, n + P + T).softmax(-1)
+    collector = AttentionCollector(
+        torch.tensor([2, 3]),
+        torch.tensor([4, 2]),
+        n_registers=n,
+        prompt_mask=torch.ones(2, P, dtype=torch.bool),
+    )
+    collector.record(attn)
+    assert collector.seq_to_registers_maps.shape == (2, T, n)
+    assert collector.registers_to_seq_maps.shape == (2, n, T)
+    total = (
+        collector.maps.sum(-1)
+        + collector.seq_to_registers_maps.sum(-1)
+        + collector.position_metrics["prompt_mass"]
+    )
+    assert torch.allclose(total, torch.ones_like(total), atol=1e-6)
+    assert {"prompt_mass", "prompt_mass_text", "prompt_mass_audio"} <= set(
+        collector.metrics
+    )
+
+
+def test_attention_entropy_normalizes_by_real_prompt_keys() -> None:
+    """Entropy is scaled by log(n_real_keys + n_registers + real prompt keys):
+    a uniform row over exactly the visible keys scores 1; prompt padding does
+    not count."""
+    from jwt.training.attention_probe import AttentionCollector
+
+    n, P, T = 2, 3, 6
+    prompt_mask = torch.tensor([[True, True, True], [True, False, False]])
+    attn = torch.zeros(2, 2, n + P + T, n + P + T)
+    # Sample 0: 2 registers + 3 prompt + 6 real keys.
+    attn[0] = 1 / (n + 3 + 6)
+    # Sample 1: 2 registers + 1 prompt + 3 real keys (text 1, audio 2).
+    attn[1, :, :, : n + 1] = 1 / (n + 1 + 3)
+    attn[1, :, :, n + P : n + P + 3] = 1 / (n + 1 + 3)
+    collector = AttentionCollector(
+        torch.tensor([2, 1]),
+        torch.tensor([4, 2]),
+        n_registers=n,
+        prompt_mask=prompt_mask,
+    )
+    collector.record(attn)
+    assert torch.allclose(collector.metrics["attn_entropy"], torch.tensor(1.0))
+
+
+def test_prompt_attention_images_slice_audio_to_real_prompt_block() -> None:
+    """Each sample's image is its audio queries over its real prompt keys,
+    prompt frames as rows; samples without prompt or audio are skipped."""
+    from jwt.training.attention_probe import heatmap_image, prompt_attention_images
+
+    seq_to_prompt = torch.rand(3, 10, 5)
+    prompt_mask = torch.tensor(
+        [[True] * 5, [True, True, False, False, False], [False] * 5]
+    )
+    images = prompt_attention_images(
+        seq_to_prompt, prompt_mask, torch.tensor([4, 3, 2]), torch.tensor([6, 5, 4])
+    )
+    assert set(images) == {0, 1}
+    k0, k1 = -(-256 // 5), -(-256 // 2)
+    assert images[0].shape == (3, 5 * k0, 6 * k0)
+    assert images[1].shape == (3, 2 * k1, 5 * k1)
+    # Sample 1: audio queries 3..8 (after its 3 text tokens) over its 2 real
+    # prompt keys, transposed to prompt rows x audio columns.
+    assert torch.equal(images[1], heatmap_image(seq_to_prompt[1, 3:8, :2].T))
+
+
+def test_collector_images_include_prompt_attention() -> None:
+    """With a prompt, samples that have one get a `prompt_attention` image."""
+    from jwt.training.attention_probe import AttentionCollector
+
+    n, P, T = 2, 3, 6
+    collector = AttentionCollector(
+        torch.tensor([2, 3]),
+        torch.tensor([4, 3]),
+        n_registers=n,
+        prompt_mask=torch.tensor([[True, True, False], [False, False, False]]),
+    )
+    collector.record(torch.rand(2, 4, n + P + T, n + P + T))
+    images = collector.images
+    assert "prompt_attention" in images[0]
+    assert "prompt_attention" not in images[1]
+    assert collector.seq_to_prompt_maps.shape == (2, T, P)

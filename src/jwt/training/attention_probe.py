@@ -27,16 +27,18 @@ class AttentionCollector:
     """Accumulates per-layer head-averaged attention maps.
 
     With registers on, every layer sees `(B, n + T, n + T)` — the n register
-    tokens head the sequence for the whole block stack. Rows are queries,
-    columns keys, so the layer-averaged map splits into:
+    tokens head the sequence for the whole block stack, followed by the P
+    speaker prompt frames when there is a prompt. Rows are queries, columns
+    keys, so the layer-averaged map splits into:
 
     - `maps` — `(B, T, T)`, real queries over real keys, in packed
       `[text | audio | pad]` coordinates. Rows sum to <= 1, the remainder
-      being mass parked on the registers.
+      being mass parked on the registers and the prompt.
     - `seq_to_registers_maps` — `(B, T, n)`, real queries into register keys:
       that parked mass, per register.
     - `registers_to_seq_maps` — `(B, n, T)`, register queries over real keys:
       what each register reads.
+    - `seq_to_prompt_maps` — `(B, T, P)`, real queries over prompt keys.
 
     `images` renders these per sample; `position_metrics` ->
     `utterance_metrics` -> `metrics` reduce them axis by axis, given the
@@ -48,7 +50,10 @@ class AttentionCollector:
         text_lens: torch.Tensor,
         acoustic_lens: torch.Tensor,
         n_registers: int = 0,
+        prompt_mask: torch.Tensor | None = None,
     ) -> None:
+        """`prompt_mask`: (B, P) bool, the speaker prompt block after the
+        registers; `None` without a prompt."""
         self.layer_maps: torch.Tensor | None = None
         self.layer_entropy: torch.Tensor | None = None
         self.layer_text_argmax: torch.Tensor | None = None
@@ -57,6 +62,13 @@ class AttentionCollector:
         self.text_lens = text_lens
         self.acoustic_lens = acoustic_lens
         self.n_registers = n_registers
+        self.prompt_mask = prompt_mask
+
+    @property
+    def n_lead(self) -> int:
+        """Tokens ahead of the packed sequence: registers, then prompt."""
+        n_prompt = 0 if self.prompt_mask is None else self.prompt_mask.shape[-1]
+        return self.n_registers + n_prompt
 
     def record(
         self, attn_weights: torch.Tensor, seq_mask: torch.Tensor | None = None
@@ -69,7 +81,7 @@ class AttentionCollector:
         `maps` crops them, but the two register properties report them, and
         they are gone for good once discarded.
         """
-        n = self.n_registers
+        n = self.n_lead
         p = attn_weights.float()
         entropy = -(p * p.clamp_min(1e-12).log()).sum(-1)  # (B, H, n + T)
         self.layer_entropy = append_layer(self.layer_entropy, entropy)
@@ -85,7 +97,7 @@ class AttentionCollector:
         )
         self.layer_maps = append_layer(self.layer_maps, p.mean(dim=1))
         if seq_mask is not None:
-            self.recorded_seq_mask = seq_mask[:, self.n_registers :]
+            self.recorded_seq_mask = seq_mask[:, self.n_lead :]
 
     @property
     def seq_mask(self) -> torch.Tensor | None:
@@ -101,7 +113,7 @@ class AttentionCollector:
                 "attention maps empty: nothing was passed to `record` — run the "
                 "model with `TorchAttention`, the fused backends expose no weights"
             )
-        n = self.n_registers
+        n = self.n_lead
         return self.layer_maps[..., n:, n:].mean(dim=0)
 
     @property
@@ -109,19 +121,27 @@ class AttentionCollector:
         assert self.layer_maps is not None
         n = self.n_registers
         assert n > 0
-        return self.layer_maps[..., n:, :n].mean(dim=0)
+        return self.layer_maps[..., self.n_lead :, :n].mean(dim=0)
 
     @property
     def registers_to_seq_maps(self) -> torch.Tensor:
         assert self.layer_maps is not None
         n = self.n_registers
         assert n > 0
-        return self.layer_maps[..., :n, n:].mean(dim=0)
+        return self.layer_maps[..., :n, self.n_lead :].mean(dim=0)
+
+    @property
+    def seq_to_prompt_maps(self) -> torch.Tensor:
+        assert self.layer_maps is not None
+        n, lead = self.n_registers, self.n_lead
+        assert lead > n
+        return self.layer_maps[..., lead:, n:lead].mean(dim=0)
 
     @property
     def images(self) -> dict[int, dict[str, torch.Tensor]]:
         """Per-sample heatmaps by sample index: the text->audio map, plus the
-        register read/write maps when registers are on."""
+        register read/write maps when registers are on and the prompt->audio
+        map for samples with a prompt."""
         images = {
             i: {"attention": img}
             for i, img in attention_images(
@@ -136,13 +156,22 @@ class AttentionCollector:
                 self.acoustic_lens,
             ).items():
                 images.setdefault(i, {}).update(imgs)
+        if self.prompt_mask is not None and self.n_lead > self.n_registers:
+            for i, img in prompt_attention_images(
+                self.seq_to_prompt_maps,
+                self.prompt_mask,
+                self.text_lens,
+                self.acoustic_lens,
+            ).items():
+                images.setdefault(i, {})["prompt_attention"] = img
         return images
 
     @property
     def position_metrics(self) -> dict[str, torch.Tensor]:
         """Per-query metric values, `(B, T)` in packed coordinates, unreduced —
         no query mask is applied, the reductions below choose one. Entropies
-        are normalized by `log(n_real_keys + n_registers)` per sample:
+        are normalized by `log(n_real_keys + n_registers + n_prompt_keys)` per
+        sample:
 
         - `attn_entropy` / `attn_entropy_min_head` / `attn_entropy_max_head` —
           mean / min / max over heads of the row entropy, averaged over layers
@@ -151,15 +180,18 @@ class AttentionCollector:
         - `attn_mass_to_text` / `attn_mass_to_audio` — the row's mass on the
           real text / audio keys
         - `register_mass` — mass parked on the register keys (with registers)
+        - `prompt_mass` — mass on the speaker prompt keys (with a prompt)
         """
         maps = self.maps  # raises the informative error on an empty collector
         assert self.layer_maps is not None and self.layer_entropy is not None
-        n = self.n_registers
+        n, lead = self.n_registers, self.n_lead
         in_text, in_audio = self.masks()
         n_keys = (in_text | in_audio).sum(1) + n
+        if self.prompt_mask is not None:
+            n_keys = n_keys + self.prompt_mask.to(n_keys.device).sum(1)
         scale = 1.0 / n_keys.float().clamp(min=2).log()[:, None]  # (B, 1)
-        per_head = self.layer_entropy[..., n:] * scale[:, None]  # (L, B, H, T)
-        rows = self.layer_maps[..., n:, :].float()  # (L, B, T, n + T) head-averaged
+        per_head = self.layer_entropy[..., lead:] * scale[:, None]  # (L, B, H, T)
+        rows = self.layer_maps[..., lead:, :].float()  # (L, B, T, lead + T)
         head_avg = -(rows * rows.clamp_min(1e-12).log()).sum(-1) * scale
         mean_heads = per_head.mean(2)  # (L, B, T)
         p = maps.float()
@@ -173,6 +205,8 @@ class AttentionCollector:
         }
         if n:
             out["register_mass"] = self.seq_to_registers_maps.sum(-1)
+        if lead > n:
+            out["prompt_mass"] = self.seq_to_prompt_maps.sum(-1)
         return out
 
     @property
@@ -276,10 +310,13 @@ def alignment_per_sample(
 
 @contextmanager
 def capture_attention(
-    model: torch.nn.Module, text_lens: torch.Tensor, acoustic_lens: torch.Tensor
+    model: torch.nn.Module,
+    text_lens: torch.Tensor,
+    acoustic_lens: torch.Tensor,
+    prompt_mask: torch.Tensor | None = None,
 ) -> Iterator[AttentionCollector]:
     """Hook every self-attention layer and yield an `AttentionCollector` bound
-    to the batch's `(B,)` text/audio lengths.
+    to the batch's `(B,)` text/audio lengths and `(B, P)` prompt mask, if any.
 
     Inside the block, run the model with `attention_implementation=TorchAttention`
     so the hooks have weights to observe. The compiled `forward` is swapped out
@@ -288,7 +325,10 @@ def capture_attention(
     """
     registers = [m for m in model.modules() if isinstance(m, Registers)]
     collector = AttentionCollector(
-        text_lens, acoustic_lens, n_registers=sum(r.n for r in registers)
+        text_lens,
+        acoustic_lens,
+        n_registers=sum(r.n for r in registers),
+        prompt_mask=prompt_mask,
     )
 
     signature = inspect.signature(SelfAttention.forward)
@@ -345,15 +385,45 @@ def attention_images(
         if tl == 0 or al == 0:
             continue
         # Transpose audio-query x text-key -> text (rows) x audio (columns).
-        block = attn_map[i, tl : tl + al, :tl].T.detach().cpu().float()
-        mn, mx = block.min(), block.max()
-        block = (block - mn) / (mx - mn).clamp(min=1e-9)
-        # Nearest-neighbor upscale to >=256px on the short side: viewers
-        # smooth when scaling, so ship the crisp cells at display size.
-        k = max(1, -(-256 // min(block.shape)))
-        if k > 1:
-            block = block.repeat_interleave(k, 0).repeat_interleave(k, 1)
-        images[i] = colorize(block, cmap="viridis")
+        images[i] = heatmap_image(attn_map[i, tl : tl + al, :tl].T)
+    return images
+
+
+def heatmap_image(block: torch.Tensor) -> torch.Tensor:
+    """Min-max normalize a 2D block and colorize it as a `(3, H, W)` image."""
+    block = block.detach().cpu().float()
+    mn, mx = block.min(), block.max()
+    block = (block - mn) / (mx - mn).clamp(min=1e-9)
+    # Nearest-neighbor upscale to >=256px on the short side: viewers
+    # smooth when scaling, so ship the crisp cells at display size.
+    k = max(1, -(-256 // min(block.shape)))
+    if k > 1:
+        block = block.repeat_interleave(k, 0).repeat_interleave(k, 1)
+    return colorize(block, cmap="viridis")
+
+
+def prompt_attention_images(
+    seq_to_prompt: torch.Tensor,
+    prompt_mask: torch.Tensor,
+    text_lens: torch.Tensor,
+    acoustic_lens: torch.Tensor,
+) -> dict[int, torch.Tensor]:
+    """Each sample's prompt->audio attention as a heatmap image, by index.
+
+    `seq_to_prompt` is `(N, T, P)`, packed `[text | audio | pad]` queries over
+    prompt keys. For sample `i` the image is its audio queries over its real
+    prompt frames, prompt frames (rows) by audio frames (columns). Samples with
+    no prompt or no audio are skipped.
+    """
+    tl_all = text_lens.tolist()
+    al_all = acoustic_lens.tolist()
+    pl_all = prompt_mask.sum(-1).tolist()
+    images: dict[int, torch.Tensor] = {}
+    for i in range(seq_to_prompt.shape[0]):
+        tl, al, pl = int(tl_all[i]), int(al_all[i]), int(pl_all[i])
+        if al == 0 or pl == 0:
+            continue
+        images[i] = heatmap_image(seq_to_prompt[i, tl : tl + al, :pl].T)
     return images
 
 
