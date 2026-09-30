@@ -18,6 +18,11 @@ def skip_unless_cuda() -> None:
         pytest.skip("CUDA not available")
 
 
+def uncommitted(seq_mask: torch.Tensor) -> torch.Tensor:
+    """All-inf commit indices: every query sees every visible key."""
+    return torch.full(seq_mask.shape, INF, device=seq_mask.device)
+
+
 def make_qkv(
     B: int = 2, H: int = 4, T: int = 6, D: int = 8
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -31,9 +36,10 @@ def make_qkv(
 
 def test_build_mask_shape() -> None:
     seq_mask = torch.ones(2, 6, dtype=torch.bool)
+    commit_index = uncommitted(seq_mask)
     for impl in (SDPAAttention, TorchAttention):
-        mask = impl.build_mask(seq_mask)
-        assert mask.shape == (2, 1, 1, 6)
+        mask = impl.build_mask(seq_mask, commit_index, commit_index)
+        assert mask.shape == (2, 1, 6, 6)
         assert mask.dtype == torch.bool
 
 
@@ -69,7 +75,8 @@ def test_torch_matches_sdpa_with_mask() -> None:
     seq_mask = torch.tensor(
         [[True, True, True, False, False, False], [True, True, True, True, True, False]]
     )
-    mask = TorchAttention.build_mask(seq_mask)
+    commit_index = uncommitted(seq_mask)
+    mask = TorchAttention.build_mask(seq_mask, commit_index, commit_index)
     out_sdpa, _ = SDPAAttention.attention(q, k, v, mask)
     out_torch, attn_weights = TorchAttention.attention(q, k, v, mask)
     assert torch.allclose(out_sdpa, out_torch, atol=1e-5)
@@ -92,9 +99,9 @@ def test_enum_resolves_implementation() -> None:
 
 def make_staircase() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Toy packed layout: 2 prefix | 2 clean | 2 window | 1 pad, and the
-    expected (Tq, Tk) visibility under `seq_mask[j] & commit[j] <= commit[q]`."""
+    expected (Tq, Tk) visibility under `commit_rule`."""
     seq_mask = torch.tensor([[True] * 6 + [False]])
-    commit = torch.tensor([[0.0, 0.0, 1.0, 2.0, INF, INF, INF]])
+    commit_index = torch.tensor([[0.0, 0.0, 1.0, 2.0, INF, INF, INF]])
     expected = torch.tensor(
         [
             [1, 1, 0, 0, 0, 0, 0],
@@ -107,32 +114,33 @@ def make_staircase() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         ],
         dtype=torch.bool,
     )
-    return seq_mask, commit, expected
+    return seq_mask, commit_index, expected
 
 
 def test_dense_mask_follows_commit_rule() -> None:
     """The dense mask is the block-causal staircase of the commit rule."""
-    seq_mask, commit, expected = make_staircase()
+    seq_mask, commit_index, expected = make_staircase()
     for impl in (SDPAAttention, TorchAttention):
-        mask = impl.build_mask(seq_mask, commit, commit)
+        mask = impl.build_mask(seq_mask, commit_index, commit_index)
         assert mask.shape == (1, 1, 7, 7)
         assert torch.equal(mask[0, 0], expected)
 
 
-def test_dense_mask_without_commit_is_key_only() -> None:
-    """Without commit indices the mask is one key row shared by all queries."""
+def test_dense_mask_of_uncommitted_tokens_is_key_only() -> None:
+    """With every token uncommitted each query sees exactly the visible keys."""
     seq_mask, _, _ = make_staircase()
-    mask = SDPAAttention.build_mask(seq_mask)
-    assert mask.shape == (1, 1, 1, 7)
+    commit_index = uncommitted(seq_mask)
+    mask = SDPAAttention.build_mask(seq_mask, commit_index, commit_index)
+    assert torch.equal(mask[0, 0], seq_mask.expand(7, 7))
 
 
 def test_dense_mask_with_cached_keys() -> None:
     """Queries may be a suffix of the keys: 2 new tokens (one clean, one
     window) against 4 cached keys plus themselves."""
     valid_k = torch.tensor([[True, True, False, True, True, True]])
-    commit_k = torch.tensor([[0.0, 0.0, INF, 1.0, 2.0, INF]])
-    commit_q = commit_k[:, -2:]
-    mask = SDPAAttention.build_mask(valid_k, commit_k, commit_q)
+    commit_index_k = torch.tensor([[0.0, 0.0, INF, 1.0, 2.0, INF]])
+    commit_index_q = commit_index_k[:, -2:]
+    mask = SDPAAttention.build_mask(valid_k, commit_index_k, commit_index_q)
     assert mask.shape == (1, 1, 2, 6)
     assert mask[0, 0].tolist() == [
         [True, True, False, True, True, False],
@@ -148,19 +156,22 @@ def make_layout(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Per-sample (prefix, clean, window) lengths -> seq_mask and commit."""
     seq_mask = torch.zeros(B, T, dtype=torch.bool, device=device)
-    commit = torch.full((B, T), INF, device=device)
+    commit_index = torch.full((B, T), INF, device=device)
     for b, (P, C, W) in enumerate(spans):
         seq_mask[b, : P + C + W] = True
-        commit[b, :P] = 0.0
-        commit[b, P : P + C] = torch.arange(1, C + 1, device=device).float()
-    return seq_mask, commit
+        commit_index[b, :P] = 0.0
+        commit_index[b, P : P + C] = torch.arange(1, C + 1, device=device).float()
+    return seq_mask, commit_index
 
 
 def test_flex_rejects_foreign_mask() -> None:
     """FlexAttention refuses a dense tensor mask."""
     q, k, v = make_qkv()
+    seq_mask = torch.ones(2, 6, dtype=torch.bool)
+    commit_index = uncommitted(seq_mask)
+    mask = SDPAAttention.build_mask(seq_mask, commit_index, commit_index)
     with pytest.raises(TypeError):
-        FlexAttention.attention(q, k, v, SDPAAttention.build_mask(torch.ones(2, 6)))
+        FlexAttention.attention(q, k, v, mask)
 
 
 def test_flex_matches_sdpa_with_key_mask() -> None:
@@ -170,11 +181,14 @@ def test_flex_matches_sdpa_with_key_mask() -> None:
     B, H, T, D = 2, 4, 32, 16
     device, dtype = "cuda", torch.bfloat16
     seq_mask, _ = make_layout(B, T, [(20, 0, 0), (32, 0, 0)], device)
+    commit_index = uncommitted(seq_mask)
     q, k, v = (torch.randn(B, H, T, D, device=device, dtype=dtype) for _ in range(3))
 
-    sdpa_out, _ = SDPAAttention.attention(q, k, v, SDPAAttention.build_mask(seq_mask))
+    sdpa_out, _ = SDPAAttention.attention(
+        q, k, v, SDPAAttention.build_mask(seq_mask, commit_index, commit_index)
+    )
     flex_out, weights = FlexAttention.attention(
-        q, k, v, FlexAttention.build_mask(seq_mask)
+        q, k, v, FlexAttention.build_mask(seq_mask, commit_index, commit_index)
     )
     assert weights is None
     valid = seq_mask[:, None, :, None].expand_as(sdpa_out)
@@ -187,14 +201,16 @@ def test_flex_matches_sdpa_under_commit_rule() -> None:
     torch.manual_seed(0)
     B, H, T, D = 3, 4, 40, 16
     device, dtype = "cuda", torch.bfloat16
-    seq_mask, commit = make_layout(B, T, [(6, 10, 8), (9, 0, 12), (4, 20, 16)], device)
+    seq_mask, commit_index = make_layout(
+        B, T, [(6, 10, 8), (9, 0, 12), (4, 20, 16)], device
+    )
     q, k, v = (torch.randn(B, H, T, D, device=device, dtype=dtype) for _ in range(3))
 
     sdpa_out, _ = SDPAAttention.attention(
-        q, k, v, SDPAAttention.build_mask(seq_mask, commit, commit)
+        q, k, v, SDPAAttention.build_mask(seq_mask, commit_index, commit_index)
     )
     flex_out, _ = FlexAttention.attention(
-        q, k, v, FlexAttention.build_mask(seq_mask, commit, commit)
+        q, k, v, FlexAttention.build_mask(seq_mask, commit_index, commit_index)
     )
     valid = seq_mask[:, None, :, None].expand_as(sdpa_out)
     assert torch.allclose(sdpa_out[valid], flex_out[valid], atol=5e-3)
@@ -208,7 +224,7 @@ def test_flex_matches_sdpa_with_cached_keys() -> None:
     device, dtype = "cuda", torch.bfloat16
     valid_k = torch.ones(B, Tk, dtype=torch.bool, device=device)
     valid_k[1, 10:14] = False  # padded text in the cache
-    commit_k = torch.cat(
+    commit_index_k = torch.cat(
         [
             torch.zeros(B, 20, device=device),
             torch.arange(1, 23, device=device).float().expand(B, 22),
@@ -216,16 +232,16 @@ def test_flex_matches_sdpa_with_cached_keys() -> None:
         ],
         dim=1,
     )
-    commit_k[:, 42] = 23.0  # the window's first frame just reached t=1
-    commit_q = commit_k[:, -Tq:]
+    commit_index_k[:, 42] = 23.0  # the window's first frame just reached t=1
+    commit_index_q = commit_index_k[:, -Tq:]
     q = torch.randn(B, H, Tq, D, device=device, dtype=dtype)
     k, v = (torch.randn(B, H, Tk, D, device=device, dtype=dtype) for _ in range(2))
 
     sdpa_out, _ = SDPAAttention.attention(
-        q, k, v, SDPAAttention.build_mask(valid_k, commit_k, commit_q)
+        q, k, v, SDPAAttention.build_mask(valid_k, commit_index_k, commit_index_q)
     )
     flex_out, _ = FlexAttention.attention(
-        q, k, v, FlexAttention.build_mask(valid_k, commit_k, commit_q)
+        q, k, v, FlexAttention.build_mask(valid_k, commit_index_k, commit_index_q)
     )
     assert torch.allclose(sdpa_out, flex_out, atol=5e-3)
 
@@ -250,7 +266,9 @@ def test_transformer_outputs_match_across_backends() -> None:
     B, T = 3, 24
     x = torch.randn(B, T, 64, device=device)
     t = torch.rand(B, T, device=device)
-    seq_mask, commit = make_layout(B, T, [(4, 4, 4), (6, 0, 12), (2, 10, 12)], device)
+    seq_mask, commit_index = make_layout(
+        B, T, [(4, 4, 4), (6, 0, 12), (2, 10, 12)], device
+    )
 
     outs: dict[str, torch.Tensor] = {}
     for impl in (TorchAttention, SDPAAttention, FlexAttention):
@@ -259,9 +277,9 @@ def test_transformer_outputs_match_across_backends() -> None:
                 x,
                 t,
                 torch.arange(T, device=device).float().expand(B, T),
+                impl,
                 seq_mask=seq_mask,
-                attention_implementation=impl,
-                commit=commit,
+                commit_index=commit_index,
             )
         outs[impl.__name__] = out.float()
 

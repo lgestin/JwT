@@ -12,20 +12,20 @@ from torch.nn.attention.flex_attention import (
 
 def commit_rule(
     seq_mask: torch.Tensor,
-    commit_k: torch.Tensor | None,
-    commit_q: torch.Tensor | None,
+    commit_index_k: torch.Tensor,
+    commit_index_q: torch.Tensor,
 ) -> torch.Tensor:
-    """Dense (B, Tq, Tk) visibility: `seq_mask[j] & commit[j] <= commit[q]`.
+    """Dense (B, Tq, Tk) visibility of key `k` from query `q`.
 
-    `commit` is a token's commit index: 0 for the text prefix, `i + 1` for a
-    clean acoustic frame `i`, `inf` for window frames and padding. A token
-    therefore only sees tokens frozen no later than itself, which is what
-    makes the frozen part of the sequence cacheable. Without `commit` every
-    query sees every visible key (a (B, 1, Tk) row).
+    `seq_mask[k] & (commit_index[k] <= commit_index[q])`, where `commit_index`
+    is when a token freezes: 0 for the text prefix, `i + 1` for a clean
+    acoustic frame `i`, `inf` for window frames and padding. A token therefore
+    only sees tokens frozen no later than itself, which is what makes the
+    frozen part of the sequence cacheable.
     """
-    if commit_k is None or commit_q is None:
-        return seq_mask[:, None, :]
-    return seq_mask[:, None, :] & (commit_k[:, None, :] <= commit_q[:, :, None])
+    return seq_mask[:, None, :] & (
+        commit_index_k[:, None, :] <= commit_index_q[:, :, None]
+    )
 
 
 type AttentionMask = torch.Tensor | BlockMask
@@ -41,12 +41,12 @@ class AttentionImplementation(Protocol):
     @staticmethod
     def build_mask(
         seq_mask: torch.Tensor,
-        commit_k: torch.Tensor | None = None,
-        commit_q: torch.Tensor | None = None,
+        commit_index_k: torch.Tensor,
+        commit_index_q: torch.Tensor,
     ) -> AttentionMask:
-        """`seq_mask`: (B, Tk) bool, True = visible key. `commit_k` (B, Tk) and
-        `commit_q` (B, Tq) apply `commit_rule`; both None means key-only.
-        Returns the mask object consumed by `attention`."""
+        """`seq_mask`: (B, Tk) bool, True = visible key; `commit_index_k` (B, Tk)
+        and `commit_index_q` (B, Tq) float, see `commit_rule`. Returns the mask
+        object consumed by `attention`."""
         ...
 
     @staticmethod
@@ -75,10 +75,10 @@ class SDPAAttention(AttentionImplementation):
     @staticmethod
     def build_mask(
         seq_mask: torch.Tensor,
-        commit_k: torch.Tensor | None = None,
-        commit_q: torch.Tensor | None = None,
+        commit_index_k: torch.Tensor,
+        commit_index_q: torch.Tensor,
     ) -> torch.Tensor:
-        return commit_rule(seq_mask, commit_k, commit_q).unsqueeze(1)
+        return commit_rule(seq_mask, commit_index_k, commit_index_q).unsqueeze(1)
 
     @staticmethod
     def attention(
@@ -102,10 +102,10 @@ class TorchAttention(AttentionImplementation):
     @staticmethod
     def build_mask(
         seq_mask: torch.Tensor,
-        commit_k: torch.Tensor | None = None,
-        commit_q: torch.Tensor | None = None,
+        commit_index_k: torch.Tensor,
+        commit_index_q: torch.Tensor,
     ) -> torch.Tensor:
-        return commit_rule(seq_mask, commit_k, commit_q).unsqueeze(1)
+        return commit_rule(seq_mask, commit_index_k, commit_index_q).unsqueeze(1)
 
     @staticmethod
     def attention(
@@ -142,17 +142,18 @@ class FlexAttention(AttentionImplementation):
     @torch.compiler.disable  # built outside any outer compiled graph
     def build_mask(
         seq_mask: torch.Tensor,
-        commit_k: torch.Tensor | None = None,
-        commit_q: torch.Tensor | None = None,
+        commit_index_k: torch.Tensor,
+        commit_index_q: torch.Tensor,
     ) -> BlockMask:
         B, Tk = seq_mask.shape
-        Tq = Tk if commit_q is None else commit_q.shape[1]
+        Tq = commit_index_q.shape[1]
 
-        def mask_mod(b, h, q_idx, kv_idx):
-            visible = seq_mask[b, kv_idx]
-            if commit_k is None or commit_q is None:
-                return visible
-            return visible & (commit_k[b, kv_idx] <= commit_q[b, q_idx])
+        def mask_mod(
+            b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor
+        ) -> torch.Tensor:
+            return seq_mask[b, kv_idx] & (
+                commit_index_k[b, kv_idx] <= commit_index_q[b, q_idx]
+            )
 
         return compiled_create_block_mask(
             mask_mod, B, None, Tq, Tk, device=seq_mask.device

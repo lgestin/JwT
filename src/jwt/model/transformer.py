@@ -224,16 +224,17 @@ class SelfAttention(nn.Module):
         mask: AttentionMask | None = None,
         attention_implementation: type[AttentionImplementation] = SDPAAttention,
         *,
-        cache: LayerKVCache,
+        cache: LayerKVCache | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Returns `(out, attn_weights)`. `attn_weights` is the (B, H, T, T)
-        softmax matrix for backends that expose it, else `None`. The keys and
-        values are `[cached | x]`, with `x`'s staged into `cache`."""
+        softmax matrix for backends that expose it, else `None`. With `cache`
+        the keys and values are `[cached | x]`, with `x`'s staged into it."""
         qkv = self.qkv(x)
         q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
         q, k = self.qk_norm(q, k)
         q, k = apply_rope(q, k, freqs_cis)
-        k, v = cache.stage(k, v)
+        if cache is not None:
+            k, v = cache.stage(k, v)
         out, attn_weights = attention_implementation.attention(q, k, v, mask)
         out = rearrange(out, "B H L D -> B L (H D)")
         return self.proj(out), attn_weights
@@ -276,7 +277,7 @@ class TransformerBlock(nn.Module):
         mask: AttentionMask | None = None,
         attention_implementation: type[AttentionImplementation] = SDPAAttention,
         *,
-        cache: LayerKVCache,
+        cache: LayerKVCache | None = None,
     ) -> torch.Tensor:
         shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = self.adaLN(t_emb)
         gate_a, gate_m = gate_a.tanh(), gate_m.tanh()
@@ -326,51 +327,57 @@ class Transformer(nn.Module):
         x: torch.Tensor,
         t: torch.Tensor,
         positions: torch.Tensor,
-        seq_mask: torch.Tensor | None = None,
         attention_implementation: type[AttentionImplementation] = SDPAAttention,
         *,
-        commit: torch.Tensor | None = None,
+        seq_mask: torch.Tensor | None = None,  # (B, L) bool, True = visible key
+        # (B, L) float, when each token freezes: a query sees keys with an index
+        # no larger than its own; inf = never frozen. See `attention.commit_rule`.
+        commit_index: torch.Tensor | None = None,
         cache: KVCache | None = None,
-        n_commit: int = 0,
     ) -> torch.Tensor:
-        """x: (B, L, D), t: (B, L) per-position timestep,
-        positions: (B, L) RoPE positions,
-        seq_mask: optional (B, L) bool, True = visible key,
-        commit: optional (B, L) commit index, see `attention.commit_rule`.
+        """x: (B, L, D), t: (B, L) per-position timestep, positions: (B, L).
 
-        With a non-empty `cache`, `x` holds only the new tokens: they attend
-        to the cached ones as well, and the first `n_commit` of them are kept
-        in the cache. Registers are prepended (and committed) only while the
-        cache is empty.
+        With `cache`, `x` also attends to the cached tokens, and its frozen
+        tokens (finite `commit_index`) are kept in the cache afterwards.
         """
         B, L, _ = x.shape
         if seq_mask is None:
             seq_mask = torch.ones(B, L, dtype=torch.bool, device=x.device)
-        if commit is None:  # nothing frozen: every query sees every visible key
-            commit = torch.full((B, L), math.inf, device=x.device)
-        if cache is None:  # throwaway: stages and commits nothing
-            cache = KVCache()
+        if commit_index is None:
+            commit_index = torch.full((B, L), math.inf, device=x.device)
 
         freqs_cis = freqs_cis_at(positions, self.inv_freqs)
         t_emb = self.time_embedder(t)
-        prepend = self.registers is not None and cache.length == 0
-        if prepend:
+        # Registers go in once: with a filled cache they are already committed.
+        prepend_registers = self.registers is not None and (
+            cache is None or cache.length == 0
+        )
+        if prepend_registers:
             assert self.registers is not None
-            x, t_emb, seq_mask, freqs_cis, commit = self.registers.prepend(
-                x, t_emb, seq_mask, freqs_cis, commit
+            x, t_emb, seq_mask, freqs_cis, commit_index = self.registers.prepend(
+                x, t_emb, seq_mask, freqs_cis, commit_index
             )
-            n_commit += self.registers.n
 
-        valid_k, commit_k = cache.stage(seq_mask, commit)
-        attn_mask = attention_implementation.build_mask(valid_k, commit_k, commit)
+        seq_mask_k, commit_index_k = seq_mask, commit_index
+        if cache is not None:
+            seq_mask_k, commit_index_k = cache.stage(seq_mask, commit_index)
+        attn_mask = attention_implementation.build_mask(
+            seq_mask_k, commit_index_k, commit_index_q=commit_index
+        )
 
         for i, block in enumerate(self.blocks):
             x = block(
-                x, freqs_cis, t_emb, attn_mask, attention_implementation, cache=cache[i]
+                x,
+                freqs_cis,
+                t_emb,
+                attn_mask,
+                attention_implementation,
+                cache=cache[i] if cache is not None else None,
             )
-        cache.commit_(n_commit)
+        if cache is not None:
+            cache.commit()
 
-        if prepend:
+        if prepend_registers:
             assert self.registers is not None
             x, t_emb = self.registers.strip(x, t_emb)
         shift, scale = self.final_modulation(t_emb)

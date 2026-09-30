@@ -122,9 +122,6 @@ def main() -> None:
         import torch._inductor.config as inductor_config
 
         inductor_config.split_reductions = False
-        # Let dynamo trace through `.item()` calls (e.g. `max_seqlen` for
-        # FlexAttention) symbolically rather than graph-breaking.
-        torch._dynamo.config.capture_scalar_outputs = True
         model.forward = torch.compile(model.forward, dynamic=True)
 
     optimizer = AdamW(
