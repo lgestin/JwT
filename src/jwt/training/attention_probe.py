@@ -12,6 +12,7 @@ self-attention layer's attention matrix. It is a validation-only tool:
   attribute, so adding/removing hooks never invalidates the compiled graph.
 """
 
+import inspect
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -290,19 +291,24 @@ def capture_attention(
         text_lens, acoustic_lens, n_registers=sum(r.n for r in registers)
     )
 
-    def hook(module: torch.nn.Module, args: tuple, output: object) -> None:
+    signature = inspect.signature(SelfAttention.forward)
+
+    def hook(
+        module: torch.nn.Module, args: tuple, kwargs: dict, output: object
+    ) -> None:
         # SelfAttention.forward returns (out, attn_weights); TorchAttention
         # populates attn_weights, SDPA leaves it None.
         attn_weights = output[1] if isinstance(output, tuple) else None
         if attn_weights is None:
             return
-        mask = args[2] if len(args) > 2 else None
+        # Bound by name, so the mask is found whether passed positionally or not.
+        mask = signature.bind(module, *args, **kwargs).arguments.get("mask")
         # The dense mask is (B, 1, Tq, Tk); a key is real if any query sees it.
         seq_mask = None if mask is None else mask.any(dim=2).reshape(mask.shape[0], -1)
         collector.record(attn_weights.detach(), seq_mask)  # ty: ignore[unresolved-attribute]
 
     handles = [
-        m.register_forward_hook(hook)
+        m.register_forward_hook(hook, with_kwargs=True)
         for m in model.modules()
         if isinstance(m, SelfAttention)
     ]

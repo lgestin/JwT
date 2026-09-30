@@ -1,13 +1,16 @@
+import math
+
 import pytest
 import torch
 
 from jwt.model.attention import SDPAAttention, TorchAttention
+from jwt.model.kvcache import LayerKVCache
 from jwt.model.neural_speaker import (
     MaskedTensor,
     RollingFlowConfig,
     RollingFlowSpeaker,
 )
-from jwt.model.transformer import TransformerConfig
+from jwt.model.transformer import TransformerConfig, freqs_cis_at
 from jwt.training.attention_probe import attention_images, capture_attention
 
 
@@ -554,3 +557,25 @@ def test_position_metrics_shapes_and_reduction_chain() -> None:
         m["attn_entropy"],
         torch.tensor((per[0]["attn_entropy"] + per[1]["attn_entropy"]) / 2),
     )
+
+
+def test_capture_attention_reads_a_keyword_mask() -> None:
+    """The hook finds the mask by name, so passing it as a keyword still works."""
+    model = make_model(num_layers=1)
+    attn = model.transformer.blocks[0].attn
+    B, T, dim = 1, 5, 32
+    seq_mask = torch.tensor([[True, True, True, True, False]])
+    commit_index = torch.tensor([[0.0, 0.0, 1.0, math.inf, math.inf]])
+    freqs_cis = freqs_cis_at(
+        torch.arange(T).float().expand(B, T), model.transformer.inv_freqs
+    )
+    with capture_attention(model, torch.tensor([2]), torch.tensor([2])) as collector:
+        attn(
+            torch.randn(B, T, dim),
+            freqs_cis,
+            mask=TorchAttention.build_mask(seq_mask, commit_index, commit_index),
+            attention_implementation=TorchAttention,
+            cache=LayerKVCache(),
+        )
+    assert collector.seq_mask is not None
+    assert torch.equal(collector.seq_mask, seq_mask)
