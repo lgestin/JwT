@@ -1,3 +1,5 @@
+import math
+
 import pytest
 import torch
 
@@ -6,6 +8,7 @@ from jwt.data.audio.codecs import Codec, Codecs
 from jwt.data.audio.stft import MelSpectrogram
 from jwt.model.flow import FlowParametrizations
 from jwt.model.neural_speaker import (
+    EOS_LOSS_WEIGHT,
     MaskedTensor,
     RollingFlowConfig,
     RollingFlowSpeaker,
@@ -70,14 +73,16 @@ assert isinstance(StubCodec(), Codec)
 
 
 class ConstantHead(torch.nn.Module):
-    """Stand-in output head that predicts one constant everywhere."""
+    """Stand-in output head: one constant prediction and one constant EOS logit."""
 
-    def __init__(self, head: torch.nn.Module, value: float):
+    def __init__(self, head: torch.nn.Module, value: float, eos_logit: float):
         super().__init__()
-        self.head, self.value = head, value
+        self.head, self.value, self.eos_logit = head, value, eos_logit
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.full_like(self.head(x), self.value)
+        out = torch.full_like(self.head(x), self.value)
+        out[..., -1] = self.eos_logit
+        return out
 
 
 def open_gates(model: RollingFlowSpeaker) -> RollingFlowSpeaker:
@@ -195,12 +200,41 @@ def test_speak_actually_updates_positions(
         assert not torch.allclose(out.values[i, :, :L], x_0[i, :, :L])
 
 
-def test_speak_stops_on_sentinel(
+@pytest.mark.parametrize("use_kv_cache", [True, False])
+def test_speak_cuts_where_the_probe_fires(
+    model: RollingFlowSpeaker,
+    text: MaskedTensor,
+    codec: StubCodec,
+    use_kv_cache: bool,
+) -> None:
+    """A probe firing on frame q cuts the output to q frames and stops once
+    frame q-1 is fully denoised."""
+    n, q = model.cfg.n_denoising_steps, 5
+    calls = []
+
+    def fire_on_q(module: torch.nn.Module, args: tuple, out: torch.Tensor) -> None:
+        calls.append(None)
+        # The probe is read on the newest frame, which is frame k at step k.
+        out[..., -1] = 10.0 if len(calls) - 1 == q else -10.0
+
+    model.acoustic_out.register_forward_hook(fire_on_q)
+    out = model.speak(text, codec=codec, use_kv_cache=use_kv_cache)
+
+    assert out.mask.sum(-1).tolist() == [q] * B
+    # Frame q-1 takes its last Euler step at k = (q-1) + (n-2): steps 0..q+n-3.
+    assert len(calls) == q + n - 2
+    assert out.eos_logits.shape == (B, q + n - 2)
+    assert torch.isfinite(out.eos_logits).all()
+
+
+def test_speak_falls_back_to_sentinel(
     model: RollingFlowSpeaker, text: MaskedTensor, codec: StubCodec
 ) -> None:
-    """speak() must stop before max_acoustic_len when the sentinel fires."""
+    """A probe that never fires still stops on the generated sentinel frames."""
     eos_norm = (codec.eos_value - codec.mean) / codec.std
-    model.acoustic_out = ConstantHead(model.acoustic_out, float(eos_norm) * 10)
+    model.acoustic_out = ConstantHead(
+        model.acoustic_out, float(eos_norm) * 10, eos_logit=-10.0
+    )
     out = model.speak(text, codec=codec)
 
     assert out.values.shape[2] < model.cfg.max_acoustic_len
@@ -209,11 +243,12 @@ def test_speak_stops_on_sentinel(
 def test_speak_respects_max_acoustic_len_cap(
     model: RollingFlowSpeaker, text: MaskedTensor, codec: StubCodec
 ) -> None:
-    """Output must never exceed max_acoustic_len even if the sentinel never fires."""
-    model.acoustic_out = ConstantHead(model.acoustic_out, 10.0)
+    """Output must never exceed max_acoustic_len even if EOS never fires."""
+    model.acoustic_out = ConstantHead(model.acoustic_out, 10.0, eos_logit=-10.0)
     out = model.speak(text, codec=codec)
 
     assert out.values.shape[2] <= model.cfg.max_acoustic_len
+    assert out.eos_logits.shape == (B, model.cfg.max_acoustic_len)
 
 
 def test_forward_invariant_to_text_padding(model: RollingFlowSpeaker) -> None:
@@ -250,13 +285,14 @@ def test_forward_invariant_to_text_padding(model: RollingFlowSpeaker) -> None:
     )
 
     with torch.no_grad():
-        v_unpadded = model.forward(text_unpadded, acoustic, t)
-        v_padded = model.forward(text_padded, acoustic, t)
+        v_unpadded, eos_unpadded = model.forward(text_unpadded, acoustic, t)
+        v_padded, eos_padded = model.forward(text_padded, acoustic, t)
 
     assert torch.allclose(v_unpadded, v_padded, atol=1e-5), (
         f"text padding changed v_pred (max diff "
         f"{(v_unpadded - v_padded).abs().max().item():.4e}) — attn mask misaligned"
     )
+    assert torch.allclose(eos_unpadded, eos_padded, atol=1e-5)
 
 
 def test_training_step_covers_warmup_with_negative_acoustic_front(
@@ -319,6 +355,41 @@ def test_training_step_shapes(
     assert (out.v_mask.sum(-1) == n - 1).all()
 
 
+def test_training_step_adds_weighted_eos_loss(
+    model: RollingFlowSpeaker, text: MaskedTensor, acoustic: MaskedTensor
+) -> None:
+    """The loss is the flow loss plus `EOS_LOSS_WEIGHT` times the probe's BCE."""
+    out = model.training_step(text, acoustic, acoustic_front=torch.tensor([2, 3]))  # ty: ignore[invalid-argument-type]
+    # The zero-init head gives logit 0 everywhere: BCE(0) = ln 2.
+    assert out.eos_loss.item() == pytest.approx(math.log(2))
+    assert out.loss.item() == pytest.approx(
+        out.fm_loss.item() + EOS_LOSS_WEIGHT * math.log(2)
+    )
+
+
+def test_eos_loss_targets_the_sentinel_frames(
+    model: RollingFlowSpeaker, text: MaskedTensor, acoustic: MaskedTensor
+) -> None:
+    """A probe that always says EOS is right on sentinel frames, wrong on real ones."""
+    model.acoustic_out = ConstantHead(model.acoustic_out, 0.0, eos_logit=10.0)
+    T_real = acoustic.values.shape[-1] - model.cfg.eos_n_frames
+    # The window (front, front + n) lies in the sentinel, then in the real frames.
+    on_sentinel = model.training_step(
+        text,
+        acoustic,
+        acoustic_front=torch.full((B,), T_real - 1),  # ty: ignore[invalid-argument-type]
+    )
+    on_real = model.training_step(
+        text,
+        acoustic,
+        acoustic_front=torch.zeros(B, dtype=torch.long),  # ty: ignore[invalid-argument-type]
+    )
+    # BCE(10, 1) = softplus(-10); BCE(10, 0) = softplus(10) = 10 + softplus(-10).
+    softplus_neg10 = math.log1p(math.exp(-10))
+    assert on_sentinel.eos_loss.item() == pytest.approx(softplus_neg10, rel=1e-3)
+    assert on_real.eos_loss.item() == pytest.approx(10 + softplus_neg10)
+
+
 def test_training_step_is_deterministic(
     model: RollingFlowSpeaker, text: MaskedTensor, acoustic: MaskedTensor
 ) -> None:
@@ -327,7 +398,15 @@ def test_training_step_is_deterministic(
     x_0 = torch.randn(B, T_ext, N_MELS)
     a = model.training_step(text, acoustic, acoustic_front=acoustic_front, x_0=x_0)
     b = model.training_step(text, acoustic, acoustic_front=acoustic_front, x_0=x_0)
-    for name in ("loss", "x_pred", "v_mask", "t", "per_pos_loss"):
+    for name in (
+        "loss",
+        "fm_loss",
+        "eos_loss",
+        "x_pred",
+        "v_mask",
+        "t",
+        "per_pos_loss",
+    ):
         assert torch.equal(getattr(a, name), getattr(b, name))
 
 
@@ -564,8 +643,8 @@ def test_phoneme_per_audio_patch_is_text_padding_invariant() -> None:
     )
 
     with torch.no_grad():
-        v_unpadded = model.forward(text_unpadded, acoustic, t)
-        v_padded = model.forward(text_padded, acoustic, t)
+        v_unpadded, _ = model.forward(text_unpadded, acoustic, t)
+        v_padded, _ = model.forward(text_padded, acoustic, t)
 
     assert torch.allclose(v_unpadded, v_padded, atol=1e-5)
 
@@ -594,8 +673,8 @@ def test_clean_frames_ignore_window(
     open_gates(model)
     n = model.cfg.n_denoising_steps
     t = clean_then_window_t(acoustic, n)
-    a = model.forward(text, acoustic, t)
-    b = model.forward(text, window_variant(acoustic, n), t)
+    a, _ = model.forward(text, acoustic, t)
+    b, _ = model.forward(text, window_variant(acoustic, n), t)
     torch.testing.assert_close(a[:, :-n], b[:, :-n])
     assert not torch.allclose(a[:, -n:], b[:, -n:])
 
@@ -611,10 +690,14 @@ def test_speak_with_cache_matches_full_recompute(
         mask=torch.tensor([[True] * T_TEXT, [True] * (T_TEXT - 1) + [False]]),
     )
     x_0 = torch.randn(B, N_MELS, model.cfg.max_acoustic_len)
-    cached = model.speak(text, codec=codec, x_0=x_0)
-    full = model.speak(text, codec=codec, x_0=x_0, use_kv_cache=False)
+    # An untrained probe fires at once: disable it to compare whole generations.
+    cached = model.speak(text, codec=codec, x_0=x_0, eos_threshold=math.inf)
+    full = model.speak(
+        text, codec=codec, x_0=x_0, use_kv_cache=False, eos_threshold=math.inf
+    )
     assert torch.equal(cached.mask, full.mask)
     torch.testing.assert_close(cached.values, full.values, atol=1e-5, rtol=1e-4)
+    torch.testing.assert_close(cached.eos_logits, full.eos_logits, atol=1e-5, rtol=1e-4)
 
 
 def skip_unless_cuda() -> None:
@@ -670,8 +753,10 @@ def test_speak_cache_under_autocast(
     )
     x_0 = torch.randn(B, N_MELS, model.cfg.max_acoustic_len, device="cuda")
     with torch.autocast("cuda", dtype=torch.bfloat16):
-        cached = model.speak(text, codec=codec, x_0=x_0)
-        full = model.speak(text, codec=codec, x_0=x_0, use_kv_cache=False)
+        cached = model.speak(text, codec=codec, x_0=x_0, eos_threshold=math.inf)
+        full = model.speak(
+            text, codec=codec, x_0=x_0, use_kv_cache=False, eos_threshold=math.inf
+        )
     assert torch.equal(cached.mask, full.mask)
     torch.testing.assert_close(cached.values, full.values, atol=5e-2, rtol=5e-2)
 
@@ -702,8 +787,8 @@ def test_forward_depends_on_prompt(
     """Different prompts give different outputs."""
     open_gates(model)
     t = clean_then_window_t(acoustic, model.cfg.n_denoising_steps)
-    a = model.forward(text, acoustic, t, prompt=speaker_prompt([3] * B))
-    b = model.forward(text, acoustic, t, prompt=speaker_prompt([3] * B))
+    a, _ = model.forward(text, acoustic, t, prompt=speaker_prompt([3] * B))
+    b, _ = model.forward(text, acoustic, t, prompt=speaker_prompt([3] * B))
     assert not torch.allclose(a, b)
 
 
@@ -730,8 +815,17 @@ def test_speak_with_prompt_cache_matches_full_recompute(
     open_gates(model)
     prompt = speaker_prompt([3, 1])
     x_0 = torch.randn(B, N_MELS, model.cfg.max_acoustic_len)
-    cached = model.speak(text, codec=codec, x_0=x_0, prompt=prompt)
-    full = model.speak(text, codec=codec, x_0=x_0, prompt=prompt, use_kv_cache=False)
+    cached = model.speak(
+        text, codec=codec, x_0=x_0, prompt=prompt, eos_threshold=math.inf
+    )
+    full = model.speak(
+        text,
+        codec=codec,
+        x_0=x_0,
+        prompt=prompt,
+        use_kv_cache=False,
+        eos_threshold=math.inf,
+    )
     assert torch.equal(cached.mask, full.mask)
     torch.testing.assert_close(cached.values, full.values, atol=1e-5, rtol=1e-4)
 

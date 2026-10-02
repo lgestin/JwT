@@ -24,6 +24,7 @@ STEP_METRIC = "trainer/step"
 SUMMARY_MIN = (
     "loss/valid",
     "loss/valid_fm",
+    "loss/valid_eos",
     "quality_tf/valid_logstft_l1",
     "quality_tf/valid_mel_cepstral_distortion",
 )

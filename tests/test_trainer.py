@@ -45,6 +45,8 @@ def test_diagnostics_emit_unreweighted_x1_error_curve() -> None:
     # Bin 1 (t=0.75): tiny prediction error, big reweighted FM loss.
     out = TrainingStepOutput(
         loss=torch.tensor(0.5),
+        fm_loss=torch.tensor(0.5),
+        eos_loss=torch.tensor(0.0),
         x_pred=torch.tensor([[[2.0], [5.05]]]),  # (B=1, T=2, D=1)
         v_mask=torch.tensor([[True, True]]),
         t=torch.tensor([[0.25, 0.75]]),
@@ -70,6 +72,8 @@ def diag_inputs() -> tuple[TrainingStepOutput, MaskedTensor, MaskedTensor]:
     """Shared `step_diagnostics` inputs: 2 frames, t-bins 0 (t=0.25) and 1."""
     out = TrainingStepOutput(
         loss=torch.tensor(0.5),
+        fm_loss=torch.tensor(0.5),
+        eos_loss=torch.tensor(0.0),
         x_pred=torch.tensor([[[2.0], [5.05]]]),  # (B=1, T=2, D=1)
         v_mask=torch.tensor([[True, True]]),
         t=torch.tensor([[0.25, 0.75]]),

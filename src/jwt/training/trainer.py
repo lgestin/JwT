@@ -339,9 +339,12 @@ class TTSRollingFlowMatchingTrainer(Trainer):
                 loss_fn=self.config.loss_fn.fn,
                 attention_implementation=self.config.attention_implementation.implementation,
             )
-            fm_loss, x_pred, v_mask = out.loss, out.x_pred, out.v_mask
+            x_pred, v_mask = out.x_pred, out.v_mask
 
-        metrics: dict[str, torch.Tensor] = {"fm_loss": fm_loss.detach()}
+        metrics: dict[str, torch.Tensor] = {
+            "fm_loss": out.fm_loss.detach(),
+            "eos_loss": out.eos_loss.detach(),
+        }
         with torch.autocast(device_type=self.device.type, enabled=False):
             x_1_target_norm = acoustic.values.float()
             x_1_pred_norm = x_pred.float().transpose(1, 2)
@@ -353,7 +356,7 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             logmel_l1 = masked_mean_reduction(logmel_l1, mel_mask).mean(0)
             self.reconstruction_metrics(metrics, pred_wav, target_wav, v_mask)
 
-        loss = fm_loss + self.config.aux_mel_weight * logmel_l1
+        loss = out.loss + self.config.aux_mel_weight * logmel_l1
         metrics["logmel_l1"] = logmel_l1.detach()
         metrics["loss"] = loss.detach()
         scalars, bins = self.step_diagnostics(out, text, acoustic)

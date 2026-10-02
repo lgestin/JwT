@@ -17,6 +17,11 @@ from jwt.model.transformer import (
 )
 from jwt.training.timestep_schedules import TimestepSchedules
 
+# Weight of the EOS probe's BCE in the training loss.
+EOS_LOSS_WEIGHT = 0.1
+# EOS probe logit above which `speak` stops a sample.
+EOS_THRESHOLD = -1.0
+
 
 class NeuralSpeaker(Protocol):
     def speak(
@@ -80,6 +85,14 @@ class MaskedTensor:
 
 
 @dataclass
+class SpeakOutput(MaskedTensor):
+    """`speak` result: the generated frames plus the EOS probe logit read on each
+    frame, `eos_logits` (B, L), which runs past each sample's stop."""
+
+    eos_logits: torch.Tensor
+
+
+@dataclass
 class TrainingStepOutput:
     """Result of `RollingFlowSpeaker.training_step` — all fields are GPU tensors.
 
@@ -88,7 +101,9 @@ class TrainingStepOutput:
     timestep without recomputing anything.
     """
 
-    loss: torch.Tensor  # scalar, masked-mean of per_pos_loss
+    loss: torch.Tensor  # scalar, fm_loss + EOS_LOSS_WEIGHT * eos_loss
+    fm_loss: torch.Tensor  # scalar, masked-mean of per_pos_loss
+    eos_loss: torch.Tensor  # scalar, masked-mean BCE of the EOS probe
     x_pred: torch.Tensor  # (B, T_ext, acoustic_dim) — recovered x_1
     v_mask: torch.Tensor  # (B, T_ext) bool — rolling-window supervision mask
     t: torch.Tensor  # (B, T_ext) — per-position timestep in [0, 1]
@@ -113,7 +128,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         dim = cfg.transformer_config.dim
         self.text_in = nn.Embedding(cfg.vocabulary_size, dim)
         self.acoustic_in = nn.Linear(cfg.acoustic_dim, dim)
-        self.acoustic_out = nn.Linear(dim, cfg.acoustic_dim)
+        # One extra output: the EOS probe logit.
+        self.acoustic_out = nn.Linear(dim, cfg.acoustic_dim + 1)
         nn.init.zeros_(self.acoustic_out.weight)
         nn.init.zeros_(self.acoustic_out.bias)
         self.text_modality = nn.Parameter(torch.randn(dim) * 0.02)
@@ -133,8 +149,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         attention_implementation: type[AttentionImplementation] = SDPAAttention,
         *,
         prompt: MaskedTensor | None = None,
-    ) -> torch.Tensor:
-        """Run a forward pass and return the raw model output.
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run a forward pass and return the raw model output and EOS logits.
 
         The semantic meaning of the returned tensor depends on the configured
         parametrization (velocity for RectifiedFlow, x_1 for JWT). The model
@@ -148,7 +164,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         prompt.values:   (B, acoustic_dim, P)  normalized speaker prompt frames,
                          prompt.mask: (B, P); a zero-length prompt is unconditional
         returns:
-            pred: (B, T_acoustic, acoustic_dim)            raw model output
+            pred:      (B, T_acoustic, acoustic_dim)       raw model output
+            eos_logit: (B, T_acoustic)                     EOS probe logit
         """
         B, acoustic_dim, T_acoustic = acoustic.values.shape
         text_ids = text.values.squeeze(-2)  # (B, T_text)
@@ -227,7 +244,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             seq_mask=seq_mask,
             commit_index=commit_index,
         )
-        pred_packed = self.acoustic_out(out_packed[:, P:])  # (B, T, acoustic_dim)
+        pred_packed, eos_packed = self.output_head(out_packed[:, P:])
 
         # Unpack: acoustic position i in sample b lives at packed
         # position text_lens[b] + i.
@@ -236,7 +253,14 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         pred = torch.gather(
             pred_packed, 1, unpack_idx.unsqueeze(-1).expand(B, T_acoustic, acoustic_dim)
         )
-        return pred
+        eos_logit = torch.gather(eos_packed, 1, unpack_idx)
+        return pred, eos_logit
+
+    def output_head(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Split `acoustic_out` into the prediction (..., acoustic_dim) and the
+        EOS probe logit (...)."""
+        pred, eos_logit = self.acoustic_out(x).split((self.cfg.acoustic_dim, 1), -1)
+        return pred, eos_logit.squeeze(-1)
 
     @staticmethod
     def acoustic_commit_index(
@@ -307,10 +331,10 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         t: torch.Tensor,
         acoustic_idx: torch.Tensor,
         cache: KVCache,
-    ) -> torch.Tensor:
-        """Model output for the window `x_t` (B, W, acoustic_dim) at float
-        acoustic indices `acoustic_idx` (B, W), attending through `cache`; the frame
-        at t=1, if any, is committed to it."""
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Model output and EOS logits for the window `x_t` (B, W, acoustic_dim)
+        at float acoustic indices `acoustic_idx` (B, W), attending through
+        `cache`; the frame at t=1, if any, is committed to it."""
         out = self.transformer(
             self.acoustic_in(x_t) + self.acoustic_modality,
             t,
@@ -318,7 +342,7 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             commit_index=self.acoustic_commit_index(t, acoustic_idx),
             cache=cache,
         )
-        return self.acoustic_out(out)
+        return self.output_head(out)
 
     def sample_noise(
         self,
@@ -366,8 +390,13 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         `attention_implementation` selects the attention backend (default fused
         SDPA); pass `TorchAttention` to expose attention weights for probing.
 
+        The EOS probe is trained with a BCE to flag the sentinel frames, over
+        the same rolling-window positions as the flow loss.
+
         Returns a `TrainingStepOutput`:
-        - loss:         scalar — masked-mean of the parametrization's per-position loss
+        - loss:         scalar — fm_loss + EOS_LOSS_WEIGHT * eos_loss
+        - fm_loss:      scalar — masked-mean of the parametrization's per-position loss
+        - eos_loss:     scalar — masked-mean BCE of the EOS probe
         - x_pred:       (B, T_ext, acoustic_dim) — predicted x_1 (normalized)
                         recovered by the parametrization; used for codec-agnostic
                         monitoring
@@ -404,7 +433,9 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         x_t = self.param.prepare_x_t(x_0, x_1, t_b)
 
         noisy = MaskedTensor(values=x_t.transpose(1, 2), mask=acoustic.mask)
-        pred = self.forward(text, noisy, t, attention_implementation, prompt=prompt)
+        pred, eos_logit = self.forward(
+            text, noisy, t, attention_implementation, prompt=prompt
+        )
 
         v_mask = (
             acoustic.mask
@@ -422,9 +453,19 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             loss_fn=loss_fn,
         )
         per_pos_loss = loss_out.loss.mean(-1)  # (B, T_ext) — reduce the feature dim
-        loss = (per_pos_loss * v_mask).sum() / v_mask.sum().clamp(min=1)
+        n_supervised = v_mask.sum().clamp(min=1)
+        fm_loss = (per_pos_loss * v_mask).sum() / n_supervised
+
+        sentinel_start = acoustic_lens_ext - self.cfg.eos_n_frames
+        is_eos = acoustic.mask & (acoustic_idx >= sentinel_start.unsqueeze(1))
+        per_pos_eos_loss = F.binary_cross_entropy_with_logits(
+            eos_logit, is_eos.to(eos_logit.dtype), reduction="none"
+        )
+        eos_loss = (per_pos_eos_loss * v_mask).sum() / n_supervised
         return TrainingStepOutput(
-            loss=loss,
+            loss=fm_loss + EOS_LOSS_WEIGHT * eos_loss,
+            fm_loss=fm_loss,
+            eos_loss=eos_loss,
             x_pred=loss_out.x_pred,
             v_mask=v_mask,
             t=t,
@@ -440,11 +481,15 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         prompt: MaskedTensor | None = None,
         x_0: torch.Tensor | None = None,
         use_kv_cache: bool = True,
-    ) -> MaskedTensor:
+        eos_threshold: float = EOS_THRESHOLD,
+    ) -> SpeakOutput:
         """Generate acoustic features via rolling-Euler integration, stopping on EOS.
 
         At step k the window is frames [k-n+1, k]: its first frame has just
-        reached t=1 and is checked for EOS, the rest take one Euler step. With
+        reached t=1, the rest take one Euler step. The EOS probe is read on the
+        newest frame k; once its logit exceeds `eos_threshold` the output is cut
+        at k and the sample is done when frame k-1 is fully denoised. Samples
+        the probe never stops are cut at their first sentinel frame. With
         `use_kv_cache` text is prefilled into a `KVCache` and every step runs the
         model on the window alone, committing the t=1 frame; without it the
         whole buffer is recomputed each step. The two give the same frames,
@@ -458,9 +503,11 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         prompt: optional normalized speaker prompt, see `forward`.
         x_0:   optional (B, acoustic_dim, max_acoustic_len) noise override.
         use_kv_cache: False recomputes the full buffer, as a reference.
+        eos_threshold: EOS probe logit above which a sample stops.
 
-        Returns a MaskedTensor with values (B, acoustic_dim, T_out) in **normalized**
-        space — callers are expected to call codec.unnormalize before codec.decode.
+        Returns a SpeakOutput with values (B, acoustic_dim, T_out) in **normalized**
+        space — callers are expected to call codec.unnormalize before codec.decode —
+        and `eos_logits` (B, L), the probe logit read on each generated frame.
 
         The model's `cfg.codec` enum records which codec the model was trained
         with; the loader is responsible for instantiating the matching codec.
@@ -489,7 +536,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             )
 
         values = x_0[..., :max_T].clone()  # (B, acoustic_dim, max_T)
-        done = torch.zeros(B, dtype=torch.bool, device=device)
+        eos_logits = torch.full((B, max_T), math.nan, device=device)
+        stopped = torch.zeros(B, dtype=torch.bool, device=device)
         trim = torch.full((B,), -1, dtype=torch.long, device=device)
 
         cache = KVCache() if use_kv_cache else None
@@ -505,13 +553,14 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             x_t = values[..., lo:hi].transpose(1, 2)  # (B, W, acoustic_dim)
 
             if cache is not None:
-                pred = self.predict_window(x_t, t, acoustic_idx, cache)
+                pred, eos_logit = self.predict_window(x_t, t, acoustic_idx, cache)
             else:
                 # Frames before the window are clean.
                 t_all = F.pad(t, (lo, 0), value=1.0)
                 buffer_mask = torch.ones(B, hi, dtype=torch.bool, device=device)
                 buffer = MaskedTensor(values=values[..., :hi], mask=buffer_mask)  # ty: ignore[invalid-argument-type]
-                pred = self.forward(text, buffer, t_all, prompt=prompt)[:, lo:]
+                pred, eos_logit = self.forward(text, buffer, t_all, prompt=prompt)
+                pred = pred[:, lo:]
 
             # Rolling-Euler step through the parametrization. For RF this adds
             # dt*pred; for JWT it divides by (1-t), so the t=1 frame may come
@@ -521,19 +570,20 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
             x_t = torch.where((t < 1.0).unsqueeze(-1), x_new, x_t)
             values[..., lo:hi] = x_t.transpose(1, 2)
 
-            # Check the frame that just reached t=1 for the EOS sentinel.
-            if k >= n - 1:
-                frame_raw = codec.unnormalize(values[:, :, lo])
-                triggered = (~done) & codec.is_eos(frame_raw)
-                trim[triggered] = lo
-                done |= triggered
+            # The newest frame is pure noise (t=0), so the probe reads it from
+            # context alone; read at t=1 it fires on the model's own pauses.
+            if k < max_T:
+                eos_logits[:, k] = eos_logit[:, -1].float()
+                fired = ~stopped & (eos_logit[:, -1] > eos_threshold)
+                trim[fired] = k
+                stopped |= fired
 
-            if done.all():
+            # Frame f takes its last Euler step at k = f + n - 2.
+            if (stopped & (trim + n - 3 <= k)).all():
                 break
 
-        # Samples that hit max_T without triggering: scan for the first
-        # below-threshold frame.
-        if not done.all():
+        # Samples the probe never stopped: cut at the first sentinel frame.
+        if not stopped.all():
             frames_raw = codec.unnormalize(values)  # (B, acoustic_dim, L)
             # codec.is_eos expects (..., acoustic_dim); transpose so the
             # last dim is acoustic_dim.
@@ -551,4 +601,8 @@ class RollingFlowSpeaker(NeuralSpeaker, nn.Module):
         out = values[..., :T_out]
         acoustic_idx_out = torch.arange(T_out, device=device).expand(B, T_out)
         mask = acoustic_idx_out < trim.unsqueeze(1)
-        return MaskedTensor(values=out, mask=mask)  # ty: ignore[invalid-argument-type]
+        return SpeakOutput(
+            values=out,
+            mask=mask,  # ty: ignore[invalid-argument-type]
+            eos_logits=eos_logits[:, : min(k + 1, max_T)],
+        )
