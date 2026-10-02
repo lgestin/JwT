@@ -32,6 +32,15 @@ def test_image_array_converts_chw_float_to_hwc_uint8() -> None:
     assert rgb.dtype.name == "uint8"
 
 
+def test_image_array_passes_uint8_through() -> None:
+    """A uint8 image, as `render_curve` emits, is not rescaled by 255."""
+    img = torch.tensor([[[10, 200]], [[30, 40]], [[50, 60]]], dtype=torch.uint8)
+    out = image_array(img)
+    assert out.shape == (1, 2, 3)
+    assert out.dtype.name == "uint8"
+    assert int(out[0, 1, 0]) == 200
+
+
 def test_mel_image_is_colorized_and_flipped() -> None:
     from jwt.training.loggers import mel_image
 

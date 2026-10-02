@@ -50,12 +50,14 @@ def audio_array(waveform: torch.Tensor) -> np.ndarray:
 
 
 def image_array(image: torch.Tensor) -> np.ndarray:
-    """(H, W) / (C, H, W) float in [0, 1] to the uint8 HWC array `wandb.Image`
-    renders without rescaling."""
-    img = image.detach().cpu().float()
+    """(H, W) / (C, H, W) image to the uint8 HWC array `wandb.Image` renders
+    without rescaling. Float input is taken as [0, 1]; uint8 passes through."""
+    img = image.detach().cpu()
     if img.ndim == 3:
         img = img.permute(1, 2, 0).squeeze(-1)
-    return (img * 255).clamp(0, 255).byte().numpy()
+    if img.dtype == torch.uint8:
+        return img.numpy()
+    return (img.float() * 255).clamp(0, 255).byte().numpy()
 
 
 def curve_rows(x: list[float], y: list[float]) -> list[list[float]]:
