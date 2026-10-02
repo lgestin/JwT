@@ -12,19 +12,29 @@ DPI = 110
 
 
 def render_curve(
-    x: Sequence[float], y: Sequence[float], *, xlabel: str, ylabel: str
+    x: Sequence[float],
+    y: Sequence[float],
+    *,
+    xlabel: str,
+    ylabel: str,
+    hline: float | None = None,
+    vline: float | None = None,
 ) -> torch.Tensor:
     """Rasterize a line plot of `y` against `x` as a uint8 `(3, H, W)` RGB tensor.
 
     Uses the Agg canvas directly rather than `pyplot`, so no global figure state
     is created and nothing has to be closed. NaN entries in `y` break the line
     instead of being drawn, so gaps in a sparsely populated grid read as missing
-    rather than as zeros.
+    rather than as zeros. `hline` / `vline` draw dashed reference lines.
     """
     fig = Figure(figsize=FIGSIZE, dpi=DPI, layout="constrained")
     canvas = FigureCanvasAgg(fig)
     ax = fig.add_subplot()
     ax.plot(x, y, marker=".", markersize=3.0, linewidth=1.0)
+    if hline is not None:
+        ax.axhline(hline, color="tab:red", linestyle="--", linewidth=1.0)
+    if vline is not None:
+        ax.axvline(vline, color="tab:gray", linestyle="--", linewidth=1.0)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.grid(alpha=0.3)

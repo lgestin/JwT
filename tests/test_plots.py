@@ -36,3 +36,14 @@ def test_render_curve_handles_an_all_nan_series() -> None:
 
     assert image.dtype == torch.uint8
     assert image.shape[0] == 3
+
+
+def test_render_curve_draws_reference_lines() -> None:
+    """`hline` / `vline` add to the plot without changing the image contract."""
+    x, y = [0.0, 1.0, 2.0], [-6.0, -4.5, 1.0]
+    plain = render_curve(x, y, xlabel="frame", ylabel="eos logit")
+    lined = render_curve(x, y, xlabel="frame", ylabel="eos logit", hline=-1.0, vline=2)
+
+    assert lined.dtype == torch.uint8
+    assert lined.shape == plain.shape
+    assert not torch.equal(lined, plain)

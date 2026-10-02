@@ -19,6 +19,7 @@ from jwt.data.dataset import Batch
 from jwt.model.attention import AttentionImplementations, TorchAttention
 from jwt.model.loss import LossFns
 from jwt.model.neural_speaker import (
+    EOS_THRESHOLD,
     MaskedTensor,
     RollingFlowSpeaker,
     TrainingStepOutput,
@@ -39,6 +40,7 @@ from jwt.training.metrics.utils import (
     sampled_generation_stats,
 )
 from jwt.training.metrics.utmos import UTMOS
+from jwt.training.plots import render_curve
 
 # Free generations shorter than this are zero-padded up to it before MOS
 # scoring — the predictors need a minimum of signal, and padding (unlike
@@ -979,6 +981,15 @@ class TTSRollingFlowMatchingTrainer(Trainer):
             if i in att:
                 record.images.update(att[i])
             record.metrics.update(sample_metrics.get(i, {}))
+            trace = acoustic_pred.eos_logits[i].tolist()
+            record.images["eos"] = render_curve(
+                range(len(trace)),
+                trace,
+                xlabel="frame",
+                ylabel="eos logit",
+                hline=EOS_THRESHOLD,
+                vline=L,
+            )
             records.append(record)
             if wav.shape[-1] < self.mel_spectrogram.n_fft:
                 warnings.warn(
